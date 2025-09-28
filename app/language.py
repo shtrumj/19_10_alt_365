@@ -106,8 +106,15 @@ TRANSLATIONS = {
         "loading_recent_emails": "טוען אימיילים אחרונים...",
         "error_loading_emails": "שגיאה בטעינת אימיילים",
         "no_emails_yet": "אין אימיילים עדיין",
-        "compose_first_email": "חבר את האימייל הראשון שלך"
-    },
+            "compose_first_email": "חבר את האימייל הראשון שלך",
+            "all": "הכל",
+            "new": "חדש",
+            "no_emails_inbox": "אין אימיילים בתיבת הדואר הנכנס",
+            "no_emails_sent": "אין אימיילים שנשלחו",
+            "no_emails_deleted": "אין אימיילים שנמחקו",
+            "to_get_started": "כדי להתחיל",
+            "deleted_emails_will_appear": "אימיילים שנמחקו יופיעו כאן"
+        },
     "en": {
         "title": "365 Email System",
         "dashboard": "Dashboard",
@@ -208,9 +215,16 @@ TRANSLATIONS = {
         "loading_recent_emails": "Loading recent emails...",
         "error_loading_emails": "Error loading recent emails",
         "no_emails_yet": "No emails yet",
-        "compose_first_email": "Compose your first email"
+            "compose_first_email": "Compose your first email",
+            "all": "All",
+            "new": "New",
+            "no_emails_inbox": "No emails in inbox",
+            "no_emails_sent": "No emails sent",
+            "no_emails_deleted": "No emails deleted",
+            "to_get_started": "to get started",
+            "deleted_emails_will_appear": "Deleted emails will appear here"
+        }
     }
-}
 
 def get_language(request: Request) -> str:
     """Get current language from request"""

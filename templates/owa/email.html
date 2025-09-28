@@ -38,7 +38,15 @@
     </div>
     <div class="card-body">
         <div class="email-content">
-            {{ email.body|replace('\n', '<br>')|safe }}
+            {% if email.parsed_content %}
+                {{ email.parsed_content|replace('\n', '<br>')|safe }}
+            {% else %}
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    Unable to parse email content. Showing raw content:
+                </div>
+                <pre>{{ email.body[:500] }}{% if email.body|length > 500 %}...{% endif %}</pre>
+            {% endif %}
         </div>
     </div>
 </div>

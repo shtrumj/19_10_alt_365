@@ -84,6 +84,38 @@
             color: white;
         }
         
+        /* Connection Status */
+        .connection-status {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .connection-status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .connection-status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .connection-status.error {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
         /* Hebrew Font Support */
         [dir="rtl"] {
             font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif;
@@ -209,14 +241,92 @@
             box-shadow: 0 8px 25px rgba(0, 120, 212, 0.3);
         }
         
-        .email-item {
+        /* Dynamic Column Resizing Styles */
+        .email-list-container {
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 1.5rem;
-            margin-bottom: 1rem;
+            overflow: hidden;
+            background: white;
+        }
+        
+        .email-list-header {
+            display: flex;
+            background: var(--bg-secondary);
+            border-bottom: 2px solid var(--border-color);
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .email-column {
+            padding: 1rem;
+            border-right: 1px solid var(--border-color);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .email-column:last-child {
+            border-right: none;
+        }
+        
+        .email-column.resizable {
+            cursor: col-resize;
+        }
+        
+        .resize-handle {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: transparent;
+            cursor: col-resize;
+        }
+        
+        .resize-handle:hover {
+            background: var(--primary-color);
+        }
+        
+        .email-item {
+            border-bottom: 1px solid var(--border-color);
             cursor: pointer;
             transition: all 0.3s ease;
             background: white;
+        }
+        
+        .email-item:last-child {
+            border-bottom: none;
+        }
+        
+        .email-item:hover {
+            background: var(--bg-secondary);
+        }
+        
+        .email-row {
+            display: flex;
+            align-items: center;
+            padding: 1rem;
+        }
+        
+        .email-cell {
+            padding: 0.5rem;
+            border-right: 1px solid var(--border-color);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .email-cell:last-child {
+            border-right: none;
+        }
+        
+        .email-item.unread {
+            background: linear-gradient(90deg, rgba(0, 120, 212, 0.05) 0%, white 100%);
+        }
+        
+        .email-item.unread .email-cell {
+            font-weight: 600;
         }
         
         .email-item:hover {
@@ -340,6 +450,11 @@
         </button>
     </div>
     
+    <!-- Connection Status -->
+    <div id="connection-status" class="connection-status">
+        <i class="fas fa-wifi-slash"></i> Connecting...
+    </div>
+    
     <div class="main-container">
         <div class="row g-0">
             <!-- Sidebar -->
@@ -399,7 +514,15 @@
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- WebSocket JavaScript -->
+    <script src="/static/js/websocket.js"></script>
+    
     <script>
+        // Set user ID and hostname for WebSocket connection
+        window.userId = {{ user.id if user else 1 }};
+        window.hostname = '{{ hostname }}';
+        
         function switchLanguage(lang) {
             const currentUrl = new URL(window.location);
             currentUrl.searchParams.set('lang', lang);

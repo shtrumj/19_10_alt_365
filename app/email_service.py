@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from .database import User, Email
 from .models import EmailCreate
 from .email_delivery import email_delivery
+from .websocket_manager import manager
+from .email_parser import get_email_preview
 from typing import List, Optional
 import logging
 
@@ -38,6 +40,9 @@ class EmailService:
                 self.db.add(email_record)
                 self.db.commit()
                 self.db.refresh(email_record)
+                
+                # Send WebSocket notification to recipient
+                self._send_email_notification(recipient.id, email_record)
                 
                 logger.info(f"Email sent internally from user {sender_id} to {email_data.recipient_email}")
                 return email_record
@@ -125,6 +130,14 @@ class EmailService:
         if email:
             email.is_read = True
             self.db.commit()
+            
+            # Send WebSocket notification
+            self._send_email_update_notification(user_id, {
+                "email_id": email_id,
+                "action": "mark_as_read",
+                "is_read": True
+            })
+            
             return True
         return False
     
@@ -147,3 +160,40 @@ class EmailService:
             Email.id == email_id,
             (Email.sender_id == user_id) | (Email.recipient_id == user_id)
         ).first()
+    
+    def _send_email_notification(self, user_id: int, email: Email):
+        """Send WebSocket notification for new email"""
+        try:
+            # Get sender information
+            sender_email = "Unknown"
+            if email.sender:
+                sender_email = email.sender.email
+            elif email.external_sender:
+                sender_email = email.external_sender
+            
+            # Create email data for notification
+            email_data = {
+                "id": email.id,
+                "subject": email.subject,
+                "sender": sender_email,
+                "preview": get_email_preview(email.body, 100),
+                "is_read": email.is_read,
+                "created_at": email.created_at.isoformat()
+            }
+            
+            # Send notification asynchronously
+            import asyncio
+            asyncio.create_task(manager.send_email_notification(user_id, email_data))
+            logger.info(f"📧 WebSocket notification queued for user {user_id}: {email.subject}")
+            
+        except Exception as e:
+            logger.error(f"Error sending email notification: {e}")
+    
+    def _send_email_update_notification(self, user_id: int, update_data: dict):
+        """Send WebSocket notification for email update"""
+        try:
+            import asyncio
+            asyncio.create_task(manager.send_email_update(user_id, update_data))
+            logger.info(f"📧 Email update notification sent to user {user_id}")
+        except Exception as e:
+            logger.error(f"Error sending email update notification: {e}")

@@ -11,6 +11,8 @@ services:
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
       - DATABASE_URL=sqlite:///./email_system.db
       - LOGS_DIR=/app/logs
+      - HOSTNAME=owa.shtrum.com
+      - DOMAIN=owa.shtrum.com
     ports:
       - "25:25" # Expose SMTP port 25
     volumes:

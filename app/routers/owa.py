@@ -7,6 +7,8 @@ from ..auth import get_current_user_from_cookie
 from ..email_service import EmailService
 from ..models import EmailCreate
 from ..language import get_language, get_translation, get_direction, get_all_translations
+from ..email_parser import parse_email_content, get_email_preview
+from ..config import settings
 from typing import Optional, Union
 
 router = APIRouter(prefix="/owa", tags=["owa"])
@@ -20,6 +22,9 @@ def get_template_context(request: Request, **kwargs):
         "get_translation": get_translation,
         "get_direction": get_direction,
         "get_all_translations": get_all_translations,
+        "parse_email_content": parse_email_content,
+        "get_email_preview": get_email_preview,
+        "hostname": settings.HOSTNAME,              # Hostname for WebSocket connections
         **kwargs
     }
     return context
@@ -68,18 +73,35 @@ def owa_view_email(
     db: Session = Depends(get_db)
 ):
     """OWA View email page"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if isinstance(current_user, RedirectResponse):
         return current_user
+    
+    logger.info(f"📧 Viewing email {email_id}")
     
     email_service = EmailService(db)
     email = email_service.get_email_by_id(email_id, current_user.id)
     
     if not email:
+        logger.error(f"Email {email_id} not found")
         raise HTTPException(status_code=404, detail="Email not found")
+    
+    logger.info(f"Email subject: {email.subject}")
+    logger.debug(f"Email body length: {len(email.body)}")
+    logger.debug(f"Email body preview: {email.body[:200]}...")
+    
+    # Test email parsing
+    parsed_content = parse_email_content(email.body)
+    logger.info(f"Parsed email content: '{parsed_content}' (length: {len(parsed_content)})")
     
     # Mark as read if it's an inbox email
     if email.recipient_id == current_user.id and not email.is_read:
         email_service.mark_as_read(email_id, current_user.id)
+    
+    # Add parsed content to email object for template
+    email.parsed_content = parsed_content
     
     return templates.TemplateResponse("owa/email.html", get_template_context(
         request, 

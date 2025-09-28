@@ -4,14 +4,18 @@ from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 import asyncio
 from .database import create_tables, engine
-from .routers import auth, emails, owa, activesync, queue
+from .routers import auth, emails, owa, activesync, queue, debug, websocket
 from .smtp_server import start_smtp_server, stop_smtp_server
 from .queue_processor import queue_processor
 from .email_queue import Base as QueueBase
+from .logging_config import setup_logging
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    # Setup comprehensive logging
+    setup_logging()
+    
     create_tables()
     # Create queue tables
     QueueBase.metadata.create_all(bind=engine)
@@ -35,6 +39,8 @@ app.include_router(emails.router)
 app.include_router(owa.router)
 app.include_router(activesync.router)
 app.include_router(queue.router)
+app.include_router(debug.router)
+app.include_router(websocket.router)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

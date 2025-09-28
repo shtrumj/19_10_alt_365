@@ -193,6 +193,25 @@ class EmailHandler:
                 )
                 self.db.add(email_record)
                 self.db.commit()
+                self.db.refresh(email_record)
+                
+                # Send WebSocket notification to recipient
+                from .websocket_manager import manager
+                from .email_parser import get_email_preview
+                
+                # Create email data for notification
+                email_data = {
+                    "id": email_record.id,
+                    "subject": email_record.subject,
+                    "sender": sender,
+                    "preview": get_email_preview(email_record.body, 100),
+                    "is_read": email_record.is_read,
+                    "created_at": email_record.created_at.isoformat()
+                }
+                
+                # Send notification asynchronously
+                import asyncio
+                asyncio.create_task(manager.send_email_notification(recipient_user.id, email_data))
                 
                 # Log successful processing
                 smtp_logger.log_internal_email_received(sender, recipient, subject, len(data_content))
@@ -206,6 +225,7 @@ class EmailHandler:
                 })
                 
                 logger.info(f"✅ [{connection_id}] Email received from {sender} to {recipient} (external: True)")
+                logger.info(f"📧 WebSocket notification sent to user {recipient_user.id}")
                 return "250 OK"
             else:
                 smtp_logger.log_error("RECIPIENT_NOT_FOUND", f"Recipient {recipient} not found in system", {
