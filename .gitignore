@@ -68,6 +68,6 @@ monitor_*.py
 *_backup_*
 
 # Environment variables
-.env
+# .env  # Commented out to allow .env to be tracked
 .env.local
 .env.production
