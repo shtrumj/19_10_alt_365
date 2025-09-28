@@ -1,0 +1,201 @@
+{% extends "owa/base.html" %}
+
+{% block title %}{{ get_translation(request, 'dashboard') }} - {{ get_translation(request, 'title') }}{% endblock %}
+
+{% block content %}
+<div class="content-header">
+    <h1><i class="fas fa-tachometer-alt"></i> {{ get_translation(request, 'dashboard') }}</h1>
+    <div>
+        <a href="/owa/compose" class="btn btn-primary">
+            <i class="fas fa-edit"></i> {{ get_translation(request, 'compose') }}
+        </a>
+    </div>
+</div>
+
+<!-- Welcome Section -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-info" role="alert">
+            <h4 class="alert-heading"><i class="fas fa-info-circle"></i> {{ get_translation(request, 'welcome') }} {{ get_translation(request, 'title') }}!</h4>
+            <p>{{ get_translation(request, 'welcome_message') }} <strong>{{ user.full_name or user.username }}</strong>. {{ get_translation(request, 'welcome_instructions') }}</p>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mb-4">
+    <div class="col-md-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <i class="fas fa-inbox fa-3x text-primary"></i>
+                </div>
+                <h5 class="card-title">{{ get_translation(request, 'inbox') }}</h5>
+                <p class="card-text text-muted">{{ get_translation(request, 'inbox_description') }}</p>
+                <a href="/owa/inbox" class="btn btn-primary">
+                    <i class="fas fa-arrow-right"></i> {{ get_translation(request, 'view_inbox') }}
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <i class="fas fa-paper-plane fa-3x text-success"></i>
+                </div>
+                <h5 class="card-title">{{ get_translation(request, 'sent_items') }}</h5>
+                <p class="card-text text-muted">{{ get_translation(request, 'sent_items_description') }}</p>
+                <a href="/owa/inbox?folder=sent" class="btn btn-success">
+                    <i class="fas fa-arrow-right"></i> {{ get_translation(request, 'view_sent') }}
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <i class="fas fa-edit fa-3x text-warning"></i>
+                </div>
+                <h5 class="card-title">{{ get_translation(request, 'compose') }}</h5>
+                <p class="card-text text-muted">{{ get_translation(request, 'compose_description') }}</p>
+                <a href="/owa/compose" class="btn btn-warning">
+                    <i class="fas fa-arrow-right"></i> {{ get_translation(request, 'compose') }}
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Email Statistics -->
+<div class="row">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="fas fa-chart-bar text-primary"></i> {{ get_translation(request, 'email_statistics') }}</h5>
+            </div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-md-3">
+                        <div class="stats-card">
+                            <h3 id="inbox-count">-</h3>
+                            <p><i class="fas fa-inbox"></i> {{ get_translation(request, 'inbox_emails') }}</p>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stats-card" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+                            <h3 id="sent-count">-</h3>
+                            <p><i class="fas fa-paper-plane"></i> {{ get_translation(request, 'sent_emails') }}</p>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stats-card" style="background: linear-gradient(135deg, #ffc107 0%, #fd7e14 100%);">
+                            <h3 id="unread-count">-</h3>
+                            <p><i class="fas fa-envelope"></i> {{ get_translation(request, 'unread_emails') }}</p>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stats-card" style="background: linear-gradient(135deg, #6f42c1 0%, #e83e8c 100%);">
+                            <h3 id="total-count">-</h3>
+                            <p><i class="fas fa-envelope-open"></i> {{ get_translation(request, 'total_emails') }}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0">
+                <h5 class="mb-0"><i class="fas fa-clock text-primary"></i> {{ get_translation(request, 'recent_activity') }}</h5>
+            </div>
+            <div class="card-body">
+                <div id="recent-emails">
+                    <div class="text-center text-muted">
+                        <i class="fas fa-spinner fa-spin"></i> {{ get_translation(request, 'loading_recent_emails') }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Load email statistics
+async function loadStats() {
+    try {
+        const response = await fetch('/emails/stats/summary');
+        const data = await response.json();
+        
+        document.getElementById('inbox-count').textContent = data.inbox_count || 0;
+        document.getElementById('sent-count').textContent = data.sent_count || 0;
+        document.getElementById('unread-count').textContent = data.unread_count || 0;
+        document.getElementById('total-count').textContent = (data.inbox_count || 0) + (data.sent_count || 0);
+    } catch (error) {
+        console.error('Error loading stats:', error);
+        // Set default values
+        document.getElementById('inbox-count').textContent = '0';
+        document.getElementById('sent-count').textContent = '0';
+        document.getElementById('unread-count').textContent = '0';
+        document.getElementById('total-count').textContent = '0';
+    }
+}
+
+// Load recent emails
+async function loadRecentEmails() {
+    try {
+        const response = await fetch('/emails/?limit=5');
+        const emails = await response.json();
+        
+        const container = document.getElementById('recent-emails');
+        
+        if (emails.length === 0) {
+            container.innerHTML = `
+                <div class="text-center text-muted">
+                    <i class="fas fa-inbox fa-2x mb-3"></i>
+                    <p>{{ get_translation(request, 'no_emails_yet') }}. <a href="/owa/compose">{{ get_translation(request, 'compose_first_email') }}</a>!</p>
+                </div>
+            `;
+            return;
+        }
+        
+        container.innerHTML = emails.map(email => `
+            <div class="email-item ${email.is_read ? '' : 'unread'}" onclick="viewEmail(${email.id})">
+                <div class="email-subject">${email.subject}</div>
+                <div class="email-preview">${email.sender_email} → ${email.recipient_email}</div>
+                <div class="email-meta">
+                    <span><i class="fas fa-clock"></i> ${new Date(email.created_at).toLocaleString()}</span>
+                    ${!email.is_read ? '<span class="badge bg-primary">New</span>' : ''}
+                </div>
+            </div>
+        `).join('');
+    } catch (error) {
+        console.error('Error loading recent emails:', error);
+        document.getElementById('recent-emails').innerHTML = `
+            <div class="text-center text-muted">
+                <i class="fas fa-exclamation-triangle"></i> {{ get_translation(request, 'error_loading_emails') }}
+            </div>
+        `;
+    }
+}
+
+function viewEmail(emailId) {
+    window.location.href = '/owa/email/' + emailId;
+}
+
+// Load data when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    loadStats();
+    loadRecentEmails();
+});
+</script>
+{% endblock %}

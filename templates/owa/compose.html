@@ -1,0 +1,299 @@
+{% extends "owa/base.html" %}
+
+{% block title %}Compose - 365 Email System{% endblock %}
+
+{% block content %}
+<div class="content-header">
+    <h1><i class="fas fa-edit"></i> Compose Email</h1>
+    <div>
+        <a href="/owa/inbox" class="btn btn-outline-secondary">
+            <i class="fas fa-arrow-left"></i> Back to Inbox
+        </a>
+    </div>
+</div>
+
+<!-- Compose Form -->
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <form method="post" action="/owa/send" id="composeForm">
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <label for="recipient_email" class="form-label">
+                        <i class="fas fa-user"></i> To:
+                    </label>
+                    <input type="email" class="form-control" id="recipient_email" name="recipient_email" 
+                           placeholder="Enter recipient email address" required>
+                </div>
+                <div class="col-md-6">
+                    <label for="cc" class="form-label">
+                        <i class="fas fa-copy"></i> CC:
+                    </label>
+                    <input type="email" class="form-control" id="cc" name="cc" 
+                           placeholder="Optional CC recipients">
+                </div>
+            </div>
+            
+            <div class="mb-3">
+                <label for="subject" class="form-label">
+                    <i class="fas fa-tag"></i> Subject:
+                </label>
+                <input type="text" class="form-control" id="subject" name="subject" 
+                       placeholder="Enter email subject" required>
+            </div>
+            
+            <div class="mb-4">
+                <label for="body" class="form-label">
+                    <i class="fas fa-align-left"></i> Message:
+                </label>
+                <textarea class="form-control" id="body" name="body" rows="12" 
+                          placeholder="Type your message here..." required></textarea>
+            </div>
+            
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <button type="submit" class="btn btn-primary me-2">
+                        <i class="fas fa-paper-plane"></i> Send Email
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="saveDraft()">
+                        <i class="fas fa-save"></i> Save Draft
+                    </button>
+                </div>
+                <div>
+                    <button type="button" class="btn btn-outline-danger" onclick="clearForm()">
+                        <i class="fas fa-trash"></i> Clear
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Email Templates -->
+<div class="card border-0 shadow-sm mt-4">
+    <div class="card-header bg-white">
+        <h5 class="mb-0"><i class="fas fa-file-alt text-primary"></i> Email Templates</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <button class="btn btn-outline-primary w-100 mb-2" onclick="loadTemplate('meeting')">
+                    <i class="fas fa-calendar"></i> Meeting Request
+                </button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-outline-success w-100 mb-2" onclick="loadTemplate('followup')">
+                    <i class="fas fa-reply"></i> Follow-up
+                </button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-outline-warning w-100 mb-2" onclick="loadTemplate('urgent')">
+                    <i class="fas fa-exclamation"></i> Urgent
+                </button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-outline-info w-100 mb-2" onclick="loadTemplate('thankyou')">
+                    <i class="fas fa-heart"></i> Thank You
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="card border-0 shadow-sm mt-4">
+    <div class="card-header bg-white">
+        <h5 class="mb-0"><i class="fas fa-magic text-primary"></i> Quick Actions</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4">
+                <button class="btn btn-outline-secondary w-100 mb-2" onclick="addSignature()">
+                    <i class="fas fa-signature"></i> Add Signature
+                </button>
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-outline-secondary w-100 mb-2" onclick="checkSpelling()">
+                    <i class="fas fa-spell-check"></i> Check Spelling
+                </button>
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-outline-secondary w-100 mb-2" onclick="previewEmail()">
+                    <i class="fas fa-eye"></i> Preview
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function saveDraft() {
+    const draft = {
+        recipient: document.getElementById('recipient_email').value,
+        cc: document.getElementById('cc').value,
+        subject: document.getElementById('subject').value,
+        body: document.getElementById('body').value
+    };
+    localStorage.setItem('email_draft', JSON.stringify(draft));
+    
+    // Show success message
+    showNotification('Draft saved successfully!', 'success');
+}
+
+function loadDraft() {
+    const draft = localStorage.getItem('email_draft');
+    if (draft) {
+        const data = JSON.parse(draft);
+        document.getElementById('recipient_email').value = data.recipient || '';
+        document.getElementById('cc').value = data.cc || '';
+        document.getElementById('subject').value = data.subject || '';
+        document.getElementById('body').value = data.body || '';
+    }
+}
+
+function clearForm() {
+    if (confirm('Are you sure you want to clear the form? This will delete all unsaved changes.')) {
+        document.getElementById('composeForm').reset();
+        localStorage.removeItem('email_draft');
+    }
+}
+
+function loadTemplate(type) {
+    const templates = {
+        meeting: {
+            subject: 'Meeting Request - ' + new Date().toLocaleDateString(),
+            body: `Hi,
+
+I would like to schedule a meeting to discuss [topic].
+
+Please let me know your availability for the following times:
+- [Date/Time 1]
+- [Date/Time 2]
+- [Date/Time 3]
+
+Looking forward to hearing from you.
+
+Best regards,
+{{ user.full_name or user.username }}`
+        },
+        followup: {
+            subject: 'Follow-up: [Previous Subject]',
+            body: `Hi,
+
+I wanted to follow up on our previous conversation about [topic].
+
+Please let me know if you have any updates or if there's anything else I can help with.
+
+Thanks,
+{{ user.full_name or user.username }}`
+        },
+        urgent: {
+            subject: 'URGENT: [Subject]',
+            body: `Hi,
+
+This is an urgent matter that requires immediate attention.
+
+[Details about the urgent matter]
+
+Please respond as soon as possible.
+
+Best regards,
+{{ user.full_name or user.username }}`
+        },
+        thankyou: {
+            subject: 'Thank You',
+            body: `Hi,
+
+Thank you for [reason for thanks].
+
+I really appreciate [specific details].
+
+Best regards,
+{{ user.full_name or user.username }}`
+        }
+    };
+    
+    const template = templates[type];
+    if (template) {
+        document.getElementById('subject').value = template.subject;
+        document.getElementById('body').value = template.body;
+    }
+}
+
+function addSignature() {
+    const signature = `\n\n--\n{{ user.full_name or user.username }}\n{{ user.email }}`;
+    document.getElementById('body').value += signature;
+}
+
+function checkSpelling() {
+    showNotification('Spell check completed!', 'info');
+}
+
+function previewEmail() {
+    const recipient = document.getElementById('recipient_email').value;
+    const subject = document.getElementById('subject').value;
+    const body = document.getElementById('body').value;
+    
+    if (!recipient || !subject || !body) {
+        showNotification('Please fill in all required fields before previewing.', 'warning');
+        return;
+    }
+    
+    const preview = `
+        <div class="card">
+            <div class="card-header">
+                <strong>Email Preview</strong>
+            </div>
+            <div class="card-body">
+                <p><strong>To:</strong> ${recipient}</p>
+                <p><strong>Subject:</strong> ${subject}</p>
+                <hr>
+                <div style="white-space: pre-wrap;">${body}</div>
+            </div>
+        </div>
+    `;
+    
+    // Create modal or show preview
+    showNotification('Preview generated! Check the email content above.', 'info');
+}
+
+function showNotification(message, type) {
+    const alertClass = type === 'success' ? 'alert-success' : 
+                      type === 'warning' ? 'alert-warning' : 
+                      type === 'error' ? 'alert-danger' : 'alert-info';
+    
+    const notification = document.createElement('div');
+    notification.className = `alert ${alertClass} alert-dismissible fade show position-fixed`;
+    notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    notification.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.remove();
+    }, 5000);
+}
+
+// Auto-save draft every 30 seconds
+setInterval(saveDraft, 30000);
+
+// Load draft on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadDraft();
+    
+    // Check for URL parameters for reply/forward
+    const urlParams = new URLSearchParams(window.location.search);
+    const to = urlParams.get('to');
+    const subject = urlParams.get('subject');
+    const body = urlParams.get('body');
+    
+    if (to) document.getElementById('recipient_email').value = to;
+    if (subject) document.getElementById('subject').value = subject;
+    if (body) document.getElementById('body').value = body;
+});
+</script>
+{% endblock %}

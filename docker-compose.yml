@@ -1,0 +1,67 @@
+version: "3.8"
+
+services:
+  # 365 Email System
+  email-system:
+    build: .
+    container_name: 365-email-system
+    restart: unless-stopped
+    user: "0:0" # Run as root for port 25 access
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
+      - DATABASE_URL=sqlite:///./email_system.db
+      - LOGS_DIR=/app/logs
+    ports:
+      - "25:25" # Expose SMTP port 25
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - email-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: 365-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - email-system
+    networks:
+      - email-network
+
+  # Certbot for SSL certificates
+  certbot:
+    image: certbot/dns-cloudflare
+    container_name: 365-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+      - ./certbot-setup.sh:/certbot-setup.sh:ro
+    entrypoint: /certbot-setup.sh
+    environment:
+      - CLOUDFLARE_EMAIL=shtrumj@gmail.com
+      - CLOUDFLARE_API_KEY=xH0xDfYXM0zjsvZIuGtFB4ih-sDwOUrJFIt2I-iz
+    networks:
+      - email-network
+
+networks:
+  email-network:
+    driver: bridge
+
+volumes:
+  email-data:
+  email-logs:
