@@ -15,6 +15,7 @@ services:
       - DOMAIN=owa.shtrum.com
     ports:
       - "25:25" # Expose SMTP port 25
+      - "8004:8004" # Expose standalone WebSocket server
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

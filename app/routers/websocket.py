@@ -9,6 +9,7 @@ from ..auth import get_current_user_from_cookie
 from ..websocket_manager import manager
 from ..email_parser import get_email_preview
 import logging
+import json
 
 router = APIRouter(prefix="/ws", tags=["websocket"])
 logger = logging.getLogger(__name__)
@@ -16,9 +17,17 @@ logger = logging.getLogger(__name__)
 @router.websocket("/email-notifications/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     """WebSocket endpoint for real-time email notifications"""
-    await manager.connect(websocket, user_id)
-    
     try:
+        await websocket.accept()
+        await manager.connect(websocket, user_id)
+        
+        # Send connection confirmation
+        await websocket.send_text(json.dumps({
+            "type": "connection_established",
+            "user_id": user_id,
+            "message": "WebSocket connection established successfully"
+        }))
+        
         while True:
             # Keep connection alive and handle incoming messages
             data = await websocket.receive_text()
@@ -30,6 +39,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
         logger.info(f"🔗 WebSocket disconnected for user {user_id}")
+    except Exception as e:
+        logger.error(f"🔗 WebSocket error for user {user_id}: {e}")
+        manager.disconnect(websocket, user_id)
 
 @router.get("/test-notification/{user_id}")
 async def test_notification(user_id: int):

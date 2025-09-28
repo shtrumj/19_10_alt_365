@@ -18,13 +18,30 @@ class EmailWebSocket {
       // Use the hostname from the template or fallback to current hostname
       const hostname = window.hostname || window.location.hostname;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+
+      // Use WebSocket through Nginx proxy on port 443 (HTTPS)
       const wsUrl = `${protocol}//${hostname}/ws/email-notifications/${this.userId}`;
 
-      console.log("🔗 Connecting to WebSocket:", wsUrl);
+      console.log("🔗 [WebSocket] Starting connection process...");
+      console.log("🔗 [WebSocket] Hostname:", hostname);
+      console.log("🔗 [WebSocket] Protocol:", protocol);
+      console.log("🔗 [WebSocket] User ID:", this.userId);
+      console.log("🔗 [WebSocket] Full URL:", wsUrl);
+      console.log("🔗 [WebSocket] Current location:", window.location.href);
+      console.log("🔗 [WebSocket] User agent:", navigator.userAgent);
+
       this.ws = new WebSocket(wsUrl);
+      console.log("🔗 [WebSocket] WebSocket object created:", this.ws);
 
       this.ws.onopen = (event) => {
-        console.log("✅ WebSocket connected");
+        console.log("✅ [WebSocket] Connection opened successfully!");
+        console.log("✅ [WebSocket] Event details:", {
+          type: event.type,
+          target: event.target,
+          currentTarget: event.currentTarget,
+          timeStamp: event.timeStamp,
+          isTrusted: event.isTrusted,
+        });
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.reconnectDelay = 1000;
@@ -32,16 +49,60 @@ class EmailWebSocket {
       };
 
       this.ws.onmessage = (event) => {
+        console.log("📨 [WebSocket] Message received:", {
+          data: event.data,
+          type: event.type,
+          origin: event.origin,
+          timeStamp: event.timeStamp,
+        });
         try {
           const data = JSON.parse(event.data);
+          console.log("📨 [WebSocket] Parsed message data:", data);
           this.handleMessage(data);
         } catch (error) {
-          console.error("❌ Error parsing WebSocket message:", error);
+          console.error("❌ [WebSocket] Error parsing message:", {
+            error: error,
+            message: error.message,
+            stack: error.stack,
+            rawData: event.data,
+          });
         }
       };
 
       this.ws.onclose = (event) => {
-        console.log("🔌 WebSocket disconnected:", event.code, event.reason);
+        console.log("🔌 [WebSocket] Connection closed:", {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          type: event.type,
+          timeStamp: event.timeStamp,
+        });
+
+        // Log specific close codes
+        const closeCodeMessages = {
+          1000: "Normal closure",
+          1001: "Going away",
+          1002: "Protocol error",
+          1003: "Unsupported data",
+          1004: "Reserved",
+          1005: "No status received",
+          1006: "Abnormal closure",
+          1007: "Invalid frame payload data",
+          1008: "Policy violation",
+          1009: "Message too big",
+          1010: "Mandatory extension",
+          1011: "Internal error",
+          1012: "Service restart",
+          1013: "Try again later",
+          1014: "Bad gateway",
+          1015: "TLS handshake",
+        };
+
+        console.log(
+          "🔌 [WebSocket] Close code meaning:",
+          closeCodeMessages[event.code] || "Unknown code"
+        );
+
         this.isConnected = false;
         this.showConnectionStatus("disconnected");
 
@@ -50,16 +111,41 @@ class EmailWebSocket {
           event.code !== 1000 &&
           this.reconnectAttempts < this.maxReconnectAttempts
         ) {
+          console.log("🔄 [WebSocket] Will attempt to reconnect...");
           this.scheduleReconnect();
+        } else {
+          console.log("🔄 [WebSocket] No more reconnection attempts");
         }
       };
 
       this.ws.onerror = (error) => {
-        console.error("❌ WebSocket error:", error);
+        console.error("❌ [WebSocket] Error occurred:", {
+          error: error,
+          type: error.type,
+          target: error.target,
+          currentTarget: error.currentTarget,
+          timeStamp: error.timeStamp,
+          isTrusted: error.isTrusted,
+        });
+
+        // Log WebSocket state
+        console.error("❌ [WebSocket] WebSocket state:", {
+          readyState: this.ws.readyState,
+          url: this.ws.url,
+          protocol: this.ws.protocol,
+          extensions: this.ws.extensions,
+          bufferedAmount: this.ws.bufferedAmount,
+        });
+
         this.showConnectionStatus("error");
       };
     } catch (error) {
-      console.error("❌ Error creating WebSocket connection:", error);
+      console.error("❌ [WebSocket] Error creating WebSocket connection:", {
+        error: error,
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+      });
     }
   }
 
@@ -67,13 +153,25 @@ class EmailWebSocket {
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1); // Exponential backoff
 
-    console.log(
-      `🔄 Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`
-    );
+    console.log("🔄 [WebSocket] Scheduling reconnection:", {
+      attempt: this.reconnectAttempts,
+      maxAttempts: this.maxReconnectAttempts,
+      delay: delay,
+      isConnected: this.isConnected,
+      readyState: this.ws ? this.ws.readyState : "No WebSocket object",
+    });
 
     setTimeout(() => {
+      console.log("🔄 [WebSocket] Reconnection timeout triggered:", {
+        isConnected: this.isConnected,
+        readyState: this.ws ? this.ws.readyState : "No WebSocket object",
+      });
+
       if (!this.isConnected) {
+        console.log("🔄 [WebSocket] Starting reconnection...");
         this.connect();
+      } else {
+        console.log("🔄 [WebSocket] Already connected, skipping reconnection");
       }
     }, delay);
   }
