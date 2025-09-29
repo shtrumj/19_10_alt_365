@@ -1,0 +1,299 @@
+{% extends "owa/base.html" %}
+
+{% block title %}Outlook Health Monitor - Admin{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-12">
+            <h2 class="mb-4">
+                <i class="fas fa-heartbeat text-success"></i>
+                Outlook Health Monitor
+                <small class="text-muted">- Real-time Connection Monitoring</small>
+            </h2>
+            
+            <!-- Health Status Cards -->
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="card-title" id="active-connections">-</h4>
+                                    <p class="card-text">Active Connections</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-plug fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-3">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="card-title" id="total-tracked">-</h4>
+                                    <p class="card-text">Total Tracked</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-chart-line fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-3">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="card-title" id="recent-issues">-</h4>
+                                    <p class="card-text">Recent Issues</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-exclamation-triangle fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-3">
+                    <div class="card bg-danger text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="card-title" id="critical-issues">-</h4>
+                                    <p class="card-text">Critical Issues</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-fire fa-2x"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Troubleshooting Tools -->
+            <div class="row mb-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5><i class="fas fa-tools"></i> Outlook Troubleshooting Tools</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="card border-success">
+                                        <div class="card-body text-center">
+                                            <i class="fas fa-download fa-3x text-success mb-3"></i>
+                                            <h6>Registry Fix</h6>
+                                            <p class="small">Download registry fix for Outlook 2021</p>
+                                            <a href="/outlook_2021_registry_fix.reg" class="btn btn-success btn-sm" download>
+                                                <i class="fas fa-download"></i> Download .reg
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="col-md-4">
+                                    <div class="card border-info">
+                                        <div class="card-body text-center">
+                                            <i class="fas fa-file-code fa-3x text-info mb-3"></i>
+                                            <h6>Local XML</h6>
+                                            <p class="small">Backup Autodiscover XML file</p>
+                                            <a href="/outlook_2021_local_autodiscover.xml" class="btn btn-info btn-sm" download>
+                                                <i class="fas fa-download"></i> Download XML
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="col-md-4">
+                                    <div class="card border-warning">
+                                        <div class="card-body text-center">
+                                            <i class="fas fa-book fa-3x text-warning mb-3"></i>
+                                            <h6>Setup Guide</h6>
+                                            <p class="small">Complete Outlook 2021 setup guide</p>
+                                            <a href="/OUTLOOK_2021_SETUP_GUIDE.md" class="btn btn-warning btn-sm" download>
+                                                <i class="fas fa-download"></i> Download Guide
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Health Issues Log -->
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5><i class="fas fa-list-alt"></i> Recent Health Issues</h5>
+                            <div>
+                                <button class="btn btn-sm btn-secondary" onclick="refreshHealthData()">
+                                    <i class="fas fa-sync-alt"></i> Refresh
+                                </button>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="checkbox" id="auto-refresh" checked>
+                                    <label class="form-check-label" for="auto-refresh">Auto-refresh</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-sm" id="health-issues-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Time</th>
+                                            <th>Severity</th>
+                                            <th>Issue Type</th>
+                                            <th>Client</th>
+                                            <th>Details</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="health-issues-tbody">
+                                        <tr>
+                                            <td colspan="5" class="text-center text-muted">
+                                                <i class="fas fa-spinner fa-spin"></i> Loading health data...
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Connection Pattern Analysis -->
+            <div class="row mt-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5><i class="fas fa-chart-bar"></i> Connection Pattern Analysis</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="connection-patterns">
+                                <p class="text-muted">Connection pattern analysis will appear here...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let healthRefreshInterval;
+
+function refreshHealthData() {
+    fetch('/owa/admin/outlook-health/data')
+        .then(response => response.json())
+        .then(data => {
+            updateHealthCards(data.connection_stats);
+            updateHealthIssuesTable(data.health_issues);
+            updateConnectionPatterns(data.health_summary);
+        })
+        .catch(error => {
+            console.error('Error fetching health data:', error);
+        });
+}
+
+function updateHealthCards(stats) {
+    document.getElementById('active-connections').textContent = stats.active_connections;
+    document.getElementById('total-tracked').textContent = stats.total_tracked;
+    document.getElementById('recent-issues').textContent = stats.recent_issues;
+    document.getElementById('critical-issues').textContent = stats.critical_issues;
+}
+
+function updateHealthIssuesTable(issues) {
+    const tbody = document.getElementById('health-issues-tbody');
+    
+    if (issues.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="text-center text-success">
+                    <i class="fas fa-check-circle"></i> No health issues detected
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    tbody.innerHTML = issues.reverse().slice(0, 20).map(issue => {
+        const time = new Date(issue.timestamp * 1000).toLocaleString();
+        const severityClass = issue.severity === 'high' ? 'danger' : 
+                             issue.severity === 'medium' ? 'warning' : 'info';
+        const client = issue.data && issue.data.client ? issue.data.client.split(':')[0] : 'Unknown';
+        
+        return `
+            <tr>
+                <td>${time}</td>
+                <td><span class="badge badge-${severityClass}">${issue.severity}</span></td>
+                <td>${issue.issue_type}</td>
+                <td>${client}</td>
+                <td><small>${JSON.stringify(issue.data, null, 2).substring(0, 100)}...</small></td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function updateConnectionPatterns(healthSummary) {
+    const patternsDiv = document.getElementById('connection-patterns');
+    
+    if (healthSummary.error_patterns) {
+        let html = '<div class="row">';
+        
+        Object.entries(healthSummary.error_patterns).forEach(([pattern, data]) => {
+            const percentage = data.threshold > 0 ? (data.count / data.threshold * 100).toFixed(1) : 0;
+            const statusClass = percentage > 80 ? 'danger' : percentage > 50 ? 'warning' : 'success';
+            
+            html += `
+                <div class="col-md-3 mb-3">
+                    <div class="card border-${statusClass}">
+                        <div class="card-body text-center">
+                            <h6>${pattern.replace('_', ' ').toUpperCase()}</h6>
+                            <div class="progress mb-2">
+                                <div class="progress-bar bg-${statusClass}" style="width: ${percentage}%"></div>
+                            </div>
+                            <small>${data.count}/${data.threshold} (${percentage}%)</small>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        patternsDiv.innerHTML = html;
+    }
+}
+
+// Auto-refresh functionality
+document.getElementById('auto-refresh').addEventListener('change', function(e) {
+    if (e.target.checked) {
+        healthRefreshInterval = setInterval(refreshHealthData, 10000); // Every 10 seconds
+    } else {
+        clearInterval(healthRefreshInterval);
+    }
+});
+
+// Initial load
+refreshHealthData();
+healthRefreshInterval = setInterval(refreshHealthData, 10000);
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', function() {
+    clearInterval(healthRefreshInterval);
+});
+</script>
+{% endblock %}

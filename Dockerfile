@@ -21,10 +21,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create logs directory and set permissions
-RUN mkdir -p logs && chmod 777 logs
+# Copy troubleshooting files to the app directory
+COPY outlook_2021_registry_fix.reg .
+COPY outlook_2021_local_autodiscover.xml .
+COPY OUTLOOK_2021_SETUP_GUIDE.md .
 
-# Create SSL directory and generate certificates
+# Create and set permissions for logs and ssl directories
+RUN mkdir -p logs && chmod 777 logs
 RUN mkdir -p ssl && python generate_ssl_cert.py
 
 # Create non-root user

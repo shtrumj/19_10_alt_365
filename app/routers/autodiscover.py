@@ -6,7 +6,7 @@ import logging
 import uuid
 from ..diagnostic_logger import (
     log_autodiscover, outlook_diagnostics, log_autodiscover_request,
-    log_outlook_connection_issue
+    log_outlook_connection_issue, log_outlook_health
 )
 
 router = APIRouter()
@@ -28,12 +28,22 @@ async def autodiscover(request: Request):
         logger.info("Autodiscover POST from %s UA=%s", request.client.host if request.client else "?", user_agent)
         logger.debug("Autodiscover body: %s", body.decode('utf-8', errors='ignore')[:2000])
         
-        # Log this as an Outlook phase
+        # Log this as an Outlook phase with health monitoring
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # Enhanced health monitoring
+        log_outlook_health("autodiscover_request", client_ip, user_agent, {
+            "host": host,
+            "content_length": len(body),
+            "is_outlook": "outlook" in user_agent.lower(),
+            "request_id": request_id
+        })
+        
         outlook_diagnostics.log_outlook_phase("autodiscover_xml_request", {
             "request_id": request_id,
             "host": host,
             "user_agent": user_agent,
-            "client_ip": request.client.host if request.client else "unknown",
+            "client_ip": client_ip,
             "content_length": len(body)
         })
         log_autodiscover("request", {
@@ -87,10 +97,9 @@ async def autodiscover(request: Request):
     domain = requested_email.split('@')[1] if requested_email and '@' in requested_email else host
     user_part = requested_email.split('@')[0] if requested_email and '@' in requested_email else 'user'
     
-    xml = f"""
-<?xml version="1.0" encoding="utf-8"?>
-<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
-  <Response>
+    xml = f"""<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
     <ErrorCode>NoError</ErrorCode>
     <User>
       <DisplayName>{display_name}</DisplayName>
@@ -109,15 +118,53 @@ async def autodiscover(request: Request):
         <MailboxDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn={user_part}</MailboxDN>
         <ServerDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Configuration/cn=Servers/cn={exch_server}</ServerDN>
         <ServerVersion>15.01.2507.027</ServerVersion>
+        <ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="2507" MinorBuildNumber="27" Version="Exchange2016" />
         <AD>owa.shtrum.com</AD>
+        <NetworkRequirements>On</NetworkRequirements>
+        <AddressBookNetworkRequirements>On</AddressBookNetworkRequirements>
         <EwsUrl>{ews_url}</EwsUrl>
         <EcpUrl>{owa_url}</EcpUrl>
+        <EmwsUrl>{ews_url}</EmwsUrl>
+        <SharingUrl>{owa_url}/sharing</SharingUrl>
+        <EcpUrl-um>{owa_url}/ecp/um</EcpUrl-um>
+        <EcpUrl-aggr>{owa_url}/ecp/aggr</EcpUrl-aggr>
+        <EcpUrl-mt>{owa_url}/ecp/mt</EcpUrl-mt>
+        <EcpUrl-ret>{owa_url}/ecp/ret</EcpUrl-ret>
+        <EcpUrl-sms>{owa_url}/ecp/sms</EcpUrl-sms>
+        <EcpUrl-publish>{owa_url}/ecp/publish</EcpUrl-publish>
+        <EcpUrl-photo>{owa_url}/ecp/photo</EcpUrl-photo>
+        <EcpUrl-connect>{owa_url}/ecp/connect</EcpUrl-connect>
+        <EcpUrl-tm>{owa_url}/ecp/tm</EcpUrl-tm>
+        <EcpUrl-tmCreating>{owa_url}/ecp/tmCreating</EcpUrl-tmCreating>
+        <EcpUrl-tmHiding>{owa_url}/ecp/tmHiding</EcpUrl-tmHiding>
+        <EcpUrl-tmEditing>{owa_url}/ecp/tmEditing</EcpUrl-tmEditing>
+        <EcpUrl-extinstall>{owa_url}/ecp/extinstall</EcpUrl-extinstall>
+        <PublicFolderServer>{exch_server}</PublicFolderServer>
+        <PublicFolderServerDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Configuration/cn=Servers/cn={exch_server}</PublicFolderServerDN>
+        <ActiveDirectoryServer>owa.shtrum.com</ActiveDirectoryServer>
+        <ReferralDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)</ReferralDN>
+        <ExchangeRpcUrl>https://{host}/rpc/rpcproxy.dll</ExchangeRpcUrl>
+        <EwsPartnerUrl>{ews_url}</EwsPartnerUrl>
+        <LoginName>yonatan@shtrum.com</LoginName>
+        <MSOnline>false</MSOnline>
+        <MailboxDNEx>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn={user_part}</MailboxDNEx>
+        <Database>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Configuration/cn=Servers/cn={exch_server}/cn=InformationStore/cn=First Storage Group/cn=Mailbox Store ({exch_server})</Database>
+        <RoutingType>SMTP</RoutingType>
+        <SmtpAddress>yonatan@shtrum.com</SmtpAddress>
+        <LegacyDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn={user_part}</LegacyDN>
+        <DeploymentId>00000000-0000-0000-0000-000000000000</DeploymentId>
+        <NetworkLocation>Inside</NetworkLocation>
         <Internal>
           <Url>{mapi_server_url}</Url>
           <EwsUrl>{ews_url}</EwsUrl>
           <OOFUrl>{owa_url}/oof</OOFUrl>
           <UMUrl>{owa_url}/um</UMUrl>
           <OABUrl>https://{host}/oab/oab.xml</OABUrl>
+          <ServerExclusiveConnect>On</ServerExclusiveConnect>
+          <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+          <EwsPartnerUrl>{ews_url}</EwsPartnerUrl>
+          <CertPrincipalName>msstd:{exch_server}</CertPrincipalName>
+          <GroupingInformation>Exchange</GroupingInformation>
         </Internal>
         <External>
           <Url>{mapi_server_url}</Url>
@@ -125,7 +172,68 @@ async def autodiscover(request: Request):
           <OOFUrl>{owa_url}/oof</OOFUrl>
           <UMUrl>{owa_url}/um</UMUrl>
           <OABUrl>https://{host}/oab/oab.xml</OABUrl>
+          <ServerExclusiveConnect>On</ServerExclusiveConnect>
+          <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+          <EwsPartnerUrl>{ews_url}</EwsPartnerUrl>
+          <CertPrincipalName>msstd:{exch_server}</CertPrincipalName>
+          <GroupingInformation>Exchange</GroupingInformation>
         </External>
+        <AlternateMailboxes/>
+        <MailboxSmtpAddress>yonatan@shtrum.com</MailboxSmtpAddress>
+        <SpamFilteringEnabled>false</SpamFilteringEnabled>
+        <PrimarySmtpAddress>yonatan@shtrum.com</PrimarySmtpAddress>
+        <CrossOrganizationSharingEnabled>false</CrossOrganizationSharingEnabled>
+        <FreeBusyViewType>None</FreeBusyViewType>
+        <IsGCenabled>false</IsGCenabled>
+        <BisDirSyncEnabled>false</BisDirSyncEnabled>
+        <IsOrgPersonEnabled>false</IsOrgPersonEnabled>
+        <IsMixedMode>false</IsMixedMode>
+        <IsDehydratedEnabled>false</IsDehydratedEnabled>
+        <IsTenantToTenantMigrationEnabled>false</IsTenantToTenantMigrationEnabled>
+        <SiteMailboxCreationURL>{owa_url}/ecp/siteMailbox</SiteMailboxCreationURL>
+        <DomainRequired>false</DomainRequired>
+        <DomainController>owa.shtrum.com</DomainController>
+        <AuthRequired>true</AuthRequired>
+        <AuthPackage>Ntlm</AuthPackage>
+        <UsePrincipalName>false</UsePrincipalName>
+        <ExchangeVersion>15.01.2507.027</ExchangeVersion>
+        <MapiHttpEnabled>true</MapiHttpEnabled>
+        <EncryptionRequired>false</EncryptionRequired>
+        <ExternalHostname>{exch_server}</ExternalHostname>
+        <ExternalUrl>{mapi_server_url}</ExternalUrl>
+        <InternalHostname>{exch_server}</InternalHostname>
+        <InternalUrl>{mapi_server_url}</InternalUrl>
+        <TTL>1</TTL>
+        <InternalPop3Connections>
+          <Hostname>{exch_server}</Hostname>
+          <Port>995</Port>
+          <EncryptionMethod>SSL</EncryptionMethod>
+        </InternalPop3Connections>
+        <InternalImap4Connections>
+          <Hostname>{exch_server}</Hostname>
+          <Port>993</Port>
+          <EncryptionMethod>SSL</EncryptionMethod>
+        </InternalImap4Connections>
+        <InternalSmtpConnections>
+          <Hostname>{exch_server}</Hostname>
+          <Port>587</Port>
+          <EncryptionMethod>TLS</EncryptionMethod>
+        </InternalSmtpConnections>
+        <ExternalPop3Connections>
+          <Hostname>{exch_server}</Hostname>
+          <Port>995</Port>
+          <EncryptionMethod>SSL</EncryptionMethod>
+        </ExternalPop3Connections>
+        <ExternalImap4Connections>
+          <Hostname>{exch_server}</Hostname>
+          <Port>993</Port>
+          <EncryptionMethod>SSL</EncryptionMethod>
+        </ExternalImap4Connections>
+        <ExternalSmtpConnections>
+          <Hostname>{exch_server}</Hostname>
+          <Port>587</Port>
+          <EncryptionMethod>TLS</EncryptionMethod>
+        </ExternalSmtpConnections>
       </Protocol>
       <Protocol>
         <Type>EXPR</Type>

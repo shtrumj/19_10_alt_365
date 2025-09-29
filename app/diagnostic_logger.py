@@ -250,3 +250,98 @@ def create_debug_summary() -> str:
     _write_json_line("diagnostics/debug_summary.log", summary)
     
     return json.dumps(summary, indent=2)
+
+def log_oab(event: str, data: Dict[str, Any] = None):
+    """Log OAB (Offline Address Book) events"""
+    _write_json_line("web/oab/oab.log", {"event": event, **(data or {})})
+
+class OutlookHealthMonitor:
+    """Monitor Outlook connection health and detect issues proactively"""
+    
+    def __init__(self):
+        self.connection_states = {}
+        self.error_patterns = {
+            "autodiscover_loop": {"count": 0, "threshold": 10, "window": 300},
+            "mapi_timeout": {"count": 0, "threshold": 5, "window": 60},
+            "auth_failures": {"count": 0, "threshold": 3, "window": 120},
+            "ssl_errors": {"count": 0, "threshold": 2, "window": 60}
+        }
+    
+    def track_connection_attempt(self, client_ip: str, user_agent: str, phase: str):
+        """Track Outlook connection attempts and detect patterns"""
+        key = f"{client_ip}:{user_agent}"
+        current_time = time.time()
+        
+        if key not in self.connection_states:
+            self.connection_states[key] = {
+                "first_seen": current_time,
+                "last_seen": current_time,
+                "phases": [],
+                "success_count": 0,
+                "error_count": 0
+            }
+        
+        state = self.connection_states[key]
+        state["last_seen"] = current_time
+        state["phases"].append({"phase": phase, "timestamp": current_time})
+        
+        # Keep only recent phases (last 10 minutes)
+        cutoff = current_time - 600
+        state["phases"] = [p for p in state["phases"] if p["timestamp"] > cutoff]
+        
+        # Detect connection loops
+        if len(state["phases"]) > 10:
+            recent_phases = [p["phase"] for p in state["phases"][-10:]]
+            if recent_phases.count("autodiscover_request") >= 8:
+                self.log_health_issue("autodiscover_loop", {
+                    "client": key,
+                    "phase_count": len(recent_phases),
+                    "duration": current_time - state["phases"][-10]["timestamp"]
+                })
+    
+    def log_health_issue(self, issue_type: str, data: Dict[str, Any]):
+        """Log detected health issues"""
+        _write_json_line("outlook/health_issues.log", {
+            "issue_type": issue_type,
+            "timestamp": time.time(),
+            "data": data,
+            "severity": self._get_severity(issue_type)
+        })
+    
+    def _get_severity(self, issue_type: str) -> str:
+        severity_map = {
+            "autodiscover_loop": "high",
+            "mapi_timeout": "medium",
+            "auth_failures": "high",
+            "ssl_errors": "high",
+            "connection_stuck": "medium"
+        }
+        return severity_map.get(issue_type, "low")
+    
+    def get_health_summary(self) -> Dict[str, Any]:
+        """Get current health summary for dashboard"""
+        active_connections = len([c for c in self.connection_states.values() 
+                                if time.time() - c["last_seen"] < 300])
+        
+        return {
+            "active_connections": active_connections,
+            "total_tracked": len(self.connection_states),
+            "error_patterns": self.error_patterns,
+            "timestamp": time.time()
+        }
+
+# Global health monitor instance
+outlook_health = OutlookHealthMonitor()
+
+def log_outlook_health(phase: str, client_ip: str = None, user_agent: str = None, data: Dict[str, Any] = None):
+    """Log Outlook health events with pattern detection"""
+    if client_ip and user_agent:
+        outlook_health.track_connection_attempt(client_ip, user_agent, phase)
+    
+    _write_json_line("outlook/health.log", {
+        "phase": phase,
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+        "timestamp": time.time(),
+        **(data or {})
+    })

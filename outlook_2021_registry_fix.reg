@@ -1,0 +1,19 @@
+Windows Registry Editor Version 5.00
+
+; Outlook 2021 Registry Fix for Custom Exchange Server Autodiscover
+; This prevents Outlook from trying Office 365 endpoints first
+; Apply this registry fix on the Windows machine running Outlook 2021
+
+[HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\Outlook\AutoDiscover]
+"ExcludeExplicitO365Endpoint"=dword:00000001
+
+; Optional: Force Outlook to use HTTP instead of HTTPS for Autodiscover (if needed)
+; Uncomment the following lines only if HTTPS Autodiscover fails
+; [HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\Outlook\AutoDiscover]
+; "ExcludeHttpsAutoDiscoverDomain"=dword:00000001
+; "ExcludeHttpsRootDomain"=dword:00000001
+
+; Optional: Enable Autodiscover logging (for debugging)
+[HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\Outlook\AutoDiscover]
+"LogLevel"=dword:00000003
+"LogFilePath"="C:\\temp\\autodiscover.log"

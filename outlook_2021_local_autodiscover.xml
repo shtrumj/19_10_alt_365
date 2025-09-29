@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+    <ErrorCode>NoError</ErrorCode>
+    <User>
+      <DisplayName>Yehonathan Shtrum</DisplayName>
+      <EMailAddress>yonatan@shtrum.com</EMailAddress>
+    </User>
+    <Account>
+      <AccountType>Exchange</AccountType>
+      <Action>settings</Action>
+      <Protocol>
+        <Type>EXCH</Type>
+        <Server>owa.shtrum.com</Server>
+        <Port>443</Port>
+        <SSL>On</SSL>
+        <AuthPackage>Ntlm</AuthPackage>
+        <MdbDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Configuration/cn=Servers/cn=owa.shtrum.com/cn=Microsoft Private MDB</MdbDN>
+        <MailboxDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=yonatan</MailboxDN>
+        <EwsUrl>https://owa.shtrum.com/EWS/Exchange.asmx</EwsUrl>
+        <EcpUrl>https://owa.shtrum.com/owa</EcpUrl>
+        <EmwsUrl>https://owa.shtrum.com/EWS/Exchange.asmx</EmwsUrl>
+        <SharingUrl>https://owa.shtrum.com/EWS/Exchange.asmx</SharingUrl>
+        <ServerDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Configuration/cn=Servers/cn=owa.shtrum.com</ServerDN>
+        <ServerVersion>15.01.2507.027</ServerVersion>
+        <AD>owa.shtrum.com</AD>
+        <OOFUrl>https://owa.shtrum.com/owa/oof</OOFUrl>
+        <UMUrl>https://owa.shtrum.com/owa/um</UMUrl>
+        <OABUrl>https://owa.shtrum.com/oab/oab.xml</OABUrl>
+        <Internal>
+          <Url>https://owa.shtrum.com/mapi/emsmdb</Url>
+          <EwsUrl>https://owa.shtrum.com/EWS/Exchange.asmx</EwsUrl>
+          <OOFUrl>https://owa.shtrum.com/owa/oof</OOFUrl>
+          <UMUrl>https://owa.shtrum.com/owa/um</UMUrl>
+          <OABUrl>https://owa.shtrum.com/oab/oab.xml</OABUrl>
+          <ServerExclusiveConnect>On</ServerExclusiveConnect>
+          <ASUrl>https://owa.shtrum.com/Microsoft-Server-ActiveSync</ASUrl>
+          <EwsPartnerUrl>https://owa.shtrum.com/EWS/Exchange.asmx</EwsPartnerUrl>
+          <CertPrincipalName>msstd:owa.shtrum.com</CertPrincipalName>
+          <GroupingInformation>Exchange</GroupingInformation>
+        </Internal>
+        <External>
+          <Url>https://owa.shtrum.com/mapi/emsmdb</Url>
+          <EwsUrl>https://owa.shtrum.com/EWS/Exchange.asmx</EwsUrl>
+          <OOFUrl>https://owa.shtrum.com/owa/oof</OOFUrl>
+          <UMUrl>https://owa.shtrum.com/owa/um</UMUrl>
+          <OABUrl>https://owa.shtrum.com/oab/oab.xml</OABUrl>
+          <ServerExclusiveConnect>On</ServerExclusiveConnect>
+          <ASUrl>https://owa.shtrum.com/Microsoft-Server-ActiveSync</ASUrl>
+          <EwsPartnerUrl>https://owa.shtrum.com/EWS/Exchange.asmx</EwsPartnerUrl>
+          <CertPrincipalName>msstd:owa.shtrum.com</CertPrincipalName>
+          <GroupingInformation>Exchange</GroupingInformation>
+        </External>
+        <MapiHttpEnabled>true</MapiHttpEnabled>
+        <EncryptionRequired>false</EncryptionRequired>
+        <ExternalHostname>owa.shtrum.com</ExternalHostname>
+        <ExternalUrl>https://owa.shtrum.com/mapi/emsmdb</ExternalUrl>
+        <InternalHostname>owa.shtrum.com</InternalHostname>
+        <InternalUrl>https://owa.shtrum.com/mapi/emsmdb</InternalUrl>
+        <TTL>1</TTL>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>

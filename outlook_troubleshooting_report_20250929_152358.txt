@@ -1,0 +1,43 @@
+================================================================================
+OUTLOOK TROUBLESHOOTING REPORT
+================================================================================
+Generated: 2025-09-29 15:23:58
+
+🌐 CONNECTIVITY TEST RESULTS:
+----------------------------------------
+❌ JSON Autodiscover: 502
+❌ XML Autodiscover: 502
+❌ MAPI Endpoint: 502
+❌ EWS Endpoint: 502
+❌ OWA Endpoint: 502
+❌ OAB Endpoint: 502
+
+🔍 AUTODISCOVER ANALYSIS:
+----------------------------------------
+Total Requests: 152
+Unique IPs: 2
+Success Rate: 100.0%
+⚠️  Loops Detected: 1 clients in Autodiscover loops
+   - IP 172.20.0.3: 148 requests
+
+🔌 MAPI CONNECTION ANALYSIS:
+----------------------------------------
+Connection Attempts: 19
+Successful Connections: 16
+Authentication Failures: 0
+Success Rate: 84.2%
+
+💡 RECOMMENDATIONS:
+----------------------------------------
+1. [HIGH] Autodiscover loops detected
+   Solution: Apply the Outlook 2021 registry fix to prevent O365 endpoint attempts
+   Action: Download and apply outlook_2021_registry_fix.reg
+
+2. [MEDIUM] Outlook 2021 optimization
+   Solution: Apply registry fix to disable O365 endpoint preference
+   Action: Download and apply outlook_2021_registry_fix.reg, then restart Outlook
+
+
+================================================================================
+For detailed analysis, visit: https://owa.shtrum.com/owa/admin/outlook-health
+================================================================================

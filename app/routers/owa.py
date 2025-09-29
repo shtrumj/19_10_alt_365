@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from ..database import get_db, User
@@ -18,6 +18,7 @@ from ..smtp_server import start_smtp_server, stop_smtp_server
 from ..queue_processor import queue_processor
 from ..email_queue import QueuedEmail
 from ..email_delivery import email_delivery
+from ..diagnostic_logger import outlook_health
 
 router = APIRouter(prefix="/owa", tags=["owa"])
 templates = Jinja2Templates(directory="templates")
@@ -329,6 +330,64 @@ def owa_admin_gal_preview(
     patt = f"%{(q or '').lower()}%"
     users = db.query(DBUser).filter((DBUser.email.ilike(patt)) | (DBUser.username.ilike(patt)) | (DBUser.full_name.ilike(patt))).order_by(DBUser.full_name.asc()).limit(50).all()
     return [{"id": u.id, "display_name": u.full_name or u.username, "email": u.email} for u in users]
+
+
+
+
+@router.get("/admin/outlook-health", response_class=HTMLResponse)
+async def outlook_health_dashboard(request: Request, current_user: User = Depends(get_current_user_from_cookie)):
+    """Outlook connection health dashboard"""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Pass the full context, including the translation function `_`
+    context = get_template_context(request, user=current_user, title="Outlook Health Monitor")
+    return templates.TemplateResponse("owa/outlook_health.html", context)
+
+@router.get("/admin/outlook-health/data")
+async def outlook_health_data(request: Request, current_user: User = Depends(get_current_user_from_cookie)):
+    """Get real-time Outlook health data"""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    health_summary = outlook_health.get_health_summary()
+    
+    # Read recent health issues
+    health_issues = []
+    try:
+        logs_dir = os.getenv('LOGS_DIR', 'logs')
+        health_issues_file = os.path.join(logs_dir, "outlook", "health_issues.log")
+        if os.path.exists(health_issues_file):
+            with open(health_issues_file, 'r') as f:
+                lines = f.readlines()[-50:]  # Last 50 issues
+                for line in lines:
+                    try:
+                        import json
+                        issue = json.loads(line.strip())
+                        health_issues.append(issue)
+                    except:
+                        continue
+    except Exception as e:
+        pass
+    
+    # Get connection statistics
+    connection_stats = {
+        "active_connections": health_summary.get("active_connections", 0),
+        "total_tracked": health_summary.get("total_tracked", 0),
+        "recent_issues": len(health_issues),
+        "critical_issues": len([i for i in health_issues if i.get("severity") == "high"])
+    }
+    
+    return {
+        "health_summary": health_summary,
+        "health_issues": health_issues,
+        "connection_stats": connection_stats,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @router.post("/admin/actions/smtp/start")
 async def owa_admin_action_smtp_start(

@@ -1,15 +1,17 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import Response
+from sqlalchemy.orm import Session
+import struct
 from ..diagnostic_logger import (
     _write_json_line, outlook_diagnostics, log_mapi_request, 
-    log_outlook_connection_issue
+    log_outlook_connection_issue, log_outlook_health
 )
 from ..mapi_protocol import (
     MapiHttpRequest, MapiHttpResponse, MapiRpcProcessor, 
     session_manager, MapiHttpRequestType
 )
 from ..mapi_store import message_store
-from ..database import SessionLocal, User
+from ..database import SessionLocal, User, get_db
 import os
 import logging
 import uuid
@@ -313,13 +315,15 @@ async def mapi_emsmdb(request: Request):
         )
 
 @router.post("/nspi")
-async def mapi_nspi(request: Request):
+async def mapi_nspi(request: Request, db: Session = Depends(get_db)):
     """MAPI/HTTP NSPI endpoint - handles address book operations"""
     body = await request.body()
     ua = request.headers.get("User-Agent", "")
     content_type = request.headers.get("Content-Type", "")
+    request_id = str(uuid.uuid4())
     
     log_mapi("nspi", {
+        "request_id": request_id,
         "len": len(body), 
         "ua": ua, 
         "content_type": content_type,
@@ -327,21 +331,53 @@ async def mapi_nspi(request: Request):
     })
     
     try:
-        # For now, NSPI is a simpler stub - just return success
-        # Real implementation would handle address book queries
+        # Enhanced NSPI implementation for GAL operations
+        if len(body) >= 8:
+            # Parse NSPI request (simplified)
+            operation = struct.unpack('<I', body[0:4])[0]
+            
+            if operation == 0x01:  # NspiGetMatches (GAL search)
+                log_mapi("nspi_get_matches", {"request_id": request_id})
+                
+                # Get users for GAL
+                users = db.query(User).order_by(User.full_name.asc()).limit(100).all()
+                
+                # Build NSPI response with user data
+                response_data = struct.pack('<I', 0)  # Success status
+                response_data += struct.pack('<I', len(users))  # User count
+                
+                for user in users:
+                    # Add user properties (simplified NSPI format)
+                    display_name = (user.full_name or user.username or "").encode('utf-8')[:64]
+                    email = (user.email or "").encode('utf-8')[:128]
+                    
+                    response_data += struct.pack('<H', len(display_name))
+                    response_data += display_name
+                    response_data += struct.pack('<H', len(email))
+                    response_data += email
+                
+                log_mapi("nspi_response", {
+                    "request_id": request_id,
+                    "user_count": len(users),
+                    "operation": "GetMatches"
+                })
+                
+            else:
+                # Default NSPI response for other operations
+                response_data = struct.pack('<I', 0)  # Success status
+        else:
+            # Empty or short request - return basic success
+            response_data = struct.pack('<I', 0)  # Success status
         
         headers = {
             "Content-Type": "application/mapi-http",
-            "X-RequestType": "Bind",
+            "X-RequestType": "AddressBook",
             "X-ClientInfo": "365-Email-System/1.0",
-            "X-RequestId": str(uuid.uuid4()),
+            "X-RequestId": request_id,
             "Cache-Control": "private"
         }
         
-        # Minimal NSPI success response
-        response_data = b'\x00\x00\x00\x00'  # Success status
-        
-        log_mapi("nspi_success", {"len": len(response_data)})
+        log_mapi("nspi_success", {"request_id": request_id, "len": len(response_data)})
         
         return Response(content=response_data, media_type="application/mapi-http", headers=headers)
         
