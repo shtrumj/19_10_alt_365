@@ -9,7 +9,7 @@ services:
     user: "0:0" # Run as root for port 25 access
     environment:
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
-      - DATABASE_URL=sqlite:///./email_system.db
+      - DATABASE_URL=sqlite:////app/data/email_system.db
       - LOGS_DIR=/app/logs
       - HOSTNAME=owa.shtrum.com
       - DOMAIN=owa.shtrum.com
@@ -22,7 +22,11 @@ services:
     networks:
       - email-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(''http://localhost:8001/health'', timeout=5).status==200 else 1)"',
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -54,10 +58,12 @@ services:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
       - ./certbot-setup.sh:/certbot-setup.sh:ro
-    entrypoint: /certbot-setup.sh
+    entrypoint: ["/bin/sh", "/certbot-setup.sh"]
     environment:
-      - CLOUDFLARE_EMAIL=shtrumj@gmail.com
-      - CLOUDFLARE_API_KEY=xH0xDfYXM0zjsvZIuGtFB4ih-sDwOUrJFIt2I-iz
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+      - DOMAIN=owa.shtrum.com
+      - ALT_NAMES=autodiscover.shtrum.com,mail.shtrum.com
+      - ADMIN_EMAIL=admin@shtrum.com
     networks:
       - email-network
 

@@ -1,10 +1,13 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
+from .config import settings
+import os
 
-DATABASE_URL = "sqlite:///./email_system.db"
+# Prefer environment/config-provided database URL; fallback to local file
+DATABASE_URL = os.getenv("DATABASE_URL", settings.DATABASE_URL if hasattr(settings, "DATABASE_URL") else "sqlite:///./email_system.db")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -19,6 +22,7 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     full_name = Column(String)
     is_active = Column(Boolean, default=True)
+    admin = Column(Boolean, default=False)  # Admin flag for auditing/management
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -56,8 +60,74 @@ class EmailAttachment(Base):
     file_size = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class CalendarEvent(Base):
+    __tablename__ = "calendar_events"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text)
+    location = Column(String)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    is_all_day = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ActiveSyncDevice(Base):
+    __tablename__ = "activesync_devices"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    device_id = Column(String, nullable=False)
+    device_type = Column(String, nullable=True)
+    policy_key = Column(String, nullable=True)
+    last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint('user_id', 'device_id', name='uq_user_device'),)
+
+class ActiveSyncState(Base):
+    __tablename__ = "activesync_state"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    device_id = Column(String, nullable=False)
+    collection_id = Column(String, nullable=False, default="1")
+    sync_key = Column(String, nullable=False, default="1")
+    last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint('user_id', 'device_id', 'collection_id', name='uq_user_device_collection'),)
+
 def create_tables():
     Base.metadata.create_all(bind=engine)
+
+def ensure_admin_column():
+    """Ensure the users.admin column exists (SQLite-safe)."""
+    try:
+        # Check pragma table info for users
+        with engine.connect() as conn:
+            result = conn.execute("PRAGMA table_info(users)").fetchall()
+            columns = {row[1] for row in result}
+            if 'admin' not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN admin BOOLEAN DEFAULT 0")
+    except Exception:
+        # Best-effort; ignore if fails (column may already exist or locked)
+        pass
+
+def set_admin_user(email: str, username: str | None = None):
+    """Set a given user as admin by email or username if provided."""
+    db = SessionLocal()
+    try:
+        user = None
+        if email:
+            user = db.query(User).filter(User.email == email).first()
+        if not user and username:
+            user = db.query(User).filter(User.username == username).first()
+        if user and not getattr(user, 'admin', False):
+            user.admin = True
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 def get_db():
     db = SessionLocal()

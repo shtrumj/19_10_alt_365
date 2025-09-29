@@ -96,12 +96,14 @@ def delete_email(
 
 @router.get("/stats/summary")
 def get_email_stats(
-    current_user: User = Depends(get_current_user),
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
     db: Session = Depends(get_db)
 ):
-    """Get email statistics for the current user"""
-    email_service = EmailService(db)
+    """Get email statistics for the current user (cookie-auth for OWA)."""
+    if isinstance(current_user, RedirectResponse):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
+    email_service = EmailService(db)
     inbox_emails = email_service.get_user_emails(current_user.id, "inbox")
     sent_emails = email_service.get_user_emails(current_user.id, "sent")
     unread_count = sum(1 for email in inbox_emails if not email.is_read)

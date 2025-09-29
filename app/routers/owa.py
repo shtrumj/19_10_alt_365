@@ -3,13 +3,21 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from ..database import get_db, User
+from ..database import Email
 from ..auth import get_current_user_from_cookie
 from ..email_service import EmailService
-from ..models import EmailCreate
+from ..models import EmailCreate, EmailSummary
 from ..language import get_language, get_translation, get_direction, get_all_translations
 from ..email_parser import parse_email_content, get_email_preview
 from ..config import settings
 from typing import Optional, Union
+import os
+from datetime import datetime, timedelta
+from sqlalchemy import or_, and_
+from ..smtp_server import start_smtp_server, stop_smtp_server
+from ..queue_processor import queue_processor
+from ..email_queue import QueuedEmail
+from ..email_delivery import email_delivery
 
 router = APIRouter(prefix="/owa", tags=["owa"])
 templates = Jinja2Templates(directory="templates")
@@ -64,6 +72,410 @@ def owa_compose(request: Request, current_user: Union[User, RedirectResponse] = 
     if isinstance(current_user, RedirectResponse):
         return current_user
     return templates.TemplateResponse("owa/compose.html", get_template_context(request, user=current_user))
+
+@router.get("/admin", response_class=HTMLResponse)
+def owa_admin_dashboard(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    from ..email_queue import EmailQueue
+    queue = EmailQueue()
+    stats = queue.get_queue_stats()
+    return templates.TemplateResponse("owa/admin.html", get_template_context(request, user=current_user, queue_stats=stats))
+
+@router.get("/admin/queues", response_class=HTMLResponse)
+def owa_admin_queues(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    # Queue stats and listings
+    from ..email_queue import EmailQueue, QueuedEmail
+    from ..database import Email
+    queue = EmailQueue()
+    stats = queue.get_queue_stats()
+    # Recent outbound (queued) emails
+    queued_emails = db.query(QueuedEmail).order_by(QueuedEmail.created_at.desc()).limit(20).all()
+    # Recent inbound (external) emails stored
+    inbound_emails = db.query(Email).filter(Email.is_external == True).order_by(Email.created_at.desc()).limit(20).all()
+    return templates.TemplateResponse(
+        "owa/queues.html",
+        get_template_context(
+            request,
+            user=current_user,
+            queue_stats=stats,
+            queued_emails=queued_emails,
+            inbound_emails=inbound_emails,
+        ),
+    )
+
+@router.get("/admin/audit", response_class=HTMLResponse)
+def owa_admin_audit(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return templates.TemplateResponse("owa/audit.html", get_template_context(request, user=current_user))
+
+@router.get("/admin/smtp-logs", response_class=HTMLResponse)
+def owa_admin_smtp_logs(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    """Admin page for incoming SMTP logs troubleshooting."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return templates.TemplateResponse("owa/smtp_logs.html", get_template_context(request, user=current_user))
+
+@router.get("/admin/smtp-logs/data")
+def owa_admin_smtp_logs_data(
+    request: Request,
+    log: str = "internal_smtp",
+    q: Optional[str] = None,
+    match_only: bool = True,
+    max_lines: int = 300,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    """Return tail of selected SMTP-related log with optional filtering.
+
+    Params:
+      - log: internal_smtp | smtp_errors | email_processing
+      - q: optional substring (case-insensitive)
+      - match_only: if true, only include matching lines when q is set
+      - max_lines: number of tail lines to consider
+    """
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    logs_dir = os.environ.get("LOGS_DIR", "./logs")
+    log_map = {
+        "internal_smtp": "internal_smtp.log",
+        "smtp_errors": "smtp_errors.log",
+        "email_processing": "email_processing.log",
+    }
+    filename = log_map.get(log, "internal_smtp.log")
+    full_path = os.path.join(logs_dir, filename)
+
+    lines = []
+    try:
+        if os.path.exists(full_path):
+            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                all_lines = f.readlines()
+                tail_lines = all_lines[-max(1, min(max_lines, 2000)):]  # cap to prevent huge payloads
+                if q:
+                    query = q.lower()
+                    if match_only:
+                        lines = [ln for ln in tail_lines if query in ln.lower()]
+                    else:
+                        # include all tail lines but mark matches client-side
+                        lines = tail_lines
+                else:
+                    lines = tail_lines
+        else:
+            lines = []
+    except Exception:
+        lines = []
+
+    # Trim trailing newlines for JSON cleanliness, client will join with \n
+    clean = [ln.rstrip("\n") for ln in lines]
+    return {
+        "file": filename,
+        "count": len(clean),
+        "max": max_lines,
+        "query": q or "",
+        "match_only": match_only,
+        "lines": clean,
+    }
+
+@router.post("/admin/smtp-logs/clear")
+def owa_admin_smtp_logs_clear(
+    request: Request,
+    log: str = "internal_smtp",
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    """Clear the selected SMTP log file (truncate)."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    logs_dir = os.environ.get("LOGS_DIR", "./logs")
+    log_map = {
+        "internal_smtp": "internal_smtp.log",
+        "smtp_errors": "smtp_errors.log",
+        "email_processing": "email_processing.log",
+    }
+    filename = log_map.get(log, "internal_smtp.log")
+    full_path = os.path.join(logs_dir, filename)
+    try:
+        # Truncate file if exists, else create empty
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.write("")
+        # Reopen log file handlers to ensure writes continue after truncation
+        try:
+            from ..smtp_logger import smtp_logger
+            smtp_logger.reopen_files()
+        except Exception:
+            pass
+        return {"file": filename, "cleared": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/audit/emails")
+def owa_admin_audit_emails(
+    request: Request,
+    sender: Optional[str] = None,
+    recipient: Optional[str] = None,
+    window: str = "1h",
+    limit: int = 100,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+):
+    """Query recently received emails (inbound via SMTP) with filters.
+
+    Params:
+      - sender: filter by external sender contains
+      - recipient: filter by recipient email contains
+      - window: one of 5m,15m,1h,6h,24h,7d,30d
+      - limit: max rows
+    """
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    now = datetime.utcnow()
+    window_map = {
+        "5m": timedelta(minutes=5),
+        "15m": timedelta(minutes=15),
+        "1h": timedelta(hours=1),
+        "6h": timedelta(hours=6),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+    }
+    delta = window_map.get(window, timedelta(hours=1))
+    since = now - delta
+
+    # Base query: inbound emails created recently
+    q = db.query(Email).filter(
+        Email.created_at >= since,
+        Email.is_deleted == False,
+        Email.is_external == True
+    )
+
+    if sender:
+        q = q.filter(Email.external_sender.ilike(f"%{sender}%"))
+
+    if recipient:
+        # Match recipient user email when available, otherwise external_recipient (unlikely for inbound)
+        q = q.filter(
+            or_(
+                Email.external_recipient.ilike(f"%{recipient}%"),
+                Email.recipient.has(User.email.ilike(f"%{recipient}%"))
+            )
+        )
+
+    emails = q.order_by(Email.created_at.desc()).limit(max(1, min(limit, 500))).all()
+
+    # Convert to simple dicts
+    results = []
+    for e in emails:
+        summary = EmailSummary.from_email(e)
+        results.append({
+            "id": summary.id,
+            "subject": summary.subject,
+            "sender_email": summary.sender_email,
+            "recipient_email": summary.recipient_email,
+            "is_read": summary.is_read,
+            "created_at": summary.created_at.isoformat() + "Z"
+        })
+
+    return {
+        "count": len(results),
+        "window": window,
+        "since": since.isoformat() + "Z",
+        "items": results
+    }
+
+@router.get("/admin/gal")
+def owa_admin_gal_preview(
+    request: Request,
+    q: Optional[str] = None,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    from ..database import User as DBUser
+    patt = f"%{(q or '').lower()}%"
+    users = db.query(DBUser).filter((DBUser.email.ilike(patt)) | (DBUser.username.ilike(patt)) | (DBUser.full_name.ilike(patt))).order_by(DBUser.full_name.asc()).limit(50).all()
+    return [{"id": u.id, "display_name": u.full_name or u.username, "email": u.email} for u in users]
+
+@router.post("/admin/actions/smtp/start")
+async def owa_admin_action_smtp_start(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await start_smtp_server()
+    return {"status": "started"}
+
+@router.post("/admin/actions/smtp/stop")
+async def owa_admin_action_smtp_stop(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await stop_smtp_server()
+    return {"status": "stopped"}
+
+@router.post("/admin/actions/smtp/restart")
+async def owa_admin_action_smtp_restart(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await stop_smtp_server()
+    await start_smtp_server()
+    return {"status": "restarted"}
+
+@router.post("/admin/actions/queue/process")
+async def owa_admin_action_queue_process(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await email_delivery.process_queue(db)
+    return {"status": "processed"}
+
+@router.post("/admin/actions/queue/flush")
+async def owa_admin_action_queue_flush(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+):
+    """Fast-forward retries and process queue until empty or max cycles."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Fast-forward all RETRY items to be eligible now
+    now = datetime.utcnow()
+    try:
+        updated = db.query(QueuedEmail).filter(QueuedEmail.status == 'retry').update({QueuedEmail.next_retry_at: now}, synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        updated = 0
+
+    cycles = 0
+    max_cycles = 5
+    while cycles < max_cycles:
+        cycles += 1
+        await email_delivery.process_queue(db)
+        # Check if more work remains
+        pending = db.query(QueuedEmail).filter(QueuedEmail.status == 'pending').count()
+        retry_ready = db.query(QueuedEmail).filter(QueuedEmail.status == 'retry', QueuedEmail.next_retry_at <= now).count()
+        if pending == 0 and retry_ready == 0:
+            break
+    return {"status": "flushed", "fast_forwarded": updated, "cycles": cycles}
+
+@router.post("/admin/actions/queue/start")
+async def owa_admin_action_queue_start(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await queue_processor.start()
+    return {"status": "queue_processor_started"}
+
+@router.post("/admin/actions/queue/stop")
+async def owa_admin_action_queue_stop(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await queue_processor.stop()
+    return {"status": "queue_processor_stopped"}
+
+@router.post("/admin/actions/queue/restart")
+async def owa_admin_action_queue_restart(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await queue_processor.stop()
+    await queue_processor.start()
+    return {"status": "queue_processor_restarted"}
+
+@router.get("/admin/audit/logs")
+def owa_admin_audit_logs(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie)
+):
+    """Return tail of SMTP logs for live audit (polling)."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, 'admin', False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    logs_dir = os.environ.get("LOGS_DIR", "./logs")
+    def tail(path: str, max_lines: int = 200) -> str:
+        try:
+            full = os.path.join(logs_dir, path)
+            if not os.path.exists(full):
+                return ""
+            with open(full, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+                return ''.join(lines[-max_lines:])
+        except Exception:
+            return ""
+    return {
+        "internal_smtp": tail("internal_smtp.log", 250),
+        "smtp_errors": tail("smtp_errors.log", 250),
+        "email_processing": tail("email_processing.log", 200),
+    }
 
 @router.get("/email/{email_id}", response_class=HTMLResponse)
 def owa_view_email(

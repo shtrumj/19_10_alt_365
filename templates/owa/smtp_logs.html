@@ -1,0 +1,140 @@
+{% extends "owa/base.html" %}
+
+{% block title %}לוגי SMTP נכנס - {{ get_translation(request, 'title') }}{% endblock %}
+
+{% block content %}
+<div class="content-header">
+  <h1><i class="fas fa-clipboard-list"></i> לוגי SMTP נכנס</h1>
+  <div></div>
+ </div>
+
+<div class="row">
+  <div class="col-md-12">
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-filter text-primary"></i> מסננים</h5>
+        <div></div>
+      </div>
+      <div class="card-body">
+        <form class="row g-3" onsubmit="event.preventDefault(); fetchLogs();">
+          <div class="col-md-3">
+            <label class="form-label">לוג</label>
+            <select class="form-select" id="log-select">
+              <option value="internal_smtp" selected>internal_smtp.log</option>
+              <option value="smtp_errors">smtp_errors.log</option>
+              <option value="email_processing">email_processing.log</option>
+            </select>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label">טקסט לחיפוש</label>
+            <input type="text" class="form-control" id="query-text" placeholder="recipient=, sender=, 550, TLS, RCPT TO...">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">שורות (זנב)</label>
+            <input type="number" class="form-control" id="max-lines" value="300" min="50" max="2000">
+          </div>
+          <div class="col-md-2 d-flex align-items-end">
+            <div class="d-grid gap-2 w-100">
+              <button type="button" class="btn btn-primary" onclick="fetchLogs()"><i class="fas fa-search"></i> חפש</button>
+              <button type="button" class="btn btn-outline-secondary" onclick="toggleAuto()" id="auto-btn"><i class="fas fa-sync"></i> רענון אוטומטי: כבוי</button>
+            </div>
+          </div>
+          <div class="col-12 d-flex align-items-center justify-content-between">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="match-only" checked>
+              <label class="form-check-label" for="match-only">הצג רק שורות תואמות</label>
+            </div>
+            <button type="button" class="btn btn-outline-danger btn-sm" onclick="clearLog()"><i class="fas fa-trash"></i> נקה לוג</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col-md-12">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="fas fa-terminal text-primary"></i> תוצאות</h5>
+        <small id="meta" class="text-muted"></small>
+      </div>
+      <div class="card-body">
+        <pre id="log-output" style="white-space: pre-wrap; background:#111; color:#0f0; padding:10px; border-radius:8px; min-height:300px; max-height:70vh; overflow:auto"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let autoTimer = null;
+
+function toggleAuto(){
+  if(autoTimer){
+    clearInterval(autoTimer);
+    autoTimer = null;
+    const btn = document.getElementById('auto-btn');
+    btn.textContent = 'רענון אוטומטי: כבוי';
+    btn.classList.remove('btn-success');
+    btn.classList.add('btn-outline-secondary');
+  } else {
+    fetchLogs();
+    autoTimer = setInterval(fetchLogs, 3000);
+    const btn = document.getElementById('auto-btn');
+    btn.textContent = 'רענון אוטומטי: פועל';
+    btn.classList.remove('btn-outline-secondary');
+    btn.classList.add('btn-success');
+  }
+}
+
+async function fetchLogs(){
+  const log = document.getElementById('log-select').value;
+  const q = document.getElementById('query-text').value.trim();
+  const maxLines = document.getElementById('max-lines').value;
+  const matchOnly = document.getElementById('match-only').checked;
+  const params = new URLSearchParams({ log, max_lines: maxLines, match_only: matchOnly });
+  if(q) params.set('q', q);
+  const url = `/owa/admin/smtp-logs/data?${params.toString()}`;
+  try{
+    const res = await fetch(url);
+    if(!res.ok){ return; }
+    const data = await res.json();
+    const meta = document.getElementById('meta');
+    meta.textContent = `${data.file} | ${data.count} שורות` + (data.query ? ` | סינון: "${data.query}"` : '');
+    const out = document.getElementById('log-output');
+    // Newest first
+    const lines = (data.lines || []).slice().reverse();
+    const highlighted = lines.map(line => highlight(line, q)).join('\n');
+    out.innerHTML = highlighted || '<span style="color:#888">אין נתונים</span>';
+    // Keep scroll at top
+    out.scrollTop = 0;
+  }catch(e){ console.error(e); }
+}
+
+async function clearLog(){
+  const log = document.getElementById('log-select').value;
+  try{
+    const res = await fetch(`/owa/admin/smtp-logs/clear?log=${encodeURIComponent(log)}`, { method: 'POST' });
+    if(res.ok){
+      fetchLogs();
+    }
+  }catch(e){ console.error(e); }
+}
+
+function esc(s){
+  return s.replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function highlight(line, q){
+  if(!q) return esc(line);
+  const parts = line.split(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
+  return parts.map((p,i) => i%2===1 ? `<mark style="background:#ff0;color:#000">${esc(p)}</mark>` : esc(p)).join('');
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  fetchLogs();
+});
+</script>
+{% endblock %}
+
+

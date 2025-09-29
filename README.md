@@ -1,4 +1,72 @@
 # 365 Email System
+## Exchange Compatibility (Critical)
+
+This project is being extended for Exchange/Outlook compatibility in two phases.
+
+### Phase 1: EWS (Exchange Web Services) — Implemented (initial subset)
+
+Goals:
+- Serve Autodiscover with Exchange schema and EWS URL
+- Provide EWS SOAP endpoint compatible with basic Outlook/EWS tooling
+
+Endpoints:
+- Autodiscover (HTTPS): `/Autodiscover/Autodiscover.xml`
+  - Returns `responseschema/2006` with Protocols: EXCH, EXPR, WEB, EWS, IMAP, SMTP
+  - EwsUrl: `https://<host>/EWS/Exchange.asmx`
+- EWS (HTTPS): `/EWS/Exchange.asmx`
+  - Supported SOAP actions (initial subset):
+    - `FindItem` (Inbox items mapped from DB)
+    - `GetFolder` (minimal folder response)
+    - `GetItem` (basic subject/body preview)
+    - `ResolveNames` (users table as GAL)
+    - `CreateItem`/`SendItem` (stubbed 200; SMTP wiring next)
+    - `UpdateItem`, `DeleteItem` (stub 200)
+    - `GetUserAvailability` (stub free/busy)
+
+Nginx reverse proxy:
+- `/Autodiscover/Autodiscover.xml` → app (access log: `/var/log/nginx/autodiscover_access.log`)
+- `/Microsoft-Server-ActiveSync` → app (not used by Windows Outlook, used by mobile EAS)
+- `/EWS/` → app (access log: `/var/log/nginx/ews_access.log`)
+
+Diagnostics:
+- App logs: `logs/web/autodiscover/autodiscover.log`, `logs/web/ews/ews.log`
+- Nginx logs (inside container):
+  - `docker exec 365-nginx sh -lc 'tail -n 200 /var/log/nginx/autodiscover_access.log'`
+  - `docker exec 365-nginx sh -lc 'tail -n 200 /var/log/nginx/ews_access.log'`
+
+Test commands:
+```bash
+# Autodiscover (Exchange schema)
+curl -s -i -H 'Content-Type: text/xml' -X POST \
+  --data '<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006"><Request><EMailAddress>user@example.com</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006</AcceptableResponseSchema></Request></Autodiscover>' \
+  https://<host>/Autodiscover/Autodiscover.xml | sed -n '1,80p'
+
+# EWS FindItem
+curl -s -i -H 'Content-Type: text/xml' -X POST \
+  --data '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><FindItem xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><ItemShape><t:BaseShape>IdOnly</t:BaseShape></ItemShape><IndexedPageItemView MaxEntriesReturned="5" Offset="0" BasePoint="Beginning"/></FindItem></s:Body></s:Envelope>' \
+  https://<host>/EWS/Exchange.asmx | sed -n '1,80p'
+```
+
+Limitations (Windows Outlook Exchange profile):
+- Windows Outlook requires MAPI/HTTP for full Exchange transport. EWS alone enables many features but is not sufficient to complete “Exchange” account bootstrap on Windows. Mobile/native EAS and EWS tools work with Phase 1.
+
+Roadmap:
+- EWS: Expand GetFolder/FindFolder/GetItem/ResolveNames/Create/Send/Update/Delete/Availability with full DB mapping and IDs
+- Optional: EWS streaming/pull notifications
+- Phase 2 (MAPI/HTTP): Design and implement (or integrate) MAPI/HTTP transport and AddressBook/NSPI for true Exchange profile support
+
+### Phase 2: MAPI/HTTP (Design)
+
+Scope:
+- Session bootstrap (/mapi/emsmdb), ICS sync, folder/property schema, and NSPI/AddressBook service
+- Significant protocol surface; will be planned and implemented incrementally
+
+Current status:
+- MAPI/HTTP stubs are exposed at `/mapi/emsmdb` and `/mapi/nspi` and log to `logs/web/mapi/mapi.log`.
+- These are placeholders to validate client reachability; full protocol (EMSMDB/NSPI) is not yet implemented.
+
+If Exchange compatibility on Windows Outlook is critical, full Phase 2 implementation is required.
+
 
 A Microsoft 365-like email system built with FastAPI, SQLite, Jinja2 templates, SMTP server, and ActiveSync support.
 

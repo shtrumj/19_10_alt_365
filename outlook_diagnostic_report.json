@@ -1,0 +1,20 @@
+{
+  "timestamp": "2025-09-29T11:12:23.243162Z",
+  "analysis_result": {
+    "issues_found": 1,
+    "issues": [
+      "Protocol compatibility issues detected"
+    ],
+    "recommendations": [
+      "Clear Outlook profile cache and recreate the account",
+      "Verify SSL certificate is trusted (add to Windows certificate store)",
+      "Check Windows Event Viewer for Outlook-specific errors",
+      "Try configuring with manual server settings instead of auto-discovery",
+      "Test with a different Outlook client or version",
+      "Enable Outlook logging (HKEY_CURRENT_USER\\Software\\Microsoft\\Office\\16.0\\Outlook\\Options\\Mail\\EnableLogging=1)",
+      "Check firewall/antivirus isn't blocking connections",
+      "Verify DNS resolution for autodiscover.domain.com and owa.domain.com"
+    ],
+    "log_files_analyzed": 3
+  }
+}

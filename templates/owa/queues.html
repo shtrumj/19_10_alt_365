@@ -1,0 +1,103 @@
+{% extends "owa/base.html" %}
+
+{% block title %}תורים - {{ get_translation(request, 'title') }}{% endblock %}
+
+{% block content %}
+<div class="content-header">
+  <h1><i class="fas fa-stream"></i> תורים</h1>
+  <div></div>
+</div>
+
+<div class="alert alert-info">עמוד זה מיועד לחקירה וניטור הודעות יוצאות/נכנסות.</div>
+
+<div class="row">
+  <div class="col-md-4">
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-header bg-white border-0">
+        <h5 class="mb-0"><i class="fas fa-chart-pie text-primary"></i> סטטיסטיקות</h5>
+      </div>
+      <div class="card-body">
+        {% if queue_stats %}
+        <ul class="list-group">
+          {% for k,v in queue_stats.items() %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            {{ k }}
+            <span class="badge bg-primary rounded-pill">{{ v }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-muted">No data</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-md-8">
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-header bg-white border-0">
+        <h5 class="mb-0"><i class="fas fa-arrow-up text-success"></i> הודעות יוצאות (Queue)</h5>
+      </div>
+      <div class="card-body">
+        {% if queued_emails %}
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>זמן</th>
+              <th>שולח</th>
+              <th>נמען</th>
+              <th>נושא</th>
+              <th>סטטוס</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in queued_emails %}
+            <tr>
+              <td>{{ e.created_at }}</td>
+              <td>{{ e.sender_email }}</td>
+              <td>{{ e.recipient_email }}</td>
+              <td>{{ e.subject }}</td>
+              <td>{{ e.status }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted">אין פריטים</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-0">
+        <h5 class="mb-0"><i class="fas fa-arrow-down text-primary"></i> הודעות נכנסות</h5>
+      </div>
+      <div class="card-body">
+        {% if inbound_emails %}
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>זמן</th>
+              <th>שולח</th>
+              <th>נושא</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in inbound_emails %}
+            <tr>
+              <td>{{ e.created_at }}</td>
+              <td>{{ e.external_sender or (e.sender.email if e.sender) }}</td>
+              <td>{{ e.subject }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="text-muted">אין פריטים</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+

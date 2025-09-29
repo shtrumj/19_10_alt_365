@@ -1,3 +1,18 @@
+from fastapi import APIRouter, Depends, HTTPException, Request, Form
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from ..database import get_db, User
+from ..auth import authenticate_user, create_access_token, get_password_hash
+
+router = APIRouter(prefix="/basic", tags=["basic-auth"])
+
+@router.post("/token")
+def basic_token(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    user = authenticate_user(db, username, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token({"sub": user.username})
+    return {"access_token": token, "token_type": "bearer"}
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm

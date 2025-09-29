@@ -1,5 +1,10 @@
 import asyncio
 import email
+from email.message import Message
+from email.header import decode_header, make_header
+import re
+import html as html_unescape
+from .email_parser import decode_payload, html_to_text
 import socket
 import ssl
 import threading
@@ -7,9 +12,11 @@ import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from .database import SessionLocal, User, Email
 from datetime import datetime
 import logging
+from email.utils import parseaddr
 from .smtp_logger import smtp_logger
 
 logging.basicConfig(level=logging.INFO)
@@ -87,15 +94,22 @@ class EmailHandler:
                     await writer.drain()
                 
                 elif command.upper().startswith('MAIL FROM:'):
-                    mail_from = command[10:].strip('<>')
+                    raw_from = command[10:].strip()
+                    # Extract address before SMTP parameters (e.g., SIZE=...)
+                    addr_part = raw_from.split()[0]
+                    parsed = parseaddr(addr_part)[1] or addr_part.strip('<> \t\r\n')
+                    mail_from = parsed.strip().lower()
                     logger.info(f"🔗 [{connection_id}] Mail from: {mail_from}")
                     writer.write(b"250 OK\r\n")
                     await writer.drain()
                 
                 elif command.upper().startswith('RCPT TO:'):
-                    rcpt = command[8:].strip('<>')
-                    rcpt_to.append(rcpt)
-                    logger.info(f"🔗 [{connection_id}] Rcpt to: {rcpt}")
+                    # Normalize recipient to pure email address (no display name, no brackets)
+                    rcpt_raw = command[8:].strip()
+                    rcpt_addr = parseaddr(rcpt_raw)[1] or rcpt_raw.strip('<> \t\r\n')
+                    rcpt_addr = rcpt_addr.strip().lower()
+                    rcpt_to.append(rcpt_addr)
+                    logger.info(f"🔗 [{connection_id}] Rcpt to (normalized): {rcpt_addr} (raw: {rcpt_raw})")
                     writer.write(b"250 OK\r\n")
                     await writer.drain()
                 
@@ -152,8 +166,20 @@ class EmailHandler:
             
             # Extract email details
             sender = mail_from or msg.get('From', '').strip()
-            recipient = rcpt_to[0] if rcpt_to else msg.get('To', '').strip()
-            subject = msg.get('Subject', '').strip()
+            # Prefer RCPT command recipients; fallback to parsing To header
+            if rcpt_to:
+                recipient = rcpt_to[0]
+            else:
+                recipient = parseaddr(msg.get('To', '') or '')[1].strip().lower()
+            # Decode subject (RFC 2047) and strip HTML tags/entities
+            raw_subject = msg.get('Subject', '')
+            try:
+                decoded_subject = str(make_header(decode_header(raw_subject)))
+            except Exception:
+                decoded_subject = raw_subject or ''
+            # Unescape entities and strip HTML tags
+            decoded_subject = html_unescape.unescape(decoded_subject)
+            subject = re.sub(r'<[^>]+>', '', decoded_subject).strip()
             
             logger.info(f"📧 [{connection_id}] Email details - From: '{sender}', To: '{recipient}', Subject: '{subject}'")
             
@@ -168,28 +194,49 @@ class EmailHandler:
                 "timestamp": datetime.utcnow().isoformat()
             })
             
-            # Get email body
-            body = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                        break
-            else:
-                body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+            # Get email body (prefer text/plain, fallback to text/html → text)
+            def extract_text_body(message: Message) -> str:
+                if message.is_multipart():
+                    # First pass: text/plain
+                    for part in message.walk():
+                        if part.get_content_type() == 'text/plain':
+                            return decode_payload(part.get_payload(decode=True), part.get_content_charset()) or ""
+                    # Second pass: text/html → text
+                    for part in message.walk():
+                        if part.get_content_type() == 'text/html':
+                            html_str = decode_payload(part.get_payload(decode=True), part.get_content_charset()) or ""
+                            return html_to_text(html_str)
+                    return ""
+                else:
+                    ctype = message.get_content_type()
+                    payload = message.get_payload(decode=True)
+                    if ctype == 'text/plain':
+                        return decode_payload(payload, message.get_content_charset()) or ""
+                    if ctype == 'text/html':
+                        html_str = decode_payload(payload, message.get_content_charset()) or ""
+                        return html_to_text(html_str)
+                    return ""
+
+            body = extract_text_body(msg)
             
-            # Find recipient user
-            recipient_user = self.db.query(User).filter(User.email == recipient).first()
+            # Normalize recipient to bare address and lowercase
+            normalized_recipient = (parseaddr(recipient)[1] or recipient).strip().lower()
+            # Normalize sender as well
+            normalized_sender = (parseaddr(sender)[1] or sender).strip().lower()
+            # Find recipient user (case-insensitive, by email only)
+            recipient_user = self.db.query(User).filter(func.lower(User.email) == normalized_recipient).first()
             
             if recipient_user:
                 # Create email record
+                # Ensure subject not empty
+                safe_subject = subject if subject else "(no subject)"
                 email_record = Email(
-                    subject=subject,
+                    subject=safe_subject,
                     body=body,
                     sender_id=None,  # External sender
                     recipient_id=recipient_user.id,
                     is_external=True,
-                    external_sender=sender
+                    external_sender=normalized_sender
                 )
                 self.db.add(email_record)
                 self.db.commit()
@@ -214,27 +261,27 @@ class EmailHandler:
                 asyncio.create_task(manager.send_email_notification(recipient_user.id, email_data))
                 
                 # Log successful processing
-                smtp_logger.log_internal_email_received(sender, recipient, subject, len(data_content))
+                smtp_logger.log_internal_email_received(sender, normalized_recipient, subject, len(data_content))
                 smtp_logger.log_email_processing("EMAIL_STORED", {
                     "connection_id": connection_id,
                     "email_id": email_record.id,
                     "sender": sender,
-                    "recipient": recipient,
+                    "recipient": normalized_recipient,
                     "is_external_sender": True,
                     "recipient_user_id": recipient_user.id
                 })
                 
-                logger.info(f"✅ [{connection_id}] Email received from {sender} to {recipient} (external: True)")
+                logger.info(f"✅ [{connection_id}] Email received from {sender} to {normalized_recipient} (external: True)")
                 logger.info(f"📧 WebSocket notification sent to user {recipient_user.id}")
                 return "250 OK"
             else:
-                smtp_logger.log_error("RECIPIENT_NOT_FOUND", f"Recipient {recipient} not found in system", {
+                smtp_logger.log_error("RECIPIENT_NOT_FOUND", f"Recipient {normalized_recipient} not found in system", {
                     "connection_id": connection_id,
                     "sender": sender,
-                    "recipient": recipient,
+                    "recipient": normalized_recipient,
                     "subject": subject
                 })
-                logger.warning(f"❌ [{connection_id}] Recipient {recipient} not found in system. Email rejected.")
+                logger.warning(f"❌ [{connection_id}] Recipient {normalized_recipient} not found in system. Email rejected.")
                 return "550 Recipient not found"
                 
         except Exception as e:

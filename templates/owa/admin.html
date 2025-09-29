@@ -1,0 +1,81 @@
+{% extends "owa/base.html" %}
+
+{% block title %}ניהול - {{ get_translation(request, 'title') }}{% endblock %}
+
+{% block content %}
+<div class="content-header">
+    <h1><i class="fas fa-tools"></i> ניהול</h1>
+    <div></div>
+    </div>
+
+<div class="row">
+  <div class="col-md-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-0">
+        <h5 class="mb-0"><i class="fas fa-stream text-primary"></i> סטטיסטיקות תורים</h5>
+      </div>
+      <div class="card-body">
+        {% if queue_stats %}
+        <ul class="list-group">
+          {% for k,v in queue_stats.items() %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            {{ k }}
+            <span class="badge bg-primary rounded-pill">{{ v }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div class="text-muted">No data</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-0">
+        <h5 class="mb-0"><i class="fas fa-cogs text-primary"></i> פעולות מערכת</h5>
+      </div>
+      <div class="card-body">
+        <div class="mb-3">
+          <h6 class="text-muted">SMTP</h6>
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-primary btn-sm" onclick="adminAction('/owa/admin/actions/smtp/start')"><i class="fas fa-play"></i> הפעל</button>
+            <button class="btn btn-outline-warning btn-sm" onclick="adminAction('/owa/admin/actions/smtp/restart')"><i class="fas fa-redo"></i> אתחל</button>
+            <button class="btn btn-outline-danger btn-sm" onclick="adminAction('/owa/admin/actions/smtp/stop')"><i class="fas fa-stop"></i> עצור</button>
+            <a class="btn btn-outline-secondary btn-sm" href="/owa/admin/smtp-logs?lang={{ get_language(request) }}" target="_blank"><i class="fas fa-clipboard-list"></i> לוגים</a>
+          </div>
+        </div>
+        <div>
+          <h6 class="text-muted">תורים (Outbound)</h6>
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-primary btn-sm" onclick="adminAction('/owa/admin/actions/queue/start')"><i class="fas fa-play"></i> התחל מע処</button>
+            <button class="btn btn-outline-warning btn-sm" onclick="adminAction('/owa/admin/actions/queue/restart')"><i class="fas fa-redo"></i> אתחל מע処</button>
+            <button class="btn btn-outline-danger btn-sm" onclick="adminAction('/owa/admin/actions/queue/stop')"><i class="fas fa-stop"></i> עצור מע処</button>
+            <button class="btn btn-outline-success btn-sm" onclick="adminAction('/owa/admin/actions/queue/process')"><i class="fas fa-forward"></i> עבד עכשיו</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="adminAction('/owa/admin/actions/queue/flush')"><i class="fas fa-broom"></i> נקה/Flush retries</button>
+          </div>
+        </div>
+        <div id="admin-action-result" class="mt-3 text-muted small"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+async function adminAction(url){
+  try{
+    const res = await fetch(url, { method: 'POST' });
+    const data = await res.json();
+    const el = document.getElementById('admin-action-result');
+    el.textContent = JSON.stringify(data);
+    el.classList.remove('text-danger');
+  }catch(e){
+    const el = document.getElementById('admin-action-result');
+    el.textContent = 'שגיאה: ' + (e?.message || '');
+    el.classList.add('text-danger');
+  }
+}
+</script>
+{% endblock %}
+
+
+

@@ -6,8 +6,8 @@ Note: This requires root privileges to bind to port 25
 import uvicorn
 import asyncio
 from contextlib import asynccontextmanager
-from app.database import create_tables, engine
-from app.routers import auth, emails, owa, activesync, queue
+from app.database import create_tables, engine, ensure_admin_column, set_admin_user
+from app.routers import auth, emails, owa, activesync, queue, websocket as ws_router, autodiscover, ews, mapihttp
 from app.smtp_server import start_smtp_server_25, stop_smtp_server_25
 from app.queue_processor import queue_processor
 from app.email_queue import Base as QueueBase
@@ -18,6 +18,9 @@ from fastapi.staticfiles import StaticFiles
 async def lifespan(app: FastAPI):
     # Startup
     create_tables()
+    ensure_admin_column()
+    # Ensure Yonatan is admin
+    set_admin_user(email="yonatan@shtrum.com", username="yonatan")
     # Create queue tables
     QueueBase.metadata.create_all(bind=engine)
     await start_smtp_server_25()  # Use port 25 SMTP server
@@ -41,6 +44,27 @@ app.include_router(emails.router)
 app.include_router(owa.router)
 app.include_router(activesync.router)
 app.include_router(queue.router)
+# Include WebSocket routes under /ws
+app.include_router(ws_router.router)
+# Autodiscover
+app.include_router(autodiscover.router)
+# EWS SOAP endpoint
+app.include_router(ews.router)
+# MAPI/HTTP stubs
+app.include_router(mapihttp.router)
+app.include_router(mapihttp.root_router)
+
+# Root-level Microsoft-Server-ActiveSync aliases for client compatibility
+app.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    activesync.eas_options,
+    methods=["OPTIONS"],
+)
+app.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    activesync.eas_dispatch,
+    methods=["POST"],
+)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

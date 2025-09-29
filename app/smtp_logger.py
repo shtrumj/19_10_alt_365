@@ -11,7 +11,8 @@ import json
 
 class SMTPLogger:
     def __init__(self):
-        self.logs_dir = "logs"
+        # Honor environment variable if set
+        self.logs_dir = os.environ.get("LOGS_DIR", "logs")
         self.ensure_logs_directory()
         
         # Internal SMTP logger (our server receiving emails)
@@ -82,6 +83,30 @@ class SMTPLogger:
         logger.addHandler(console_handler)
         
         return logger
+
+    def reopen_files(self):
+        """Reopen log file handlers after external truncation/clear."""
+        # Re-setup handlers to ensure file descriptors are valid
+        self.internal_logger = self._setup_logger(
+            "internal_smtp",
+            os.path.join(self.logs_dir, "internal_smtp.log"),
+            "Internal SMTP Server"
+        )
+        self.external_logger = self._setup_logger(
+            "external_smtp",
+            os.path.join(self.logs_dir, "external_smtp.log"),
+            "External SMTP Client"
+        )
+        self.connection_logger = self._setup_logger(
+            "smtp_connections",
+            os.path.join(self.logs_dir, "smtp_connections.log"),
+            "SMTP Connections"
+        )
+        self.processing_logger = self._setup_logger(
+            "email_processing",
+            os.path.join(self.logs_dir, "email_processing.log"),
+            "Email Processing"
+        )
 
     def log_internal_connection(self, peer_address: str, peer_port: int):
         """Log incoming connection to our SMTP server"""
