@@ -18,6 +18,12 @@ import uuid
 import base64
 import struct
 import time
+from typing import Optional
+
+try:
+    import gssapi  # Kerberos (Negotiate) acceptor
+except Exception:
+    gssapi = None
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mapi", tags=["mapihttp"])
@@ -212,7 +218,7 @@ async def mapi_emsmdb(request: Request):
             return Response(
                 status_code=401,
                 headers={
-                    "WWW-Authenticate": "Negotiate, NTLM",
+                    "WWW-Authenticate": "NTLM",
                     "Content-Type": "application/mapi-http",
                     "X-ClientInfo": "365-Email-System/1.0",
                     "X-RequestId": request_id
@@ -230,6 +236,48 @@ async def mapi_emsmdb(request: Request):
         # Real implementation would validate NTLM/Kerberos tokens
         
         # Handle NTLM authentication flow properly
+        # Handle Kerberos/Negotiate (GSSAPI) if presented
+        if auth_header and auth_header.startswith("Negotiate "):
+            token_b64 = auth_header.split(" ", 1)[1]
+            try:
+                in_token = base64.b64decode(token_b64)
+                if gssapi is not None:
+                    srv_creds = gssapi.Credentials(usage='accept')
+                    ctx = gssapi.SecurityContext(creds=srv_creds)
+                    out_token = ctx.step(in_token)
+                    # If context not complete yet, send 401 with Negotiate out token
+                    if out_token is not None and not ctx.complete:
+                        log_mapi("gss_negotiate_continue", {"request_id": request_id})
+                        return Response(
+                            status_code=401,
+                            headers={
+                                "WWW-Authenticate": f"Negotiate {base64.b64encode(out_token).decode('ascii')}",
+                                "Content-Type": "application/mapi-http",
+                                "X-ClientInfo": "365-Email-System/1.0",
+                                "X-RequestId": request_id,
+                                "X-RequestType": "Connect",
+                                "Cache-Control": "private",
+                                "Connection": "close"
+                            }
+                        )
+                    # If complete, accept and return 200 Connect
+                    if ctx.complete:
+                        log_mapi("gss_authenticated", {"request_id": request_id})
+                        return Response(
+                            status_code=200,
+                            headers={
+                                "Content-Type": "application/mapi-http",
+                                "X-RequestType": "Connect",
+                                "X-ClientInfo": "365-Email-System/1.0",
+                                "X-RequestId": request_id,
+                                "X-ResponseCode": "0",
+                                "Cache-Control": "private"
+                            }
+                        )
+                # If gssapi not available or failed, fallthrough to NTLM path
+            except Exception as gss_err:
+                log_mapi("gss_error", {"request_id": request_id, "error": str(gss_err)})
+
         if auth_header and auth_header.startswith("NTLM") and len(body) == 0:
             # Distinguish NTLM Type1 (negotiate) vs Type3 (authenticate) by token length
             token = auth_header.split(" ", 1)[1] if " " in auth_header else ""
@@ -264,28 +312,35 @@ async def mapi_emsmdb(request: Request):
                     }
                 )
             else:
-                # NTLM Type 3 authenticate received -> accept and return Connect success
-                log_mapi("ntlm_authenticated", {
-                    "request_id": request_id,
-                    "stage": "type3_received",
-                    "token_len": len(token)
-                })
-                outlook_diagnostics.log_authentication_flow("NTLM", "type3_received", True, {
-                    "request_id": request_id
-                })
-                return Response(
-                    status_code=200,
-                    headers={
-                        "Content-Type": "application/mapi-http",
-                        "X-RequestType": "Connect",
-                        "X-ClientInfo": "365-Email-System/1.0",
-                        "X-RequestId": request_id,
-                        "X-ResponseCode": "0",
-                        "Cache-Control": "private",
-                        # Keep advertising acceptable schemes
-                        "WWW-Authenticate": "Negotiate, NTLM"
-                    }
-                )
+                # Detect NTLM Type 3 by message type field
+                try:
+                    raw = base64.b64decode(token + "==")  # tolerate padding
+                    is_ntlm = raw.startswith(b"NTLMSSP\x00")
+                    msg_type = struct.unpack('<I', raw[8:12])[0] if len(raw) >= 12 else 0
+                except Exception:
+                    is_ntlm = False
+                    msg_type = 0
+                if is_ntlm and msg_type == 3:
+                    # NTLM Type 3 authenticate received -> accept and return Connect success
+                    log_mapi("ntlm_authenticated", {
+                        "request_id": request_id,
+                        "stage": "type3_received",
+                        "token_len": len(token)
+                    })
+                    outlook_diagnostics.log_authentication_flow("NTLM", "type3_received", True, {
+                        "request_id": request_id
+                    })
+                    return Response(
+                        status_code=200,
+                        headers={
+                            "Content-Type": "application/mapi-http",
+                            "X-RequestType": "Connect",
+                            "X-ClientInfo": "365-Email-System/1.0",
+                            "X-RequestId": request_id,
+                            "X-ResponseCode": "0",
+                            "Cache-Control": "private"
+                        }
+                    )
         
         # Parse MAPI/HTTP request with improved error handling
         if len(body) > 0:
@@ -326,7 +381,7 @@ async def mapi_emsmdb(request: Request):
                 return Response(
                     status_code=401,
                     headers={
-                        "WWW-Authenticate": "Negotiate, NTLM",
+                        "WWW-Authenticate": "NTLM",
                         "Content-Type": "application/mapi-http",
                         "X-ClientInfo": "365-Email-System/1.0",
                         "X-RequestId": request_id,
@@ -552,7 +607,7 @@ async def mapi_emsmdb_get(request: Request):
     return Response(
         status_code=401,
         headers={
-            "WWW-Authenticate": "Negotiate, NTLM",
+            "WWW-Authenticate": "NTLM",
             "Content-Type": "application/mapi-http",
             "X-RequestType": "Connect",
             "X-ClientInfo": "365-Email-System/1.0",
@@ -566,7 +621,7 @@ async def mapi_emsmdb_head(request: Request):
     request_id = str(uuid.uuid4())
     log_mapi("emsmdb_head", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
     return Response(status_code=401, headers={
-        "WWW-Authenticate": "Negotiate, NTLM",
+        "WWW-Authenticate": "NTLM",
         "Content-Type": "application/mapi-http",
         "X-RequestType": "Connect",
         "X-ClientInfo": "365-Email-System/1.0",
@@ -600,7 +655,7 @@ async def mapi_emsmdb_get_root(request: Request):
     return Response(
         status_code=401,
         headers={
-            "WWW-Authenticate": "Negotiate, NTLM",
+            "WWW-Authenticate": "NTLM",
             "Content-Type": "application/mapi-http",
             "X-RequestType": "Connect",
             "X-ClientInfo": "365-Email-System/1.0",
@@ -614,7 +669,7 @@ async def mapi_emsmdb_head_root(request: Request):
     request_id = str(uuid.uuid4())
     log_mapi("emsmdb_head_root", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
     return Response(status_code=401, headers={
-        "WWW-Authenticate": "Negotiate, NTLM",
+        "WWW-Authenticate": "NTLM",
         "Content-Type": "application/mapi-http",
         "X-RequestType": "Connect",
         "X-ClientInfo": "365-Email-System/1.0",

@@ -370,7 +370,7 @@ async def autodiscover_json(email_address: str, request: Request):
             "Url": f"https://{host}",
             "AuthPackage": "Ntlm", 
             "ServerExclusiveConnect": False,
-            "CertPrincipalName": host,
+            "CertPrincipalName": f"msstd:{host}",
             "GroupingInformation": "Exchange",
             "EwsUrl": f"https://{host}/EWS/Exchange.asmx",
             "EcpUrl": f"https://{host}/owa",
