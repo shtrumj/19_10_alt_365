@@ -240,7 +240,7 @@ async def autodiscover(request: Request):
         <Server>{exch_server}</Server>
         <Port>443</Port>
         <SSL>On</SSL>
-        <AuthPackage>Basic</AuthPackage>
+        <AuthPackage>Ntlm</AuthPackage>
         <EwsUrl>{ews_url}</EwsUrl>
         <External>
           <Url>{mapi_server_url}</Url>

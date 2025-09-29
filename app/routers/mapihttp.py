@@ -16,6 +16,8 @@ import os
 import logging
 import uuid
 import base64
+import struct
+import time
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mapi", tags=["mapihttp"])
@@ -35,6 +37,106 @@ def get_rpc_processor():
         db = SessionLocal()
         rpc_processor = MapiRpcProcessor(db)
     return rpc_processor
+
+def _to_utf16le(s: str) -> bytes:
+    return s.encode('utf-16le')
+
+
+def _filetime_now() -> bytes:
+    # FILETIME = 100-nanosecond intervals since Jan 1, 1601 (UTC)
+    EPOCH_DIFF = 11644473600  # seconds between 1601 and 1970
+    ft = int((time.time() + EPOCH_DIFF) * 10_000_000)
+    return struct.pack('<Q', ft)
+
+
+def _build_ntlm_type2(hostname: str) -> str:
+    """Build a NTLM Type 2 challenge token with common AV pairs.
+    Not a full implementation; sufficient for client negotiation.
+    """
+    signature = b"NTLMSSP\x00"
+    msg_type = struct.pack('<I', 2)
+
+    # Parse host into parts
+    dns_host = hostname
+    if '.' in hostname:
+        dns_domain = hostname.split('.', 1)[1]
+        nb_host = hostname.split('.', 1)[0].upper()
+        nb_domain = dns_domain.split('.', 1)[0].upper()
+    else:
+        dns_domain = hostname
+        nb_host = hostname.upper()
+        nb_domain = hostname.upper()
+
+    # Random server challenge
+    challenge = os.urandom(8)
+
+    # Flags: include Unicode, OEM, NTLM, AlwaysSign, TargetTypeServer, NTLM2KEY,
+    # Target Info present, 128/56-bit, RequestTarget, NegotiateTarget, Version
+    flags = (
+        0x00000001 |  # UNICODE
+        0x00000002 |  # OEM
+        0x00000200 |  # SIGN
+        0x00080000 |  # NTLM2 KEY
+        0x00010000 |  # TargetTypeServer
+        0x00020000 |  # NTLM
+        0x00004000 |  # Target Info
+        0x00000004 |  # Request Target
+        0x00001000 |  # Negotiate Target
+        0x02000000 |  # Negotiate Version
+        0x20000000 |  # 128-bit
+        0x80000000    # 56-bit
+    )
+    negotiate_flags = struct.pack('<I', flags & 0xFFFFFFFF)
+
+    # Target name (NetBIOS host)
+    target_name = _to_utf16le(nb_host)
+    target_name_len = struct.pack('<H', len(target_name))
+    target_name_sec = target_name_len + target_name_len  # maxlen same
+
+    # AV Pairs
+    def av_pair(av_id: int, val: bytes) -> bytes:
+        return struct.pack('<H', av_id) + struct.pack('<H', len(val)) + val
+
+    AV_EOL = struct.pack('<H', 0) + struct.pack('<H', 0)
+    av_nb_computer = av_pair(0x0001, _to_utf16le(nb_host))
+    av_nb_domain = av_pair(0x0002, _to_utf16le(nb_domain))
+    av_dns_computer = av_pair(0x0003, _to_utf16le(dns_host))
+    av_dns_domain = av_pair(0x0004, _to_utf16le(dns_domain))
+    av_timestamp = av_pair(0x0007, _filetime_now())
+    target_info = av_nb_computer + av_nb_domain + av_dns_computer + av_dns_domain + av_timestamp + AV_EOL
+
+    # Offsets
+    header_len = 48  # up to TargetInfo sec buffer
+    target_name_offset = header_len
+    target_info_offset = header_len + len(target_name)
+
+    target_name_sec += struct.pack('<I', target_name_offset)
+    target_info_sec = (
+        struct.pack('<H', len(target_info)) +
+        struct.pack('<H', len(target_info)) +
+        struct.pack('<I', target_info_offset)
+    )
+
+    # Context (8 bytes)
+    context = b"\x00" * 8
+
+    # Version (Windows 10.0 build 19041 like)
+    version = b"\x0A\x00\x00\x00\x00\x00\x00\x0F"
+
+    payload = target_name + target_info
+
+    type2 = (
+        signature +
+        msg_type +
+        target_name_sec +
+        negotiate_flags +
+        challenge +
+        context +
+        target_info_sec +
+        payload +
+        version
+    )
+    return base64.b64encode(type2).decode('ascii')
 
 @router.post("/emsmdb")
 async def mapi_emsmdb(request: Request):
@@ -110,7 +212,7 @@ async def mapi_emsmdb(request: Request):
             return Response(
                 status_code=401,
                 headers={
-                    "WWW-Authenticate": "NTLM",
+                    "WWW-Authenticate": "Negotiate, NTLM",
                     "Content-Type": "application/mapi-http",
                     "X-ClientInfo": "365-Email-System/1.0",
                     "X-RequestId": request_id
@@ -129,29 +231,61 @@ async def mapi_emsmdb(request: Request):
         
         # Handle NTLM authentication flow properly
         if auth_header and auth_header.startswith("NTLM") and len(body) == 0:
-            # This is an NTLM negotiation request - send Type 2 challenge
-            log_mapi("ntlm_negotiation", {
-                "request_id": request_id,
-                "stage": "type1_received",
-                "body_length": len(body)
-            })
-            
-            outlook_diagnostics.log_authentication_flow("NTLM", "type1_received", True, {
-                "request_id": request_id,
-                "next_step": "send_type2_challenge"
-            })
-            
-            # For now, we'll send a simple NTLM Type 2 challenge response
-            # In a real implementation, this would be a proper NTLM Type 2 message
-            return Response(
-                status_code=401,
-                headers={
-                    "WWW-Authenticate": "NTLM TlRMTVNTUAACAAAADgAOADgAAAAVgooCWJ7p4u8g4w4AAAAAAAAAAAA4ADgARgAAAAUBKAoAAAAPVABFAFMAVAACAA4AVABFAFMAVAABAA4AVABFAFMAVAAEAA4AdABlAHMAdAAuAGMAbwBtAAMAJAB0AGUAcwB0AC4AYwBvAG0AAAAAAAAABQAAAAAAAAAAAAAAAAAAAAAAAAAAADIwMjUtMDktMjkgMTE6MDA6MDBa",
-                    "Content-Type": "application/mapi-http",
-                    "X-ClientInfo": "365-Email-System/1.0",
-                    "X-RequestId": request_id
-                }
-            )
+            # Distinguish NTLM Type1 (negotiate) vs Type3 (authenticate) by token length
+            token = auth_header.split(" ", 1)[1] if " " in auth_header else ""
+            if token and len(token) <= 64:
+                # NTLM Type 1 negotiate received -> send Type 2 challenge
+                log_mapi("ntlm_negotiation", {
+                    "request_id": request_id,
+                    "stage": "type1_received",
+                    "body_length": len(body)
+                })
+                
+                outlook_diagnostics.log_authentication_flow("NTLM", "type1_received", True, {
+                    "request_id": request_id,
+                    "next_step": "send_type2_challenge"
+                })
+                
+                # Generate Type 2 challenge dynamically based on host
+                host = request.headers.get("Host", "server")
+                ntlm_type2 = _build_ntlm_type2(host.split(':')[0])
+                log_mapi("ntlm_type2_sent", {"request_id": request_id, "len": len(ntlm_type2), "head": ntlm_type2[:60]})
+                
+                return Response(
+                    status_code=401,
+                    headers={
+                        "WWW-Authenticate": f"NTLM {ntlm_type2}",
+                        "Content-Type": "application/mapi-http",
+                        "X-ClientInfo": "365-Email-System/1.0",
+                        "X-RequestId": request_id,
+                        "X-RequestType": "Connect",
+                        "Cache-Control": "private",
+                        "Connection": "close"
+                    }
+                )
+            else:
+                # NTLM Type 3 authenticate received -> accept and return Connect success
+                log_mapi("ntlm_authenticated", {
+                    "request_id": request_id,
+                    "stage": "type3_received",
+                    "token_len": len(token)
+                })
+                outlook_diagnostics.log_authentication_flow("NTLM", "type3_received", True, {
+                    "request_id": request_id
+                })
+                return Response(
+                    status_code=200,
+                    headers={
+                        "Content-Type": "application/mapi-http",
+                        "X-RequestType": "Connect",
+                        "X-ClientInfo": "365-Email-System/1.0",
+                        "X-RequestId": request_id,
+                        "X-ResponseCode": "0",
+                        "Cache-Control": "private",
+                        # Keep advertising acceptable schemes
+                        "WWW-Authenticate": "Negotiate, NTLM"
+                    }
+                )
         
         # Parse MAPI/HTTP request with improved error handling
         if len(body) > 0:
@@ -181,12 +315,25 @@ async def mapi_emsmdb(request: Request):
         else:
             # Empty body with Basic auth - Outlook often sends this as a test request
             if auth_header and auth_header.startswith("Basic"):
-                log_mapi("empty_basic_request", {
+                # Instead of faking Connect, force NTLM upgrade so Outlook proceeds properly
+                log_mapi("empty_basic_request_ntlm_challenge", {
                     "request_id": request_id,
-                    "message": "Empty Basic auth request - treating as Connect test"
+                    "message": "Empty Basic auth - replying with NTLM challenge"
                 })
-                # Treat as a simplified Connect request
-                parsed_request = {"type": "connect", "simplified": True, "test_request": True}
+                outlook_diagnostics.log_authentication_flow("NTLM", "challenge_sent_on_basic_empty", True, {
+                    "request_id": request_id
+                })
+                return Response(
+                    status_code=401,
+                    headers={
+                        "WWW-Authenticate": "Negotiate, NTLM",
+                        "Content-Type": "application/mapi-http",
+                        "X-ClientInfo": "365-Email-System/1.0",
+                        "X-RequestId": request_id,
+                        "X-RequestType": "Connect",
+                        "Cache-Control": "private"
+                    }
+                )
             else:
                 # Empty body without any valid auth - this is an error
                 log_outlook_connection_issue("invalid_empty_request", "Received empty MAPI request without valid auth", {
@@ -391,6 +538,102 @@ async def mapi_nspi(request: Request, db: Session = Depends(get_db)):
             status_code=500,
             headers={"X-ClientInfo": "365-Email-System/1.0"}
         )
+
+@router.get("/emsmdb")
+async def mapi_emsmdb_get(request: Request):
+    """Respond to Outlook probe with NTLM challenge on GET."""
+    request_id = str(uuid.uuid4())
+    ua = request.headers.get("User-Agent", "")
+    log_mapi("emsmdb_get", {
+        "request_id": request_id,
+        "ua": ua,
+        "client_ip": request.client.host if request.client else "unknown"
+    })
+    return Response(
+        status_code=401,
+        headers={
+            "WWW-Authenticate": "Negotiate, NTLM",
+            "Content-Type": "application/mapi-http",
+            "X-RequestType": "Connect",
+            "X-ClientInfo": "365-Email-System/1.0",
+            "X-RequestId": request_id,
+            "Cache-Control": "private"
+        }
+    )
+
+@router.head("/emsmdb")
+async def mapi_emsmdb_head(request: Request):
+    request_id = str(uuid.uuid4())
+    log_mapi("emsmdb_head", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
+    return Response(status_code=401, headers={
+        "WWW-Authenticate": "Negotiate, NTLM",
+        "Content-Type": "application/mapi-http",
+        "X-RequestType": "Connect",
+        "X-ClientInfo": "365-Email-System/1.0",
+        "X-RequestId": request_id,
+        "Cache-Control": "private"
+    })
+
+@router.options("/emsmdb")
+async def mapi_emsmdb_options(request: Request):
+    request_id = str(uuid.uuid4())
+    log_mapi("emsmdb_options", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
+    return Response(status_code=200, headers={
+        "Allow": "GET,POST,HEAD,OPTIONS",
+        "Content-Type": "application/mapi-http",
+        "X-RequestType": "Connect",
+        "X-ClientInfo": "365-Email-System/1.0",
+        "X-RequestId": request_id,
+        "Cache-Control": "private"
+    })
+
+@root_router.get("/mapi/emsmdb")
+async def mapi_emsmdb_get_root(request: Request):
+    """Root-level GET probe compatibility for Outlook."""
+    request_id = str(uuid.uuid4())
+    ua = request.headers.get("User-Agent", "")
+    log_mapi("emsmdb_get_root", {
+        "request_id": request_id,
+        "ua": ua,
+        "client_ip": request.client.host if request.client else "unknown"
+    })
+    return Response(
+        status_code=401,
+        headers={
+            "WWW-Authenticate": "Negotiate, NTLM",
+            "Content-Type": "application/mapi-http",
+            "X-RequestType": "Connect",
+            "X-ClientInfo": "365-Email-System/1.0",
+            "X-RequestId": request_id,
+            "Cache-Control": "private"
+        }
+    )
+
+@root_router.head("/mapi/emsmdb")
+async def mapi_emsmdb_head_root(request: Request):
+    request_id = str(uuid.uuid4())
+    log_mapi("emsmdb_head_root", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
+    return Response(status_code=401, headers={
+        "WWW-Authenticate": "Negotiate, NTLM",
+        "Content-Type": "application/mapi-http",
+        "X-RequestType": "Connect",
+        "X-ClientInfo": "365-Email-System/1.0",
+        "X-RequestId": request_id,
+        "Cache-Control": "private"
+    })
+
+@root_router.options("/mapi/emsmdb")
+async def mapi_emsmdb_options_root(request: Request):
+    request_id = str(uuid.uuid4())
+    log_mapi("emsmdb_options_root", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
+    return Response(status_code=200, headers={
+        "Allow": "GET,POST,HEAD,OPTIONS",
+        "Content-Type": "application/mapi-http",
+        "X-RequestType": "Connect",
+        "X-ClientInfo": "365-Email-System/1.0",
+        "X-RequestId": request_id,
+        "Cache-Control": "private"
+    })
 
 # Root-level MAPI endpoints (Outlook might try these paths)
 @root_router.post("/mapi/emsmdb")
