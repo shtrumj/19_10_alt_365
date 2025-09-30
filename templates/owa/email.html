@@ -9,7 +9,7 @@
         <a href="/owa/inbox" class="btn btn-secondary">
             <i class="fas fa-arrow-left"></i> Back
         </a>
-        <button class="btn btn-danger" onclick="deleteEmail({{ email.id }})">
+        <button class="btn btn-danger" onclick="deleteEmail('{{ email.uuid if email.uuid else email.id }}')">
             <i class="fas fa-trash"></i> {{ get_translation(request, 'delete') }}
         </button>
     </div>
@@ -26,7 +26,7 @@
                     <strong>To:</strong> {{ email.recipient.email if email.recipient else email.external_recipient }}
                 </div>
                 <div class="mb-2">
-                    <strong>Date:</strong> {{ email.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                    <strong>Date:</strong> <span id="email-date" data-date="{{ email.created_at.isoformat() }}"></span>
                 </div>
             </div>
             <div class="col-md-4 text-end">
@@ -39,7 +39,9 @@
     <div class="card-body">
         <div class="email-content">
             {% if email.parsed_content %}
-                {{ email.parsed_content|replace('\n', '<br>')|safe }}
+                {{ email.parsed_content|safe }}
+            {% elif email.body and ('<html' in email.body or '<div' in email.body or '<table' in email.body) %}
+                {{ email.body|safe }}
             {% else %}
                 <div class="alert alert-warning">
                     <i class="fas fa-exclamation-triangle"></i>
@@ -76,10 +78,9 @@ function deleteEmail(emailId) {
     console.log('Delete button clicked for email ID:', emailId);
     if (confirm('Are you sure you want to delete this email?')) {
         console.log('User confirmed deletion, sending DELETE request...');
-        fetch('/emails/' + emailId, {
-            method: 'DELETE',
-            credentials: 'include'  // Include cookies for authentication
-        })
+        // Prefer OWA route which handles UUID and redirects
+        window.location.href = '/owa/email/' + emailId + '/delete';
+        return;
         .then(response => {
             console.log('Delete response status:', response.status);
             if (response.ok) {
@@ -125,6 +126,25 @@ function markAsUnread(emailId) {
 
 // Load URL parameters for reply/forward
 document.addEventListener('DOMContentLoaded', function() {
+    // Format date with +3h adjustment and timezone label
+    try {
+        const el = document.getElementById('email-date');
+        if (el) {
+            const iso = el.getAttribute('data-date');
+            const d = new Date(iso);
+            const adjusted = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const formatted = new Intl.DateTimeFormat('en-US', {
+                timeZone: timezone,
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+            }).format(adjusted);
+            const abbr = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'short' })
+              .formatToParts(adjusted).find(p => p.type === 'timeZoneName')?.value || '';
+            el.textContent = formatted + ' ' + abbr;
+        }
+    } catch (e) { /* ignore */ }
+
     const urlParams = new URLSearchParams(window.location.search);
     const to = urlParams.get('to');
     const subject = urlParams.get('subject');

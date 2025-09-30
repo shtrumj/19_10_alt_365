@@ -1,178 +1,312 @@
-{% extends "owa/base.html" %}
-
-{% block title %}{{ get_translation(request, 'compose') }} - {{ get_translation(request, 'title') }}{% endblock %}
-
-{% block content %}
+{% extends "owa/base.html" %} {% block title %}{{ get_translation(request,
+'compose') }} - {{ get_translation(request, 'title') }}{% endblock %} {% block
+content %}
 <div class="content-header">
-    <h1><i class="fas fa-edit"></i> {{ get_translation(request, 'compose_email') }}</h1>
-    <div>
-        <a href="/owa/inbox?lang={{ get_language(request) }}" class="btn btn-outline-secondary">
-            <i class="fas fa-arrow-left"></i> {{ get_translation(request, 'back_to_inbox') }}
-        </a>
-    </div>
+  <h1>
+    <i class="fas fa-edit"></i> {{ get_translation(request, 'compose_email') }}
+  </h1>
+  <div>
+    <a
+      href="/owa/inbox?lang={{ get_language(request) }}"
+      class="btn btn-outline-secondary"
+    >
+      <i class="fas fa-arrow-left"></i> {{ get_translation(request,
+      'back_to_inbox') }}
+    </a>
+  </div>
 </div>
 
 <!-- Compose Form -->
 <div class="card border-0 shadow-sm">
-    <div class="card-body">
-        <form method="post" action="/owa/send" id="composeForm">
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <label for="recipient_email" class="form-label">
-                        <i class="fas fa-user"></i> {{ get_translation(request, 'to_label') }}:
-                    </label>
-                    <input type="email" class="form-control" id="recipient_email" name="recipient_email" 
-                           placeholder="{{ get_translation(request, 'enter_recipient') }}" required>
-                </div>
-                <div class="col-md-6">
-                    <label for="cc" class="form-label">
-                        <i class="fas fa-copy"></i> {{ get_translation(request, 'cc_label') }}:
-                    </label>
-                    <input type="email" class="form-control" id="cc" name="cc" 
-                           placeholder="{{ get_translation(request, 'optional_cc') }}">
-                </div>
-            </div>
-            
-            <div class="mb-3">
-                <label for="subject" class="form-label">
-                    <i class="fas fa-tag"></i> {{ get_translation(request, 'subject_label') }}:
-                </label>
-                <input type="text" class="form-control" id="subject" name="subject" 
-                       placeholder="{{ get_translation(request, 'enter_subject') }}" required>
-            </div>
-            
-            <div class="mb-4">
-                <label for="body" class="form-label">
-                    <i class="fas fa-align-left"></i> {{ get_translation(request, 'message_label') }}:
-                </label>
-                <textarea class="form-control" id="body" name="body" rows="12" 
-                          placeholder="{{ get_translation(request, 'type_message') }}" required></textarea>
-            </div>
-            
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <button type="submit" class="btn btn-primary me-2">
-                        <i class="fas fa-paper-plane"></i> {{ get_translation(request, 'send') }}
-                    </button>
-                    <button type="button" class="btn btn-outline-secondary" onclick="saveDraft()">
-                        <i class="fas fa-save"></i> {{ get_translation(request, 'save_draft') }}
-                    </button>
-                </div>
-                <div>
-                    <button type="button" class="btn btn-outline-danger" onclick="clearForm()">
-                        <i class="fas fa-trash"></i> {{ get_translation(request, 'clear') }}
-                    </button>
-                </div>
-            </div>
-        </form>
-    </div>
+  <div class="card-body">
+    <form method="post" action="/owa/send" id="composeForm">
+      <div class="row mb-3">
+        <div class="col-md-6">
+          <label for="recipient_email" class="form-label">
+            <i class="fas fa-user"></i> {{ get_translation(request, 'to_label')
+            }}:
+          </label>
+          <input
+            type="email"
+            class="form-control"
+            id="recipient_email"
+            name="recipient_email"
+            placeholder="{{ get_translation(request, 'enter_recipient') }}"
+            required
+          />
+        </div>
+        <div class="col-md-6">
+          <label for="cc" class="form-label">
+            <i class="fas fa-copy"></i> {{ get_translation(request, 'cc_label')
+            }}:
+          </label>
+          <input
+            type="email"
+            class="form-control"
+            id="cc"
+            name="cc"
+            placeholder="{{ get_translation(request, 'optional_cc') }}"
+          />
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label for="subject" class="form-label">
+          <i class="fas fa-tag"></i> {{ get_translation(request,
+          'subject_label') }}:
+        </label>
+        <input
+          type="text"
+          class="form-control"
+          id="subject"
+          name="subject"
+          placeholder="{{ get_translation(request, 'enter_subject') }}"
+          required
+        />
+      </div>
+
+      <div class="mb-4">
+        <label for="body" class="form-label">
+          <i class="fas fa-align-left"></i> {{ get_translation(request,
+          'message_label') }}:
+        </label>
+        <textarea
+          class="form-control"
+          id="body"
+          name="body"
+          rows="12"
+          placeholder="{{ get_translation(request, 'type_message') }}"
+          required
+        ></textarea>
+      </div>
+
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <button type="submit" class="btn btn-primary me-2">
+            <i class="fas fa-paper-plane"></i> {{ get_translation(request,
+            'send') }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-outline-secondary"
+            onclick="saveDraft()"
+          >
+            <i class="fas fa-save"></i> {{ get_translation(request,
+            'save_draft') }}
+          </button>
+        </div>
+        <div>
+          <button
+            type="button"
+            class="btn btn-outline-danger"
+            onclick="clearForm()"
+          >
+            <i class="fas fa-trash"></i> {{ get_translation(request, 'clear') }}
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
 </div>
 
 <!-- Email Templates -->
 <div class="card border-0 shadow-sm mt-4">
-    <div class="card-header bg-white">
-        <h5 class="mb-0"><i class="fas fa-file-alt text-primary"></i> {{ get_translation(request, 'email_templates') }}</h5>
+  <div class="card-header bg-white">
+    <h5 class="mb-0">
+      <i class="fas fa-file-alt text-primary"></i> {{ get_translation(request,
+      'email_templates') }}
+    </h5>
+  </div>
+  <div class="card-body">
+    <div class="row">
+      <div class="col-md-3">
+        <button
+          class="btn btn-outline-primary w-100 mb-2"
+          onclick="loadTemplate('meeting')"
+        >
+          <i class="fas fa-calendar"></i> {{ get_translation(request,
+          'meeting_request') }}
+        </button>
+      </div>
+      <div class="col-md-3">
+        <button
+          class="btn btn-outline-success w-100 mb-2"
+          onclick="loadTemplate('followup')"
+        >
+          <i class="fas fa-reply"></i> {{ get_translation(request, 'follow_up')
+          }}
+        </button>
+      </div>
+      <div class="col-md-3">
+        <button
+          class="btn btn-outline-warning w-100 mb-2"
+          onclick="loadTemplate('urgent')"
+        >
+          <i class="fas fa-exclamation"></i> {{ get_translation(request,
+          'urgent') }}
+        </button>
+      </div>
+      <div class="col-md-3">
+        <button
+          class="btn btn-outline-info w-100 mb-2"
+          onclick="loadTemplate('thankyou')"
+        >
+          <i class="fas fa-heart"></i> {{ get_translation(request, 'thank_you')
+          }}
+        </button>
+      </div>
     </div>
-    <div class="card-body">
-        <div class="row">
-            <div class="col-md-3">
-                <button class="btn btn-outline-primary w-100 mb-2" onclick="loadTemplate('meeting')">
-                    <i class="fas fa-calendar"></i> {{ get_translation(request, 'meeting_request') }}
-                </button>
-            </div>
-            <div class="col-md-3">
-                <button class="btn btn-outline-success w-100 mb-2" onclick="loadTemplate('followup')">
-                    <i class="fas fa-reply"></i> {{ get_translation(request, 'follow_up') }}
-                </button>
-            </div>
-            <div class="col-md-3">
-                <button class="btn btn-outline-warning w-100 mb-2" onclick="loadTemplate('urgent')">
-                    <i class="fas fa-exclamation"></i> {{ get_translation(request, 'urgent') }}
-                </button>
-            </div>
-            <div class="col-md-3">
-                <button class="btn btn-outline-info w-100 mb-2" onclick="loadTemplate('thankyou')">
-                    <i class="fas fa-heart"></i> {{ get_translation(request, 'thank_you') }}
-                </button>
-            </div>
-        </div>
-    </div>
+  </div>
 </div>
 
 <!-- Quick Actions -->
 <div class="card border-0 shadow-sm mt-4">
-    <div class="card-header bg-white">
-        <h5 class="mb-0"><i class="fas fa-magic text-primary"></i> {{ get_translation(request, 'quick_actions') }}</h5>
+  <div class="card-header bg-white">
+    <h5 class="mb-0">
+      <i class="fas fa-magic text-primary"></i> {{ get_translation(request,
+      'quick_actions') }}
+    </h5>
+  </div>
+  <div class="card-body">
+    <div class="row">
+      <div class="col-md-4">
+        <button
+          class="btn btn-outline-secondary w-100 mb-2"
+          onclick="addSignature()"
+        >
+          <i class="fas fa-signature"></i> {{ get_translation(request,
+          'add_signature') }}
+        </button>
+      </div>
+      <div class="col-md-4">
+        <button
+          class="btn btn-outline-secondary w-100 mb-2"
+          onclick="checkSpelling()"
+        >
+          <i class="fas fa-spell-check"></i> {{ get_translation(request,
+          'check_spelling') }}
+        </button>
+      </div>
+      <div class="col-md-4">
+        <button
+          class="btn btn-outline-secondary w-100 mb-2"
+          onclick="previewEmail()"
+        >
+          <i class="fas fa-eye"></i> {{ get_translation(request, 'preview') }}
+        </button>
+      </div>
     </div>
-    <div class="card-body">
-        <div class="row">
-            <div class="col-md-4">
-                <button class="btn btn-outline-secondary w-100 mb-2" onclick="addSignature()">
-                    <i class="fas fa-signature"></i> {{ get_translation(request, 'add_signature') }}
-                </button>
-            </div>
-            <div class="col-md-4">
-                <button class="btn btn-outline-secondary w-100 mb-2" onclick="checkSpelling()">
-                    <i class="fas fa-spell-check"></i> {{ get_translation(request, 'check_spelling') }}
-                </button>
-            </div>
-            <div class="col-md-4">
-                <button class="btn btn-outline-secondary w-100 mb-2" onclick="previewEmail()">
-                    <i class="fas fa-eye"></i> {{ get_translation(request, 'preview') }}
-                </button>
-            </div>
-        </div>
-    </div>
+  </div>
 </div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-// RTL adjustments for form controls
-document.addEventListener('DOMContentLoaded', function() {
-  if (document.documentElement.getAttribute('dir') === 'rtl') {
-    document.querySelectorAll('input.form-control, textarea.form-control, label.form-label').forEach(function(el){
-      el.style.textAlign = 'right';
-    });
+{% endblock %} {% block scripts %}
+<style>
+  /* RTL-specific styling for compose form */
+  [dir="rtl"] .form-control {
+    text-align: right;
+    direction: rtl;
   }
-});
 
-function saveDraft() {
+  [dir="rtl"] .form-label {
+    text-align: right;
+  }
+
+  [dir="rtl"] .card-body {
+    text-align: right;
+  }
+
+  [dir="rtl"] .btn i {
+    margin-right: 0;
+    margin-left: 0.5rem;
+  }
+
+  [dir="rtl"] .d-flex.justify-content-between {
+    flex-direction: row-reverse;
+  }
+
+  [dir="rtl"] .row {
+    direction: rtl;
+  }
+
+  [dir="rtl"] .col-md-6 {
+    text-align: right;
+  }
+
+  [dir="rtl"] .content-header {
+    flex-direction: row-reverse;
+  }
+
+  [dir="rtl"] .content-header h1 {
+    text-align: right;
+  }
+
+  [dir="rtl"] .content-header .btn {
+    margin-left: 0;
+    margin-right: 0.5rem;
+  }
+</style>
+
+<script>
+  // RTL adjustments for form controls
+  document.addEventListener("DOMContentLoaded", function () {
+    if (document.documentElement.getAttribute("dir") === "rtl") {
+      document
+        .querySelectorAll(
+          "input.form-control, textarea.form-control, label.form-label",
+        )
+        .forEach(function (el) {
+          el.style.textAlign = "right";
+          el.style.direction = "rtl";
+        });
+
+      // Adjust button icons for RTL
+      document.querySelectorAll(".btn i").forEach(function (icon) {
+        icon.style.marginRight = "0";
+        icon.style.marginLeft = "0.5rem";
+      });
+    }
+  });
+
+  function saveDraft() {
     const draft = {
-        recipient: document.getElementById('recipient_email').value,
-        cc: document.getElementById('cc').value,
-        subject: document.getElementById('subject').value,
-        body: document.getElementById('body').value
+      recipient: document.getElementById("recipient_email").value,
+      cc: document.getElementById("cc").value,
+      subject: document.getElementById("subject").value,
+      body: document.getElementById("body").value,
     };
-    localStorage.setItem('email_draft', JSON.stringify(draft));
-    
+    localStorage.setItem("email_draft", JSON.stringify(draft));
+
     // Show success message
-    showNotification('{{ get_translation(request, "draft_saved_successfully") }}', 'success');
-}
+    showNotification(
+      '{{ get_translation(request, "draft_saved_successfully") }}',
+      "success",
+    );
+  }
 
-function loadDraft() {
-    const draft = localStorage.getItem('email_draft');
+  function loadDraft() {
+    const draft = localStorage.getItem("email_draft");
     if (draft) {
-        const data = JSON.parse(draft);
-        document.getElementById('recipient_email').value = data.recipient || '';
-        document.getElementById('cc').value = data.cc || '';
-        document.getElementById('subject').value = data.subject || '';
-        document.getElementById('body').value = data.body || '';
+      const data = JSON.parse(draft);
+      document.getElementById("recipient_email").value = data.recipient || "";
+      document.getElementById("cc").value = data.cc || "";
+      document.getElementById("subject").value = data.subject || "";
+      document.getElementById("body").value = data.body || "";
     }
-}
+  }
 
-function clearForm() {
+  function clearForm() {
     if (confirm('{{ get_translation(request, "clear") }}?')) {
-        document.getElementById('composeForm').reset();
-        localStorage.removeItem('email_draft');
+      document.getElementById("composeForm").reset();
+      localStorage.removeItem("email_draft");
     }
-}
+  }
 
-function loadTemplate(type) {
+  function loadTemplate(type) {
     const templates = {
-        meeting: {
-            subject: '{{ get_translation(request, "meeting_request") }} - ' + new Date().toLocaleDateString(),
-            body: `שלום,
+      meeting: {
+        subject:
+          '{{ get_translation(request, "meeting_request") }} - ' +
+          new Date().toLocaleDateString(),
+        body: `שלום,
 
 ברצוני לקבוע פגישה בנושא [נושא].
 
@@ -182,22 +316,22 @@ function loadTemplate(type) {
 - [תאריך/שעה 3]
 
 תודה מראש,
-{{ user.full_name or user.username }}`
-        },
-        followup: {
-            subject: '{{ get_translation(request, "follow_up") }}: [נושא קודם]',
-            body: `שלום,
+{{ user.full_name or user.username }}`,
+      },
+      followup: {
+        subject: '{{ get_translation(request, "follow_up") }}: [נושא קודם]',
+        body: `שלום,
 
 רציתי לעשות מעקב לגבי השיחה הקודמת שלנו בנושא [נושא].
 
 אשמח לעדכון או לכל מידע נוסף.
 
 תודה,
-{{ user.full_name or user.username }}`
-        },
-        urgent: {
-            subject: '{{ get_translation(request, "urgent") }}: [נושא]',
-            body: `שלום,
+{{ user.full_name or user.username }}`,
+      },
+      urgent: {
+        subject: '{{ get_translation(request, "urgent") }}: [נושא]',
+        body: `שלום,
 
 זהו עניין דחוף הדורש טיפול מיידי.
 
@@ -206,47 +340,50 @@ function loadTemplate(type) {
 נא להשיב בהקדם האפשרי.
 
 בברכה,
-{{ user.full_name or user.username }}`
-        },
-        thankyou: {
-            subject: '{{ get_translation(request, "thank_you") }}',
-            body: `שלום,
+{{ user.full_name or user.username }}`,
+      },
+      thankyou: {
+        subject: '{{ get_translation(request, "thank_you") }}',
+        body: `שלום,
 
 תודה על [סיבת התודה].
 
 אני מעריך/ה מאוד [פרטים ספציפיים].
 
 בברכה,
-{{ user.full_name or user.username }}`
-        }
+{{ user.full_name or user.username }}`,
+      },
     };
-    
+
     const template = templates[type];
     if (template) {
-        document.getElementById('subject').value = template.subject;
-        document.getElementById('body').value = template.body;
+      document.getElementById("subject").value = template.subject;
+      document.getElementById("body").value = template.body;
     }
-}
+  }
 
-function addSignature() {
+  function addSignature() {
     const signature = `\n\n--\n{{ user.full_name or user.username }}\n{{ user.email }}`;
-    document.getElementById('body').value += signature;
-}
+    document.getElementById("body").value += signature;
+  }
 
-function checkSpelling() {
-    showNotification('Spell check completed!', 'info');
-}
+  function checkSpelling() {
+    showNotification("Spell check completed!", "info");
+  }
 
-function previewEmail() {
-    const recipient = document.getElementById('recipient_email').value;
-    const subject = document.getElementById('subject').value;
-    const body = document.getElementById('body').value;
-    
+  function previewEmail() {
+    const recipient = document.getElementById("recipient_email").value;
+    const subject = document.getElementById("subject").value;
+    const body = document.getElementById("body").value;
+
     if (!recipient || !subject || !body) {
-        showNotification('{{ get_translation(request, "please_fill_required") }}', 'warning');
-        return;
+      showNotification(
+        '{{ get_translation(request, "please_fill_required") }}',
+        "warning",
+      );
+      return;
     }
-    
+
     const preview = `
         <div class="card">
             <div class="card-header">
@@ -260,47 +397,56 @@ function previewEmail() {
             </div>
         </div>
     `;
-    
-    // Create modal or show preview
-    showNotification('{{ get_translation(request, "preview_generated") }}', 'info');
-}
 
-function showNotification(message, type) {
-    const alertClass = type === 'success' ? 'alert-success' : 
-                      type === 'warning' ? 'alert-warning' : 
-                      type === 'error' ? 'alert-danger' : 'alert-info';
-    
-    const notification = document.createElement('div');
+    // Create modal or show preview
+    showNotification(
+      '{{ get_translation(request, "preview_generated") }}',
+      "info",
+    );
+  }
+
+  function showNotification(message, type) {
+    const alertClass =
+      type === "success"
+        ? "alert-success"
+        : type === "warning"
+          ? "alert-warning"
+          : type === "error"
+            ? "alert-danger"
+            : "alert-info";
+
+    const notification = document.createElement("div");
     notification.className = `alert ${alertClass} alert-dismissible fade show position-fixed`;
-    notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+    notification.style.cssText =
+      "top: 20px; right: 20px; z-index: 9999; min-width: 300px;";
     notification.innerHTML = `
         ${message}
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     `;
-    
+
     document.body.appendChild(notification);
-    
+
     setTimeout(() => {
-        notification.remove();
+      notification.remove();
     }, 5000);
-}
+  }
 
-// Auto-save draft every 30 seconds
-setInterval(saveDraft, 30000);
+  // Auto-save draft every 30 seconds
+  setInterval(saveDraft, 30000);
 
-// Load draft on page load
-document.addEventListener('DOMContentLoaded', function() {
+  // Load draft on page load
+  document.addEventListener("DOMContentLoaded", function () {
     loadDraft();
-    
+
     // Check for URL parameters for reply/forward
     const urlParams = new URLSearchParams(window.location.search);
-    const to = urlParams.get('to');
-    const subject = urlParams.get('subject');
-    const body = urlParams.get('body');
-    
-    if (to) document.getElementById('recipient_email').value = to;
-    if (subject) document.getElementById('subject').value = subject;
-    if (body) document.getElementById('body').value = body;
-});
+    const to = urlParams.get("to");
+    const subject = urlParams.get("subject");
+    const body = urlParams.get("body");
+
+    if (to) document.getElementById("recipient_email").value = to;
+    if (subject) document.getElementById("subject").value = subject;
+    if (body) document.getElementById("body").value = body;
+  });
 </script>
 {% endblock %}

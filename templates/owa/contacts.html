@@ -1,0 +1,330 @@
+{% extends "owa/base.html" %} {% block title %}Contacts - 365{% endblock %} {%
+block content %}
+<div class="content-header d-flex justify-content-between align-items-center">
+  <h1>{{ get_translation(request, 'contacts') }}</h1>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary" onclick="toggleFolderSidebar()">
+      <i class="fas fa-folder-tree"></i> {{ get_translation(request, 'folders')
+      }}
+    </button>
+    <button
+      class="btn btn-primary"
+      data-bs-toggle="modal"
+      data-bs-target="#newContactModal"
+    >
+      <i class="fas fa-user-plus"></i> {{ get_translation(request, 'add') }}
+    </button>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-3" id="folderSidebar">
+    <div class="card h-100">
+      <div
+        class="card-header d-flex justify-content-between align-items-center"
+      >
+        <span>{{ get_translation(request, 'folders') }}</span>
+        <button
+          class="btn btn-sm btn-outline-primary"
+          onclick="promptNewFolder()"
+        >
+          <i class="fas fa-folder-plus"></i>
+        </button>
+      </div>
+      <div class="card-body folder-tree" id="folderTree"></div>
+    </div>
+  </div>
+  <div class="col-lg-9">
+    <div class="card">
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm align-middle" id="contactTable">
+            <thead>
+              <tr>
+                <th>{{ get_translation(request, 'name') }}</th>
+                <th>Email</th>
+                <th>{{ get_translation(request, 'phone') }}</th>
+                <th>{{ get_translation(request, 'company') }}</th>
+                <th>{{ get_translation(request, 'title') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if contacts %} {% for c in contacts %}
+              <tr data-contact="{{ c.uuid }}">
+                <td>{{ c.display_name }}</td>
+                <td>{{ c.email_address_1 }}</td>
+                <td>{{ c.mobile_phone or c.business_phone }}</td>
+                <td>{{ c.company_name }}</td>
+                <td>{{ c.job_title }}</td>
+              </tr>
+              {% endfor %} {% else %}
+              <tr class="text-muted">
+                <td colspan="5" class="text-center">
+                  {{ get_translation(request, 'no_contacts') }}
+                </td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="newContactModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          {{ get_translation(request, 'add_contact') }}
+        </h5>
+        <button
+          type="button"
+          class="btn-close"
+          data-bs-dismiss="modal"
+          aria-label="Close"
+        ></button>
+      </div>
+      <div class="modal-body">
+        <form id="contactForm" class="row g-3">
+          <input
+            type="hidden"
+            name="folder_uuid"
+            id="contactFolderField"
+            value="{{ active_folder_uuid }}"
+          />
+
+          <div class="col-md-6">
+            <label class="form-label"
+              >{{ get_translation(request, 'name') }}</label
+            >
+            <input class="form-control" name="display_name" />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label"
+              >{{ get_translation(request, 'first_name') }}</label
+            >
+            <input class="form-control" name="given_name" />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label"
+              >{{ get_translation(request, 'last_name') }}</label
+            >
+            <input class="form-control" name="surname" />
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Email 1</label>
+            <input class="form-control" name="email_address_1" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Email 2</label>
+            <input class="form-control" name="email_address_2" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Email 3</label>
+            <input class="form-control" name="email_address_3" />
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label"
+              >{{ get_translation(request, 'mobile') }}</label
+            >
+            <input class="form-control" name="mobile_phone" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label"
+              >{{ get_translation(request, 'phone') }} (Business)</label
+            >
+            <input class="form-control" name="business_phone" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label"
+              >{{ get_translation(request, 'phone') }} (Home)</label
+            >
+            <input class="form-control" name="home_phone" />
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label"
+              >{{ get_translation(request, 'company') }}</label
+            >
+            <input class="form-control" name="company_name" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label"
+              >{{ get_translation(request, 'department') }}</label
+            >
+            <input class="form-control" name="department" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label"
+              >{{ get_translation(request, 'title') }}</label
+            >
+            <input class="form-control" name="job_title" />
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label"
+              >{{ get_translation(request, 'business_address') }}</label
+            >
+            <textarea
+              class="form-control"
+              name="business_address_street"
+              rows="2"
+            ></textarea>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label"
+              >{{ get_translation(request, 'home_address') }}</label
+            >
+            <textarea
+              class="form-control"
+              name="home_address_street"
+              rows="2"
+            ></textarea>
+          </div>
+
+          <div class="col-md-12">
+            <label class="form-label"
+              >{{ get_translation(request, 'notes') }}</label
+            >
+            <textarea class="form-control" name="notes" rows="3"></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">
+          {{ get_translation(request, 'cancel') }}
+        </button>
+        <button class="btn btn-primary" onclick="saveContact()">
+          {{ get_translation(request, 'save') }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %} {% block scripts %}
+<script>
+  let activeFolderUuid = "{{ active_folder_uuid or '' }}";
+
+  function toggleFolderSidebar() {
+    document.getElementById("folderSidebar").classList.toggle("d-none");
+  }
+
+  function renderFolderTree(nodes, container, level = 0) {
+    container.innerHTML = "";
+    nodes.forEach((node) => {
+      const item = document.createElement("div");
+      item.className =
+        `folder-node level-${level}` +
+        (node.uuid === activeFolderUuid ? " active" : "");
+      item.dataset.uuid = node.uuid;
+      item.innerHTML = `<i class="fas fa-folder"></i> ${node.display_name}`;
+      item.addEventListener("click", () => selectFolder(node.uuid));
+      container.appendChild(item);
+      if (node.children && node.children.length) {
+        const childContainer = document.createElement("div");
+        childContainer.className = "folder-children";
+        container.appendChild(childContainer);
+        renderFolderTree(node.children, childContainer, level + 1);
+      }
+    });
+  }
+
+  async function loadFolders() {
+    const res = await fetch("/contacts/folders", { credentials: "include" });
+    if (!res.ok) return;
+    const tree = await res.json();
+    renderFolderTree(tree, document.getElementById("folderTree"));
+  }
+
+  async function selectFolder(uuid) {
+    activeFolderUuid = uuid;
+    document.getElementById("contactFolderField").value = uuid;
+    await loadContacts(uuid);
+    await loadFolders();
+  }
+
+  async function loadContacts(folderUuid) {
+    const params = new URLSearchParams();
+    if (folderUuid) params.append("folder_uuid", folderUuid);
+    const res = await fetch(`/contacts/list?${params}`, {
+      credentials: "include",
+    });
+    if (!res.ok) return;
+    const contacts = await res.json();
+    const tbody = document.querySelector("#contactTable tbody");
+    tbody.innerHTML = "";
+    if (!contacts.length) {
+      const row = document.createElement("tr");
+      row.className = "text-muted";
+      row.innerHTML = `<td colspan="5" class="text-center">${"{{ get_translation(request, 'no_contacts') }}"}</td>`;
+      tbody.appendChild(row);
+      return;
+    }
+    contacts.forEach((c) => {
+      const row = document.createElement("tr");
+      row.dataset.contact = c.uuid;
+      row.innerHTML = `
+        <td>${c.display_name || ""}</td>
+        <td>${c.email_address_1 || ""}</td>
+        <td>${c.mobile_phone || c.business_phone || ""}</td>
+        <td>${c.company_name || ""}</td>
+        <td>${c.job_title || ""}</td>`;
+      tbody.appendChild(row);
+    });
+  }
+
+  async function promptNewFolder() {
+    const name = prompt(
+      "{{ get_translation(request, 'folder_name_prompt') or 'Folder name' }}",
+    );
+    if (!name) return;
+    const body = { display_name: name };
+    if (activeFolderUuid) {
+      body.parent_uuid = activeFolderUuid;
+    }
+    const res = await fetch("/contacts/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      await loadFolders();
+    } else {
+      alert("Failed to create folder");
+    }
+  }
+
+  async function saveContact() {
+    const form = document.getElementById("contactForm");
+    const data = new FormData(form);
+    const res = await fetch("/contacts/create", {
+      method: "POST",
+      body: data,
+      credentials: "include",
+    });
+    if (res.ok) {
+      const modal = bootstrap.Modal.getInstance(
+        document.getElementById("newContactModal"),
+      );
+      modal.hide();
+      form.reset();
+      document.getElementById("contactFolderField").value = activeFolderUuid;
+      await loadContacts(activeFolderUuid);
+    } else {
+      alert("Failed to save contact");
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", async () => {
+    await loadFolders();
+    if (activeFolderUuid) {
+      await loadContacts(activeFolderUuid);
+    }
+  });
+</script>
+{% endblock %}

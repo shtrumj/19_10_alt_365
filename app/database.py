@@ -1,22 +1,43 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+import os
 from datetime import datetime
-import os
+from uuid import uuid4
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker
+
 from .config import settings
-import os
 
 # Prefer environment/config-provided database URL; fallback to local file
-DATABASE_URL = os.getenv("DATABASE_URL", settings.DATABASE_URL if hasattr(settings, "DATABASE_URL") else "sqlite:///./email_system.db")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    (
+        settings.DATABASE_URL
+        if hasattr(settings, "DATABASE_URL")
+        else "sqlite:///./email_system.db"
+    ),
+)
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     username = Column(String, unique=True, index=True, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
@@ -24,35 +45,57 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     admin = Column(Boolean, default=False)  # Admin flag for auditing/management
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
-    sent_emails = relationship("Email", foreign_keys="Email.sender_id", back_populates="sender")
-    received_emails = relationship("Email", foreign_keys="Email.recipient_id", back_populates="recipient")
+    sent_emails = relationship(
+        "Email", foreign_keys="Email.sender_id", back_populates="sender"
+    )
+    received_emails = relationship(
+        "Email", foreign_keys="Email.recipient_id", back_populates="recipient"
+    )
+    contacts = relationship("Contact", back_populates="owner")
+    contact_folders = relationship("ContactFolder", back_populates="owner")
+
 
 class Email(Base):
     __tablename__ = "emails"
-    
+
     id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     subject = Column(String, nullable=False)
     body = Column(Text)
-    sender_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for external senders
-    recipient_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for external emails
+    sender_id = Column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )  # Nullable for external senders
+    recipient_id = Column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )  # Nullable for external emails
     is_read = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
     is_external = Column(Boolean, default=False)  # Flag for external emails
-    external_sender = Column(String, nullable=True)  # Email address for external senders
-    external_recipient = Column(String, nullable=True)  # Email address for external recipients
+    external_sender = Column(
+        String, nullable=True
+    )  # Email address for external senders
+    external_recipient = Column(
+        String, nullable=True
+    )  # Email address for external recipients
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
-    sender = relationship("User", foreign_keys=[sender_id], back_populates="sent_emails")
-    recipient = relationship("User", foreign_keys=[recipient_id], back_populates="received_emails")
+    sender = relationship(
+        "User", foreign_keys=[sender_id], back_populates="sent_emails"
+    )
+    recipient = relationship(
+        "User", foreign_keys=[recipient_id], back_populates="received_emails"
+    )
+
 
 class EmailAttachment(Base):
     __tablename__ = "email_attachments"
-    
+
     id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     email_id = Column(Integer, ForeignKey("emails.id"), nullable=False)
     filename = Column(String, nullable=False)
     content_type = Column(String)
@@ -60,9 +103,11 @@ class EmailAttachment(Base):
     file_size = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class CalendarEvent(Base):
     __tablename__ = "calendar_events"
     id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String, nullable=False)
     description = Column(Text)
@@ -77,27 +122,279 @@ class CalendarEvent(Base):
 class ActiveSyncDevice(Base):
     __tablename__ = "activesync_devices"
     id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     device_id = Column(String, nullable=False)
     device_type = Column(String, nullable=True)
     policy_key = Column(String, nullable=True)
     last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
-    __table_args__ = (UniqueConstraint('user_id', 'device_id', name='uq_user_device'),)
+    __table_args__ = (UniqueConstraint("user_id", "device_id", name="uq_user_device"),)
+
 
 class ActiveSyncState(Base):
     __tablename__ = "activesync_state"
     id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     device_id = Column(String, nullable=False)
     collection_id = Column(String, nullable=False, default="1")
     sync_key = Column(String, nullable=False, default="1")
     last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
-    __table_args__ = (UniqueConstraint('user_id', 'device_id', 'collection_id', name='uq_user_device_collection'),)
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "device_id", "collection_id", name="uq_user_device_collection"
+        ),
+    )
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    folder_id = Column(Integer, ForeignKey("contact_folders.id"), nullable=True)
+    display_name = Column(String, index=True)
+    file_as = Column(String)
+    given_name = Column(String)
+    middle_name = Column(String)
+    surname = Column(String)
+    nick_name = Column(String)
+    initials = Column(String)
+    suffix = Column(String)
+    title = Column(String)
+    company_name = Column(String)
+    department = Column(String)
+    job_title = Column(String)
+    office_location = Column(String)
+    manager = Column(String)
+    assistant_name = Column(String)
+    assistant_phone = Column(String)
+    spouse_partner_name = Column(String)
+    children = Column(Text)
+    email_address_1 = Column(String, index=True)
+    email_address_2 = Column(String)
+    email_address_3 = Column(String)
+    im_address = Column(String)
+    web_page = Column(String)
+    business_phone = Column(String)
+    business_phone_2 = Column(String)
+    business_fax = Column(String)
+    home_phone = Column(String)
+    home_phone_2 = Column(String)
+    home_fax = Column(String)
+    mobile_phone = Column(String)
+    pager = Column(String)
+    other_phone = Column(String)
+    other_fax = Column(String)
+    callback = Column(String)
+    car_phone = Column(String)
+    radio_phone = Column(String)
+    tty_tdd_phone = Column(String)
+    telex = Column(String)
+    business_address_street = Column(String)
+    business_address_city = Column(String)
+    business_address_state = Column(String)
+    business_address_postal_code = Column(String)
+    business_address_country = Column(String)
+    home_address_street = Column(String)
+    home_address_city = Column(String)
+    home_address_state = Column(String)
+    home_address_postal_code = Column(String)
+    home_address_country = Column(String)
+    other_address_street = Column(String)
+    other_address_city = Column(String)
+    other_address_state = Column(String)
+    other_address_postal_code = Column(String)
+    other_address_country = Column(String)
+    birthday = Column(DateTime, nullable=True)
+    anniversary = Column(DateTime, nullable=True)
+    notes = Column(Text)
+    categories = Column(Text)
+    sensitivity = Column(String)
+    gender = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("User", back_populates="contacts")
+    folder = relationship("ContactFolder", back_populates="contacts")
+
+
+class ContactFolder(Base):
+    __tablename__ = "contact_folders"
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("contact_folders.id"), nullable=True)
+    display_name = Column(String, nullable=False)
+    well_known_name = Column(String, nullable=True, index=True)
+    is_default = Column(Boolean, default=False)
+    description = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("User", back_populates="contact_folders")
+    parent = relationship("ContactFolder", remote_side=[id], back_populates="children")
+    children = relationship(
+        "ContactFolder",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+    contacts = relationship("Contact", back_populates="folder")
+
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
+
+
+def _ensure_uuid_for_table(conn, table_name: str):
+    try:
+        result = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        columns = {row[1] for row in result}
+        if "uuid" not in columns:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN uuid TEXT")
+    except Exception:
+        pass
+
+
+def ensure_uuid_columns_and_backfill():
+    """Ensure uuid column exists for key tables and backfill missing values using raw SQL."""
+    try:
+        with engine.connect() as conn:
+            # Ensure contact folders table exists
+            ContactFolder.__table__.create(bind=engine, checkfirst=True)
+
+            # Ensure extended contact columns exist
+            extended_columns = {
+                "folder_id": "INTEGER",
+                "file_as": "TEXT",
+                "nick_name": "TEXT",
+                "initials": "TEXT",
+                "suffix": "TEXT",
+                "title": "TEXT",
+                "department": "TEXT",
+                "office_location": "TEXT",
+                "manager": "TEXT",
+                "assistant_name": "TEXT",
+                "assistant_phone": "TEXT",
+                "spouse_partner_name": "TEXT",
+                "children": "TEXT",
+                "email_address_1": "TEXT",
+                "email_address_2": "TEXT",
+                "email_address_3": "TEXT",
+                "im_address": "TEXT",
+                "web_page": "TEXT",
+                "business_phone_2": "TEXT",
+                "business_fax": "TEXT",
+                "home_phone": "TEXT",
+                "home_phone_2": "TEXT",
+                "home_fax": "TEXT",
+                "pager": "TEXT",
+                "other_phone": "TEXT",
+                "other_fax": "TEXT",
+                "callback": "TEXT",
+                "car_phone": "TEXT",
+                "radio_phone": "TEXT",
+                "tty_tdd_phone": "TEXT",
+                "telex": "TEXT",
+                "business_address_street": "TEXT",
+                "business_address_city": "TEXT",
+                "business_address_state": "TEXT",
+                "business_address_postal_code": "TEXT",
+                "business_address_country": "TEXT",
+                "home_address_street": "TEXT",
+                "home_address_city": "TEXT",
+                "home_address_state": "TEXT",
+                "home_address_postal_code": "TEXT",
+                "home_address_country": "TEXT",
+                "other_address_street": "TEXT",
+                "other_address_city": "TEXT",
+                "other_address_state": "TEXT",
+                "other_address_postal_code": "TEXT",
+                "other_address_country": "TEXT",
+                "anniversary": "DATETIME",
+                "categories": "TEXT",
+                "sensitivity": "TEXT",
+                "gender": "TEXT",
+            }
+            result = conn.execute("PRAGMA table_info(contacts)").fetchall()
+            existing_cols = {row[1] for row in result}
+            for col_name, col_type in extended_columns.items():
+                if col_name not in existing_cols:
+                    conn.execute(
+                        f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}"
+                    )
+                    conn.commit()
+
+            # Ensure helpful indexes
+            folder_indexes = conn.execute(
+                "PRAGMA index_list(contact_folders)"
+            ).fetchall()
+            folder_index_names = {row[1] for row in folder_indexes}
+            if "idx_contact_folders_owner" not in folder_index_names:
+                conn.execute(
+                    "CREATE INDEX idx_contact_folders_owner ON contact_folders(owner_id)"
+                )
+                conn.commit()
+            if "idx_contact_folders_parent" not in folder_index_names:
+                conn.execute(
+                    "CREATE INDEX idx_contact_folders_parent ON contact_folders(parent_id)"
+                )
+                conn.commit()
+
+            contact_indexes = conn.execute("PRAGMA index_list(contacts)").fetchall()
+            contact_index_names = {row[1] for row in contact_indexes}
+            if "idx_contacts_folder_id" not in contact_index_names:
+                conn.execute(
+                    "CREATE INDEX idx_contacts_folder_id ON contacts(folder_id)"
+                )
+                conn.commit()
+            if "idx_contacts_email1" not in contact_index_names:
+                conn.execute(
+                    "CREATE INDEX idx_contacts_email1 ON contacts(email_address_1)"
+                )
+                conn.commit()
+            for tbl in [
+                "users",
+                "emails",
+                "email_attachments",
+                "calendar_events",
+                "activesync_devices",
+                "activesync_state",
+                "contacts",
+                "contact_folders",
+            ]:
+                # Check if column exists
+                result = conn.execute(f"PRAGMA table_info({tbl})").fetchall()
+                columns = {row[1] for row in result}
+                if "uuid" not in columns:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN uuid TEXT")
+                    conn.commit()
+
+                # Add unique index if not exists
+                indexes = conn.execute(f"PRAGMA index_list({tbl})").fetchall()
+                index_names = {row[1] for row in indexes}
+                if f"idx_{tbl}_uuid" not in index_names:
+                    conn.execute(f"CREATE UNIQUE INDEX idx_{tbl}_uuid ON {tbl}(uuid)")
+                    conn.commit()
+
+                # Backfill missing UUIDs
+                rows = conn.execute(
+                    f"SELECT id FROM {tbl} WHERE uuid IS NULL OR uuid = ''"
+                ).fetchall()
+
+                for row in rows:
+                    row_id = row[0]
+                    new_uuid = str(uuid4())
+                    conn.execute(
+                        f"UPDATE {tbl} SET uuid = '{new_uuid}' WHERE id = {row_id}"
+                    )
+
+                conn.commit()
+    except Exception as e:
+        print(f"Error during UUID migration: {e}")
+
 
 def ensure_admin_column():
     """Ensure the users.admin column exists (SQLite-safe)."""
@@ -106,11 +403,12 @@ def ensure_admin_column():
         with engine.connect() as conn:
             result = conn.execute("PRAGMA table_info(users)").fetchall()
             columns = {row[1] for row in result}
-            if 'admin' not in columns:
+            if "admin" not in columns:
                 conn.execute("ALTER TABLE users ADD COLUMN admin BOOLEAN DEFAULT 0")
     except Exception:
         # Best-effort; ignore if fails (column may already exist or locked)
         pass
+
 
 def set_admin_user(email: str, username: str | None = None):
     """Set a given user as admin by email or username if provided."""
@@ -121,13 +419,14 @@ def set_admin_user(email: str, username: str | None = None):
             user = db.query(User).filter(User.email == email).first()
         if not user and username:
             user = db.query(User).filter(User.username == username).first()
-        if user and not getattr(user, 'admin', False):
+        if user and not getattr(user, "admin", False):
             user.admin = True
             db.commit()
     except Exception:
         db.rollback()
     finally:
         db.close()
+
 
 def get_db():
     db = SessionLocal()

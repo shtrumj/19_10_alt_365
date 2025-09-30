@@ -1,572 +1,675 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="{{ get_language(request) }}" dir="{{ get_direction(request) }}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}{{ get_translation(request, 'title') }}{% endblock %}</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      {% block title %}{{ get_translation(request, 'title') }}{% endblock %}
+    </title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <style>
-        :root {
-            --primary-color: #0078d4;
-            --primary-dark: #106ebe;
-            --secondary-color: #f3f2f1;
-            --accent-color: #ff6b35;
-            --text-primary: #323130;
-            --text-secondary: #605e5c;
-            --border-color: #edebe9;
-            --success-color: #107c10;
-            --warning-color: #ff8c00;
-            --danger-color: #d13438;
-        }
-        
-        * {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-        
-        /* RTL Support */
-        [dir="rtl"] {
-            text-align: right;
-        }
-        
-        [dir="rtl"] .nav-link i {
-            margin-right: 0;
-            margin-left: 0.75rem;
-        }
-        
-        [dir="rtl"] .email-meta {
-            flex-direction: row-reverse;
-        }
-        
-        [dir="rtl"] .content-header {
-            flex-direction: row-reverse;
-        }
-        
-        [dir="rtl"] .btn i {
-            margin-right: 0;
-            margin-left: 0.5rem;
-        }
-        
-        /* Language Selector */
-        .language-selector {
-            position: absolute;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            background: white;
-            border-radius: 25px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            padding: 0.5rem;
-            display: flex;
-            gap: 0.5rem;
-        }
-        
-        .lang-btn {
-            padding: 0.5rem 1rem;
-            border: none;
-            background: transparent;
-            border-radius: 20px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            font-size: 0.9rem;
-            font-weight: 500;
-        }
-        
-        .lang-btn:hover {
-            background: var(--primary-color);
-            color: white;
-        }
-        
-        .lang-btn.active {
-            background: var(--primary-color);
-            color: white;
-        }
-        
-        /* Connection Status */
-        .connection-status {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 12px;
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        
-        .connection-status.connected {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        
-        .connection-status.disconnected {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        
-        .connection-status.error {
-            background: #fff3cd;
-            color: #856404;
-            border: 1px solid #ffeaa7;
-        }
-        
-        /* Hebrew Font Support */
-        [dir="rtl"] {
-            font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif;
-        }
-        
-        [dir="rtl"] .sidebar-header h3,
-        [dir="rtl"] .content-header h1,
-        [dir="rtl"] .email-subject {
-            font-family: 'Segoe UI', 'Arial', 'Tahoma', sans-serif;
-        }
-        
-        body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            margin: 0;
-            padding: 0;
-        }
-        
+      :root {
+        --primary-color: #0078d4;
+        --primary-dark: #106ebe;
+        --secondary-color: #f3f2f1;
+        --accent-color: #ff6b35;
+        --text-primary: #323130;
+        --text-secondary: #605e5c;
+        --border-color: #edebe9;
+        --success-color: #107c10;
+        --warning-color: #ff8c00;
+        --danger-color: #d13438;
+      }
+
+      * {
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+      }
+
+      /* RTL Support */
+      [dir="rtl"] {
+        text-align: right;
+      }
+
+      [dir="rtl"] .nav-link i {
+        margin-right: 0;
+        margin-left: 0.75rem;
+      }
+
+      [dir="rtl"] .email-meta {
+        flex-direction: row-reverse;
+      }
+
+      [dir="rtl"] .content-header {
+        flex-direction: row-reverse;
+      }
+
+      [dir="rtl"] .btn i {
+        margin-right: 0;
+        margin-left: 0.5rem;
+      }
+
+      /* Language Selector */
+      .language-selector {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1000;
+        background: white;
+        border-radius: 25px;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        padding: 0.5rem;
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      .lang-btn {
+        padding: 0.5rem 1rem;
+        border: none;
+        background: transparent;
+        border-radius: 20px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: 0.9rem;
+        font-weight: 500;
+      }
+
+      .lang-btn:hover {
+        background: var(--primary-color);
+        color: white;
+      }
+
+      .lang-btn.active {
+        background: var(--primary-color);
+        color: white;
+      }
+
+      /* Connection Status */
+      .connection-status {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .connection-status.connected {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .connection-status.disconnected {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .connection-status.error {
+        background: #fff3cd;
+        color: #856404;
+        border: 1px solid #ffeaa7;
+      }
+
+      /* Hebrew Font Support */
+      [dir="rtl"] {
+        font-family: "Segoe UI", "Arial", "Tahoma", sans-serif;
+      }
+
+      [dir="rtl"] .sidebar-header h3,
+      [dir="rtl"] .content-header h1,
+      [dir="rtl"] .email-subject {
+        font-family: "Segoe UI", "Arial", "Tahoma", sans-serif;
+      }
+
+      body {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        margin: 0;
+        padding: 0;
+      }
+
+      .main-container {
+        position: relative;
+        background: white;
+        border-radius: 20px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        margin: 20px;
+        min-height: calc(100vh - 40px);
+        overflow: hidden;
+      }
+
+      .sidebar {
+        background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+        border-right: 1px solid var(--border-color);
+        min-height: 100vh;
+        padding: 0;
+      }
+
+      .sidebar-header {
+        background: linear-gradient(
+          135deg,
+          var(--primary-color) 0%,
+          var(--primary-dark) 100%
+        );
+        color: white;
+        padding: 2rem 1.5rem;
+        text-align: center;
+      }
+
+      .sidebar-header h3 {
+        margin: 0;
+        font-weight: 600;
+        font-size: 1.5rem;
+      }
+
+      .sidebar-header .user-info {
+        margin-top: 0.5rem;
+        opacity: 0.9;
+        font-size: 0.9rem;
+      }
+
+      .nav-menu {
+        padding: 1rem 0;
+      }
+
+      .nav-item {
+        margin: 0.25rem 0;
+      }
+
+      .nav-link {
+        color: var(--text-primary);
+        padding: 0.75rem 1.5rem;
+        border-radius: 0;
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        text-decoration: none;
+      }
+
+      .nav-link:hover {
+        background: var(--primary-color);
+        color: white;
+        transform: translateX(5px);
+      }
+
+      .nav-link.active {
+        background: var(--primary-color);
+        color: white;
+        border-right: 3px solid var(--accent-color);
+      }
+
+      .nav-link i {
+        margin-right: 0.75rem;
+        width: 20px;
+        text-align: center;
+        flex-shrink: 0;
+      }
+
+      .main-content {
+        padding: 2rem;
+        background: white;
+      }
+
+      .content-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 2px solid var(--border-color);
+      }
+
+      .content-header h1 {
+        color: var(--text-primary);
+        font-weight: 600;
+        margin: 0;
+      }
+
+      .btn-primary {
+        background: linear-gradient(
+          135deg,
+          var(--primary-color) 0%,
+          var(--primary-dark) 100%
+        );
+        border: none;
+        border-radius: 8px;
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+        transition: all 0.3s ease;
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(0, 120, 212, 0.3);
+      }
+
+      /* Dynamic Column Resizing Styles */
+      .email-list-container {
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        overflow: hidden;
+        background: white;
+      }
+
+      .email-list-header {
+        display: flex;
+        background: var(--bg-secondary);
+        border-bottom: 2px solid var(--border-color);
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .email-column {
+        padding: 1rem;
+        border-right: 1px solid var(--border-color);
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .email-column:last-child {
+        border-right: none;
+      }
+
+      .email-column.resizable {
+        cursor: col-resize;
+      }
+
+      .resize-handle {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background: transparent;
+        cursor: col-resize;
+      }
+
+      .resize-handle:hover {
+        background: var(--primary-color);
+      }
+
+      .email-item {
+        border-bottom: 1px solid var(--border-color);
+        cursor: pointer;
+        transition: all 0.3s ease;
+        background: white;
+      }
+
+      .email-item:last-child {
+        border-bottom: none;
+      }
+
+      .email-item:hover {
+        background: var(--bg-secondary);
+      }
+
+      .email-row {
+        display: flex;
+        align-items: center;
+        padding: 1rem;
+      }
+
+      .email-cell {
+        padding: 0.5rem;
+        border-right: 1px solid var(--border-color);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .email-cell:last-child {
+        border-right: none;
+      }
+
+      .email-item.unread {
+        background: linear-gradient(
+          90deg,
+          rgba(0, 120, 212, 0.05) 0%,
+          white 100%
+        );
+      }
+
+      .email-item.unread .email-cell {
+        font-weight: 600;
+      }
+
+      .email-item:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        border-color: var(--primary-color);
+      }
+
+      .email-item.unread {
+        border-left: 4px solid var(--primary-color);
+        background: linear-gradient(
+          90deg,
+          rgba(0, 120, 212, 0.05) 0%,
+          white 100%
+        );
+      }
+
+      .email-subject {
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 0.5rem;
+      }
+
+      .email-preview {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        line-height: 1.4;
+      }
+
+      .email-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 1rem;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+      }
+
+      .badge {
+        border-radius: 20px;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+      }
+
+      .stats-card {
+        background: linear-gradient(
+          135deg,
+          var(--primary-color) 0%,
+          var(--primary-dark) 100%
+        );
+        color: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        text-align: center;
+        margin-bottom: 1rem;
+        min-height: 120px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+
+      .stats-card h3 {
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0;
+      }
+
+      .stats-card p {
+        margin: 0.5rem 0 0 0;
+        opacity: 0.9;
+      }
+
+      .stats-card i {
+        margin-right: 0.5rem;
+      }
+
+      .form-control {
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        transition: all 0.3s ease;
+      }
+
+      .form-control:focus {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 0.2rem rgba(0, 120, 212, 0.25);
+      }
+
+      .alert {
+        border-radius: 8px;
+        border: none;
+      }
+
+      .alert-danger {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
+        color: white;
+      }
+
+      .alert-success {
+        background: linear-gradient(135deg, #51cf66 0%, #40c057 100%);
+        color: white;
+      }
+
+      @media (max-width: 768px) {
         .main-container {
-            position: relative;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-            margin: 20px;
-            min-height: calc(100vh - 40px);
-            overflow: hidden;
+          margin: 10px;
+          border-radius: 15px;
         }
-        
+
         .sidebar {
-            background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
-            border-right: 1px solid var(--border-color);
-            min-height: 100vh;
-            padding: 0;
+          min-height: auto;
         }
-        
-        .sidebar-header {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
-            color: white;
-            padding: 2rem 1.5rem;
-            text-align: center;
-        }
-        
-        .sidebar-header h3 {
-            margin: 0;
-            font-weight: 600;
-            font-size: 1.5rem;
-        }
-        
-        .sidebar-header .user-info {
-            margin-top: 0.5rem;
-            opacity: 0.9;
-            font-size: 0.9rem;
-        }
-        
-        .nav-menu {
-            padding: 1rem 0;
-        }
-        
-        .nav-item {
-            margin: 0.25rem 0;
-        }
-        
-        .nav-link {
-            color: var(--text-primary);
-            padding: 0.75rem 1.5rem;
-            border-radius: 0;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            text-decoration: none;
-        }
-        
-        .nav-link:hover {
-            background: var(--primary-color);
-            color: white;
-            transform: translateX(5px);
-        }
-        
-        .nav-link.active {
-            background: var(--primary-color);
-            color: white;
-            border-right: 3px solid var(--accent-color);
-        }
-        
-        .nav-link i {
-            margin-right: 0.75rem;
-            width: 20px;
-            text-align: center;
-            flex-shrink: 0;
-        }
-        
+
         .main-content {
-            padding: 2rem;
-            background: white;
+          padding: 1rem;
         }
-        
-        .content-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid var(--border-color);
-        }
-        
-        .content-header h1 {
-            color: var(--text-primary);
-            font-weight: 600;
-            margin: 0;
-        }
-        
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
-            border: none;
-            border-radius: 8px;
-            padding: 0.75rem 1.5rem;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(0, 120, 212, 0.3);
-        }
-        
-        /* Dynamic Column Resizing Styles */
-        .email-list-container {
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            overflow: hidden;
-            background: white;
-        }
-        
-        .email-list-header {
-            display: flex;
-            background: var(--bg-secondary);
-            border-bottom: 2px solid var(--border-color);
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        
-        .email-column {
-            padding: 1rem;
-            border-right: 1px solid var(--border-color);
-            position: relative;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        
-        .email-column:last-child {
-            border-right: none;
-        }
-        
-        .email-column.resizable {
-            cursor: col-resize;
-        }
-        
-        .resize-handle {
-            position: absolute;
-            right: 0;
-            top: 0;
-            bottom: 0;
-            width: 4px;
-            background: transparent;
-            cursor: col-resize;
-        }
-        
-        .resize-handle:hover {
-            background: var(--primary-color);
-        }
-        
-        .email-item {
-            border-bottom: 1px solid var(--border-color);
-            cursor: pointer;
-            transition: all 0.3s ease;
-            background: white;
-        }
-        
-        .email-item:last-child {
-            border-bottom: none;
-        }
-        
-        .email-item:hover {
-            background: var(--bg-secondary);
-        }
-        
-        .email-row {
-            display: flex;
-            align-items: center;
-            padding: 1rem;
-        }
-        
-        .email-cell {
-            padding: 0.5rem;
-            border-right: 1px solid var(--border-color);
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        
-        .email-cell:last-child {
-            border-right: none;
-        }
-        
-        .email-item.unread {
-            background: linear-gradient(90deg, rgba(0, 120, 212, 0.05) 0%, white 100%);
-        }
-        
-        .email-item.unread .email-cell {
-            font-weight: 600;
-        }
-        
-        .email-item:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
-            border-color: var(--primary-color);
-        }
-        
-        .email-item.unread {
-            border-left: 4px solid var(--primary-color);
-            background: linear-gradient(90deg, rgba(0, 120, 212, 0.05) 0%, white 100%);
-        }
-        
-        .email-subject {
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 0.5rem;
-        }
-        
-        .email-preview {
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-            line-height: 1.4;
-        }
-        
-        .email-meta {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 1rem;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-        
-        .badge {
-            border-radius: 20px;
-            padding: 0.25rem 0.75rem;
-            font-size: 0.75rem;
-            font-weight: 500;
-        }
-        
-        .stats-card {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
-            color: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            text-align: center;
-            margin-bottom: 1rem;
-            min-height: 120px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-        
-        .stats-card h3 {
-            font-size: 2rem;
-            font-weight: 700;
-            margin: 0;
-        }
-        
-        .stats-card p {
-            margin: 0.5rem 0 0 0;
-            opacity: 0.9;
-        }
-        
-        .stats-card i {
-            margin-right: 0.5rem;
-        }
-        
-        .form-control {
-            border: 2px solid var(--border-color);
-            border-radius: 8px;
-            padding: 0.75rem 1rem;
-            transition: all 0.3s ease;
-        }
-        
-        .form-control:focus {
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 0.2rem rgba(0, 120, 212, 0.25);
-        }
-        
-        .alert {
-            border-radius: 8px;
-            border: none;
-        }
-        
-        .alert-danger {
-            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
-            color: white;
-        }
-        
-        .alert-success {
-            background: linear-gradient(135deg, #51cf66 0%, #40c057 100%);
-            color: white;
-        }
-        
-        @media (max-width: 768px) {
-            .main-container {
-                margin: 10px;
-                border-radius: 15px;
-            }
-            
-            .sidebar {
-                min-height: auto;
-            }
-            
-            .main-content {
-                padding: 1rem;
-            }
-        }
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <!-- Language Selector -->
     <div class="language-selector">
-        <button class="lang-btn {% if get_language(request) == 'he' %}active{% endif %}" onclick="switchLanguage('he')">
-            עברית
-        </button>
-        <button class="lang-btn {% if get_language(request) == 'en' %}active{% endif %}" onclick="switchLanguage('en')">
-            English
-        </button>
+      <button
+        class="lang-btn {% if get_language(request) == 'he' %}active{% endif %}"
+        onclick="switchLanguage('he')"
+      >
+        עברית
+      </button>
+      <button
+        class="lang-btn {% if get_language(request) == 'en' %}active{% endif %}"
+        onclick="switchLanguage('en')"
+      >
+        English
+      </button>
     </div>
-    
+
     <!-- Connection Status -->
     <div id="connection-status" class="connection-status">
-        <i class="fas fa-wifi-slash"></i> Connecting...
+      <i class="fas fa-wifi-slash"></i> Connecting...
     </div>
-    
+
     <div class="main-container">
-        <div class="row g-0">
-            <!-- Sidebar -->
-            <nav class="col-md-3 col-lg-2 sidebar">
-                <div class="sidebar-header">
-                    <h3><i class="fas fa-envelope"></i> {{ get_translation(request, 'email_system') }}</h3>
-                    <div class="user-info">
-                        <i class="fas fa-user-circle"></i> {{ user.full_name or user.username }}
-                    </div>
-                </div>
-                
-                <div class="nav-menu">
-                    <div class="nav-item">
-                        <a class="nav-link {% if request.url.path == '/owa/' %}active{% endif %}" href="/owa/?lang={{ get_language(request) }}">
-                            <i class="fas fa-home"></i> {{ get_translation(request, 'dashboard') }}
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if 'inbox' in request.url.path and 'folder' not in request.url.path %}active{% endif %}" href="/owa/inbox?lang={{ get_language(request) }}">
-                            <i class="fas fa-inbox"></i> {{ get_translation(request, 'inbox') }}
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if 'folder=sent' in request.url.path %}active{% endif %}" href="/owa/inbox?folder=sent&lang={{ get_language(request) }}">
-                            <i class="fas fa-paper-plane"></i> {{ get_translation(request, 'sent_items') }}
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if 'compose' in request.url.path %}active{% endif %}" href="/owa/compose?lang={{ get_language(request) }}">
-                            <i class="fas fa-edit"></i> {{ get_translation(request, 'compose') }}
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if 'folder=deleted' in request.url.path %}active{% endif %}" href="/owa/inbox?folder=deleted&lang={{ get_language(request) }}">
-                            <i class="fas fa-trash"></i> {{ get_translation(request, 'deleted_items') }}
-                        </a>
-                    </div>
-                    {% if user and user.admin %}
-                    <hr>
-                    <div class="nav-item">
-                        <a class="nav-link {% if '/owa/admin' in request.url.path %}active{% endif %}" href="/owa/admin?lang={{ get_language(request) }}">
-                            <i class="fas fa-tools"></i> ניהול
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if '/owa/admin/queues' in request.url.path %}active{% endif %}" href="/owa/admin/queues?lang={{ get_language(request) }}">
-                            <i class="fas fa-stream"></i> תורים
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if '/owa/admin/audit' in request.url.path %}active{% endif %}" href="/owa/admin/audit?lang={{ get_language(request) }}">
-                            <i class="fas fa-search"></i> ניטור תעבורה
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if '/owa/admin/smtp-logs' in request.url.path %}active{% endif %}" href="/owa/admin/smtp-logs?lang={{ get_language(request) }}">
-                            <i class="fas fa-clipboard-list"></i> לוגי SMTP
-                        </a>
-                    </div>
-                    <div class="nav-item">
-                        <a class="nav-link {% if '/owa/admin/outlook-health' in request.url.path %}active{% endif %}" href="/owa/admin/outlook-health?lang={{ get_language(request) }}">
-                            <i class="fas fa-heartbeat"></i> Outlook Health
-                        </a>
-                    </div>
-                    {% endif %}
-                </div>
-                
-                <div class="mt-auto p-3">
-                    <div class="d-grid gap-2">
-                        <a href="/docs" class="btn btn-outline-primary btn-sm">
-                            <i class="fas fa-code"></i> {{ get_translation(request, 'api_docs') }}
-                        </a>
-                        <a href="/auth/logout" class="btn btn-outline-danger btn-sm">
-                            <i class="fas fa-sign-out-alt"></i> {{ get_translation(request, 'logout') }}
-                        </a>
-                    </div>
-                </div>
-            </nav>
-            
-            <!-- Main content -->
-            <main class="col-md-9 col-lg-10 main-content">
-                {% block content %}{% endblock %}
-            </main>
-        </div>
+      <div class="row g-0">
+        <!-- Sidebar -->
+        <nav class="col-md-3 col-lg-2 sidebar">
+          <div class="sidebar-header">
+            <h3>
+              <i class="fas fa-envelope"></i> {{ get_translation(request,
+              'email_system') }}
+            </h3>
+            <div class="user-info">
+              <i class="fas fa-user-circle"></i> {{ user.full_name or
+              user.username }}
+            </div>
+          </div>
+
+          <div class="nav-menu">
+            <div class="nav-item">
+              <a
+                class="nav-link {% if request.url.path == '/owa/' %}active{% endif %}"
+                href="/owa/?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-home"></i> {{ get_translation(request,
+                'dashboard') }}
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if 'inbox' in request.url.path and 'folder' not in request.url.path %}active{% endif %}"
+                href="/owa/inbox?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-inbox"></i> {{ get_translation(request,
+                'inbox') }}
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if 'folder=sent' in request.url.path %}active{% endif %}"
+                href="/owa/inbox?folder=sent&lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-paper-plane"></i> {{ get_translation(request,
+                'sent_items') }}
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if 'compose' in request.url.path %}active{% endif %}"
+                href="/owa/compose?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-edit"></i> {{ get_translation(request,
+                'compose') }}
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if request.url.path.startswith('/contacts') %}active{% endif %}"
+                href="/contacts/?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-address-book"></i> אנשי קשר
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link disabled" href="#">
+                <i class="fas fa-calendar"></i> לוח שנה (בקרוב)
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if 'folder=deleted' in request.url.path %}active{% endif %}"
+                href="/owa/inbox?folder=deleted&lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-trash"></i> {{ get_translation(request,
+                'deleted_items') }}
+              </a>
+            </div>
+            {% if user and user.admin %}
+            <hr />
+            <div class="nav-item">
+              <a
+                class="nav-link {% if '/owa/admin' in request.url.path %}active{% endif %}"
+                href="/owa/admin?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-tools"></i> ניהול
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if '/owa/admin/queues' in request.url.path %}active{% endif %}"
+                href="/owa/admin/queues?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-stream"></i> תורים
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if '/owa/admin/audit' in request.url.path %}active{% endif %}"
+                href="/owa/admin/audit?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-search"></i> ניטור תעבורה
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if '/owa/admin/smtp-logs' in request.url.path %}active{% endif %}"
+                href="/owa/admin/smtp-logs?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-clipboard-list"></i> לוגי SMTP
+              </a>
+            </div>
+            <div class="nav-item">
+              <a
+                class="nav-link {% if '/owa/admin/outlook-health' in request.url.path %}active{% endif %}"
+                href="/owa/admin/outlook-health?lang={{ get_language(request) }}"
+              >
+                <i class="fas fa-heartbeat"></i> Outlook Health
+              </a>
+            </div>
+            {% endif %}
+          </div>
+
+          <div class="mt-auto p-3">
+            <div class="d-grid gap-2">
+              <a href="/docs" class="btn btn-outline-primary btn-sm">
+                <i class="fas fa-code"></i> {{ get_translation(request,
+                'api_docs') }}
+              </a>
+            </div>
+          </div>
+
+          <!-- Logout button at the very bottom -->
+          <div class="p-3 border-top">
+            <div class="d-grid">
+              <a href="/auth/logout" class="btn btn-outline-danger btn-sm">
+                <i class="fas fa-sign-out-alt"></i> {{ get_translation(request,
+                'logout') }}
+              </a>
+            </div>
+          </div>
+        </nav>
+
+        <!-- Main content -->
+        <main class="col-md-9 col-lg-10 main-content">
+          {% block content %}{% endblock %}
+        </main>
+      </div>
     </div>
-    
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    
+
     <!-- WebSocket JavaScript -->
     <script src="/static/js/websocket.js"></script>
-    
+
     <script>
-        // Set user ID and hostname for WebSocket connection
-        window.userId = {{ user.id if user else 1 }};
-        window.hostname = '{{ hostname }}';
-        
-        function switchLanguage(lang) {
-            const currentUrl = new URL(window.location);
-            currentUrl.searchParams.set('lang', lang);
-            window.location.href = currentUrl.toString();
-        }
-        
-        // Set RTL direction for Hebrew
-        document.addEventListener('DOMContentLoaded', function() {
-            const currentLang = '{{ get_language(request) }}';
-            if (currentLang === 'he') {
-                document.documentElement.setAttribute('dir', 'rtl');
-            } else {
-                document.documentElement.setAttribute('dir', 'ltr');
-            }
-        });
+      // Set user ID and hostname for WebSocket connection
+      window.userId = {{ user.id if user else 1 }};
+      window.hostname = '{{ hostname }}';
+
+      function switchLanguage(lang) {
+          const currentUrl = new URL(window.location);
+          currentUrl.searchParams.set('lang', lang);
+          window.location.href = currentUrl.toString();
+      }
+
+      // Set RTL direction for Hebrew
+      document.addEventListener('DOMContentLoaded', function() {
+          const currentLang = '{{ get_language(request) }}';
+          if (currentLang === 'he') {
+              document.documentElement.setAttribute('dir', 'rtl');
+          } else {
+              document.documentElement.setAttribute('dir', 'ltr');
+          }
+      });
     </script>
     {% block scripts %}{% endblock %}
-</body>
+  </body>
 </html>

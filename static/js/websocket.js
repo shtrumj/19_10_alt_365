@@ -30,6 +30,11 @@ class EmailWebSocket {
       console.log("🔗 [WebSocket] Current location:", window.location.href);
       console.log("🔗 [WebSocket] User agent:", navigator.userAgent);
 
+      // Close existing connection if any
+      if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+        this.ws.close();
+      }
+
       this.ws = new WebSocket(wsUrl);
       console.log("🔗 [WebSocket] WebSocket object created:", this.ws);
 
@@ -151,7 +156,10 @@ class EmailWebSocket {
 
   scheduleReconnect() {
     this.reconnectAttempts++;
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1); // Exponential backoff
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+      30000
+    ); // Cap at 30 seconds
 
     console.log("🔄 [WebSocket] Scheduling reconnection:", {
       attempt: this.reconnectAttempts,
@@ -167,9 +175,17 @@ class EmailWebSocket {
         readyState: this.ws ? this.ws.readyState : "No WebSocket object",
       });
 
-      if (!this.isConnected) {
+      if (
+        !this.isConnected &&
+        this.reconnectAttempts <= this.maxReconnectAttempts
+      ) {
         console.log("🔄 [WebSocket] Starting reconnection...");
         this.connect();
+      } else if (this.reconnectAttempts > this.maxReconnectAttempts) {
+        console.log(
+          "🔄 [WebSocket] Max reconnection attempts reached, giving up"
+        );
+        this.showConnectionStatus("error");
       } else {
         console.log("🔄 [WebSocket] Already connected, skipping reconnection");
       }
@@ -385,6 +401,20 @@ class EmailWebSocket {
                 }"></i>
                 ${status === "connected" ? "Connected" : "Disconnected"}
             `;
+
+      // Add click handler for manual reconnection
+      if (status !== "connected") {
+        statusIndicator.style.cursor = "pointer";
+        statusIndicator.title = "Click to reconnect";
+        statusIndicator.onclick = () => {
+          console.log("🔄 [WebSocket] Manual reconnection clicked");
+          this.reconnect();
+        };
+      } else {
+        statusIndicator.style.cursor = "default";
+        statusIndicator.title = "WebSocket connected";
+        statusIndicator.onclick = null;
+      }
     }
   }
 
@@ -392,6 +422,14 @@ class EmailWebSocket {
     if (this.ws) {
       this.ws.close(1000, "User disconnected");
     }
+  }
+
+  // Manual reconnection method
+  reconnect() {
+    console.log("🔄 [WebSocket] Manual reconnection requested");
+    this.reconnectAttempts = 0;
+    this.isConnected = false;
+    this.connect();
   }
 }
 
