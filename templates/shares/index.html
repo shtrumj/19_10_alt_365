@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outlook Troubleshooting Files</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .file-card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: #f9f9f9;
+        }
+        .file-card h3 {
+            margin-top: 0;
+            color: #0066cc;
+        }
+        .file-card p {
+            color: #666;
+            margin-bottom: 15px;
+        }
+        .download-btn {
+            background: #0066cc;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 4px;
+            display: inline-block;
+            margin-right: 10px;
+        }
+        .download-btn:hover {
+            background: #0052a3;
+        }
+        .view-btn {
+            background: #28a745;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .view-btn:hover {
+            background: #218838;
+        }
+        .icon {
+            font-size: 24px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Outlook Troubleshooting Files</h1>
+        
+        <div class="file-card">
+            <h3><span class="icon">📖</span>Outlook 2021 Setup Guide</h3>
+            <p>Complete step-by-step guide for setting up Outlook 2021 with our Exchange server. Includes registry fixes, autodiscover configuration, and troubleshooting steps.</p>
+            <a href="/shares/outlook-2021-setup-guide" class="download-btn">📥 Download Guide</a>
+            <a href="/shares/outlook-2021-setup-guide.html" class="view-btn">👁️ View Online</a>
+        </div>
+        
+        <div class="file-card">
+            <h3><span class="icon">📄</span>Local Autodiscover XML</h3>
+            <p>Backup autodiscover XML file for manual configuration. Use this if automatic autodiscover fails or for offline setup.</p>
+            <a href="/shares/outlook-2021-local-autodiscover" class="download-btn">📥 Download XML</a>
+            <a href="/shares/outlook-2021-local-autodiscover.xml" class="view-btn">👁️ View XML</a>
+        </div>
+        
+        <div class="file-card">
+            <h3><span class="icon">🔧</span>Registry Fix for Outlook 2021</h3>
+            <p>Windows registry fix to prevent Outlook 2021 from trying Office 365 endpoints first. Critical for custom Exchange server setup.</p>
+            <a href="/shares/outlook-2021-registry-fix" class="download-btn">📥 Download .reg</a>
+        </div>
+        
+        <div style="margin-top: 30px; padding: 20px; background: #e7f3ff; border-radius: 8px; border-left: 4px solid #0066cc;">
+            <h4 style="margin-top: 0; color: #0066cc;">💡 Usage Instructions</h4>
+            <ol>
+                <li><strong>Download the Registry Fix</strong> and apply it to your Windows machine first</li>
+                <li><strong>Download the Setup Guide</strong> and follow the step-by-step instructions</li>
+                <li><strong>Use the Local XML</strong> if automatic autodiscover fails</li>
+                <li><strong>Restart Outlook</strong> after applying the registry fix</li>
+            </ol>
+        </div>
+    </div>
+</body>
+</html>

@@ -18,6 +18,7 @@ import uuid
 import base64
 import struct
 import time
+from datetime import datetime
 from typing import Optional
 
 try:
@@ -33,6 +34,31 @@ root_router = APIRouter(tags=["mapihttp-root"])
 
 def log_mapi(event: str, details: dict):
     _write_json_line("web/mapi/mapi.log", {"event": event, **(details or {})})
+
+def log_outlook_debug(request: Request, event: str, details: dict = None):
+    """Enhanced logging for Outlook debugging"""
+    debug_details = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "event": event,
+        "request_id": str(uuid.uuid4()),
+        "client_ip": request.client.host if request.client else "unknown",
+        "user_agent": request.headers.get("user-agent", ""),
+        "method": request.method,
+        "path": request.url.path,
+        "headers": dict(request.headers),
+        "is_outlook": "outlook" in request.headers.get("user-agent", "").lower(),
+        "is_microsoft_office": "microsoft office" in request.headers.get("user-agent", "").lower(),
+        "content_type": request.headers.get("content-type", ""),
+        "authorization": request.headers.get("authorization", ""),
+        "content_length": request.headers.get("content-length", "0"),
+    }
+    
+    if details:
+        debug_details.update(details)
+    
+    # Log to both MAPI log and debug log
+    _write_json_line("web/mapi/mapi.log", debug_details)
+    _write_json_line("outlook_debug/communication.log", debug_details)
 
 # Initialize RPC processor
 rpc_processor = None
@@ -76,11 +102,11 @@ def _build_ntlm_type2(hostname: str) -> str:
     # Random server challenge
     challenge = os.urandom(8)
 
-    # Flags: include Unicode, OEM, NTLM, AlwaysSign, TargetTypeServer, NTLM2KEY,
+    # Flags: include Unicode, NTLM, AlwaysSign, TargetTypeServer, NTLM2KEY,
     # Target Info present, 128/56-bit, RequestTarget, NegotiateTarget, Version
+    # Note: Removed OEM flag (0x00000002) as it can cause Outlook compatibility issues
     flags = (
         0x00000001 |  # UNICODE
-        0x00000002 |  # OEM
         0x00000200 |  # SIGN
         0x00080000 |  # NTLM2 KEY
         0x00010000 |  # TargetTypeServer
@@ -218,7 +244,7 @@ async def mapi_emsmdb(request: Request):
             return Response(
                 status_code=401,
                 headers={
-                    "WWW-Authenticate": "NTLM",
+                    "WWW-Authenticate": "Negotiate, NTLM",
                     "Content-Type": "application/mapi-http",
                     "X-ClientInfo": "365-Email-System/1.0",
                     "X-RequestId": request_id,
@@ -389,7 +415,7 @@ async def mapi_emsmdb(request: Request):
                 return Response(
                     status_code=401,
                     headers={
-                        "WWW-Authenticate": "NTLM",
+                        "WWW-Authenticate": "Negotiate, NTLM",
                         "Content-Type": "application/mapi-http",
                         "X-ClientInfo": "365-Email-System/1.0",
                         "X-RequestId": request_id,
@@ -615,10 +641,17 @@ async def mapi_emsmdb_get(request: Request):
         "ua": ua,
         "client_ip": request.client.host if request.client else "unknown"
     })
+    
+    # Enhanced Outlook debugging
+    log_outlook_debug(request, "emsmdb_get_request", {
+        "request_id": request_id,
+        "stage": "initial_get",
+        "outlook_detected": "outlook" in ua.lower()
+    })
     return Response(
         status_code=401,
         headers={
-            "WWW-Authenticate": "NTLM",
+            "WWW-Authenticate": "Negotiate, NTLM",
             "Content-Type": "application/mapi-http",
             "X-RequestType": "Connect",
             "X-ClientInfo": "365-Email-System/1.0",
@@ -635,7 +668,7 @@ async def mapi_emsmdb_head(request: Request):
     request_id = str(uuid.uuid4())
     log_mapi("emsmdb_head", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
     return Response(status_code=401, headers={
-        "WWW-Authenticate": "NTLM",
+        "WWW-Authenticate": "Negotiate, NTLM",
         "Content-Type": "application/mapi-http",
         "X-RequestType": "Connect",
         "X-ClientInfo": "365-Email-System/1.0",
@@ -672,7 +705,7 @@ async def mapi_emsmdb_get_root(request: Request):
     return Response(
         status_code=401,
         headers={
-            "WWW-Authenticate": "NTLM",
+            "WWW-Authenticate": "Negotiate, NTLM",
             "Content-Type": "application/mapi-http",
             "X-RequestType": "Connect",
             "X-ClientInfo": "365-Email-System/1.0",
@@ -689,7 +722,7 @@ async def mapi_emsmdb_head_root(request: Request):
     request_id = str(uuid.uuid4())
     log_mapi("emsmdb_head_root", {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"})
     return Response(status_code=401, headers={
-        "WWW-Authenticate": "NTLM",
+        "WWW-Authenticate": "Negotiate, NTLM",
         "Content-Type": "application/mapi-http",
         "X-RequestType": "Connect",
         "X-ClientInfo": "365-Email-System/1.0",

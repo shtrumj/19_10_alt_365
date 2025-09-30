@@ -144,8 +144,9 @@ async def autodiscover(request: Request):
         <ActiveDirectoryServer>owa.shtrum.com</ActiveDirectoryServer>
         <ReferralDN>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)</ReferralDN>
         <ExchangeRpcUrl>https://{host}/rpc/rpcproxy.dll</ExchangeRpcUrl>
+        <RpcUrl>https://{host}/rpc/rpcproxy.dll</RpcUrl>
         <EwsPartnerUrl>{ews_url}</EwsPartnerUrl>
-        <LoginName>yonatan@shtrum.com</LoginName>
+        <LoginName>shtrum\\yonatan</LoginName>
         <MSOnline>false</MSOnline>
         <MailboxDNEx>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn={user_part}</MailboxDNEx>
         <Database>/o=First Organization/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Configuration/cn=Servers/cn={exch_server}/cn=InformationStore/cn=First Storage Group/cn=Mailbox Store ({exch_server})</Database>
@@ -199,6 +200,8 @@ async def autodiscover(request: Request):
         <ExchangeVersion>15.01.2507.027</ExchangeVersion>
         <MapiHttpEnabled>true</MapiHttpEnabled>
         <EncryptionRequired>false</EncryptionRequired>
+        <MapiHttpVersion>2</MapiHttpVersion>
+        <MapiHttpServerUrl>{mapi_server_url}</MapiHttpServerUrl>
         <ExternalHostname>{exch_server}</ExternalHostname>
         <ExternalUrl>{mapi_server_url}</ExternalUrl>
         <InternalHostname>{exch_server}</InternalHostname>
@@ -284,8 +287,9 @@ async def autodiscover_lower(request: Request):
 # Helpful GET handler for browsers/tools (Outlook uses POST)
 @router.get("/Autodiscover/Autodiscover.xml")
 async def autodiscover_get(request: Request):
+    """GET handler for autodiscover - returns full response like POST"""
     host = settings.HOSTNAME or request.headers.get("Host", "")
-    mobilesync_url = f"https://{host}/activesync/Microsoft-Server-ActiveSync"
+    
     # Log GET hits as well (browsers, some clients probe with GET)
     try:
         log_autodiscover("get", {
@@ -295,39 +299,10 @@ async def autodiscover_get(request: Request):
         })
     except Exception:
         pass
-    owa_url = f"https://{host}/owa"
-    xml = f"""
-<?xml version="1.0" encoding="utf-8"?>
-<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
-  <Response>
-    <ErrorCode>NoError</ErrorCode>
-    <User>
-      <DisplayName>Unknown</DisplayName>
-      <EMailAddress>unknown@{host}</EMailAddress>
-    </User>
-    <Account>
-      <AccountType>Exchange</AccountType>
-      <Action>settings</Action>
-      <Protocol>
-        <Type>EXCH</Type>
-        <Server>{host}</Server>
-        <Port>443</Port>
-        <SSL>On</SSL>
-        <AuthPackage>Ntlm</AuthPackage>
-        <External>
-          <Url>{mobilesync_url}</Url>
-        </External>
-      </Protocol>
-      <Protocol>
-        <Type>WEB</Type>
-        <OWAUrl>{owa_url}</OWAUrl>
-        <SSL>On</SSL>
-      </Protocol>
-    </Account>
-  </Response>
-</Autodiscover>
-""".strip()
-    return Response(content=xml, media_type="application/xml")
+    
+    # Use the same full autodiscover response as POST
+    # This ensures Outlook gets all the settings it needs
+    return await autodiscover(request)
 
 @router.get("/autodiscover/autodiscover.xml")
 async def autodiscover_get_lower(request: Request):

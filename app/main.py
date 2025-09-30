@@ -19,12 +19,15 @@ from .routers import (
     calendar,
     contacts,
     debug,
+    deep_debug,
     emails,
     ews,
     mapihttp,
     oab,
     owa,
     queue,
+    rpc_proxy,
+    shares,
     websocket_simple,
 )
 from .smtp_server import start_smtp_server, stop_smtp_server
@@ -73,6 +76,9 @@ app.include_router(ews.router)
 app.include_router(mapihttp.router)
 app.include_router(mapihttp.root_router)
 app.include_router(oab.router)
+app.include_router(rpc_proxy.router)
+app.include_router(deep_debug.router)
+app.include_router(shares.router, prefix="/shares")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
