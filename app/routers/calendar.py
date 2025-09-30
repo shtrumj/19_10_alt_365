@@ -210,6 +210,7 @@ def get_upcoming_events(
 
 # OWA Calendar UI Endpoints
 @router.get("", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 def calendar_home(
     request: Request,
     current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
@@ -240,16 +241,6 @@ def calendar_home(
 
     templates = Jinja2Templates(directory="templates/owa")
     return templates.TemplateResponse("calendar.html", context)
-
-
-@router.get("/", response_class=HTMLResponse)
-def calendar_home_alt(
-    request: Request,
-    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
-    db: Session = Depends(get_db),
-):
-    """Calendar home page (alternative route)"""
-    return calendar_home(request, current_user, db)
 
 
 @router.get("/test")

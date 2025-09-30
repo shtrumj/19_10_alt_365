@@ -63,6 +63,8 @@ app = FastAPI(
 app.include_router(auth.router)
 app.include_router(emails.router)
 app.include_router(owa.router)
+app.include_router(calendar.router)
+app.include_router(contacts.router)
 app.include_router(activesync.router)
 app.include_router(queue.router)
 app.include_router(debug.router)
@@ -71,8 +73,6 @@ app.include_router(ews.router)
 app.include_router(mapihttp.router)
 app.include_router(mapihttp.root_router)
 app.include_router(oab.router)
-app.include_router(contacts.router)
-app.include_router(calendar.router)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -357,9 +357,18 @@ def ensure_uuid_columns_and_backfill():
             # Ensure contact folders table exists
             ContactFolder.__table__.create(bind=engine, checkfirst=True)
 
-            # Ensure calendar tables exist
-            CalendarFolder.__table__.create(bind=engine, checkfirst=True)
-            CalendarEvent.__table__.create(bind=engine, checkfirst=True)
+            # Ensure calendar tables exist - force creation
+            try:
+                CalendarFolder.__table__.create(bind=engine, checkfirst=True)
+                print("✅ CalendarFolder table created/verified")
+            except Exception as e:
+                print(f"❌ Error creating CalendarFolder table: {e}")
+
+            try:
+                CalendarEvent.__table__.create(bind=engine, checkfirst=True)
+                print("✅ CalendarEvent table created/verified")
+            except Exception as e:
+                print(f"❌ Error creating CalendarEvent table: {e}")
 
             # Ensure extended contact columns exist
             extended_columns = {
