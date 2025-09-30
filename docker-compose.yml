@@ -15,6 +15,7 @@ services:
       - DOMAIN=owa.shtrum.com
     ports:
       - "25:25" # Expose SMTP port 25
+      - "8001:8001" # Expose FastAPI application
       - "8004:8004" # Expose standalone WebSocket server
     volumes:
       - ./data:/app/data
@@ -46,7 +47,8 @@ services:
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
     depends_on:
-      - email-system
+      email-system:
+        condition: service_healthy
     networks:
       - email-network
 

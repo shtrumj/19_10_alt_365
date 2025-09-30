@@ -1,0 +1,725 @@
+{% extends "owa/base.html" %} {% block title %}Calendar - 365{% endblock %} {%
+block content %}
+<style>
+  /* RTL Support for Calendar */
+  [dir="rtl"] .calendar-container {
+    text-align: right;
+  }
+
+  [dir="rtl"] .calendar-header {
+    flex-direction: row-reverse;
+  }
+
+  [dir="rtl"] .calendar-nav {
+    flex-direction: row-reverse;
+  }
+
+  [dir="rtl"] .calendar-grid {
+    text-align: right;
+  }
+
+  [dir="rtl"] .calendar-cell {
+    text-align: right;
+  }
+
+  [dir="rtl"] .event-item {
+    text-align: right;
+  }
+
+  [dir="rtl"] .event-time {
+    text-align: right;
+  }
+
+  [dir="rtl"] .event-subject {
+    text-align: right;
+  }
+
+  [dir="rtl"] .event-location {
+    text-align: right;
+  }
+
+  [dir="rtl"] .sidebar {
+    text-align: right;
+  }
+
+  [dir="rtl"] .sidebar-header {
+    text-align: right;
+  }
+
+  [dir="rtl"] .folder-tree {
+    text-align: right;
+  }
+
+  [dir="rtl"] .folder-node {
+    text-align: right;
+    padding-right: 1rem;
+    padding-left: 0;
+  }
+
+  [dir="rtl"] .folder-node i {
+    margin-left: 0.5rem;
+    margin-right: 0;
+  }
+
+  /* Calendar specific styles */
+  .calendar-container {
+    display: flex;
+    gap: 1rem;
+    height: calc(100vh - 200px);
+  }
+
+  .calendar-main {
+    flex: 1;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+  }
+
+  .calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem;
+    background: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+  }
+
+  .calendar-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .calendar-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #333;
+  }
+
+  .calendar-view-buttons {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+    background: #dee2e6;
+    height: calc(100% - 80px);
+  }
+
+  .calendar-cell {
+    background: white;
+    padding: 0.5rem;
+    min-height: 100px;
+    border: 1px solid #dee2e6;
+    position: relative;
+  }
+
+  .calendar-cell.other-month {
+    background: #f8f9fa;
+    color: #6c757d;
+  }
+
+  .calendar-cell.today {
+    background: #e3f2fd;
+    border-color: #2196f3;
+  }
+
+  .calendar-cell-header {
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #333;
+  }
+
+  .event-item {
+    background: #0078d4;
+    color: white;
+    padding: 0.25rem 0.5rem;
+    margin: 0.125rem 0;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .event-item:hover {
+    background: #106ebe;
+  }
+
+  .event-item.meeting {
+    background: #28a745;
+  }
+
+  .event-item.all-day {
+    background: #6f42c1;
+  }
+
+  .calendar-sidebar {
+    width: 300px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+  }
+
+  .sidebar-header {
+    padding: 1rem;
+    background: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    font-weight: 600;
+  }
+
+  .sidebar-content {
+    padding: 1rem;
+    max-height: calc(100vh - 300px);
+    overflow-y: auto;
+  }
+
+  .upcoming-events {
+    margin-bottom: 1.5rem;
+  }
+
+  .upcoming-events h4 {
+    margin-bottom: 0.5rem;
+    color: #333;
+  }
+
+  .event-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .event-list li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #eee;
+  }
+
+  .event-list li:last-child {
+    border-bottom: none;
+  }
+
+  .event-time {
+    font-size: 0.875rem;
+    color: #666;
+    margin-bottom: 0.25rem;
+  }
+
+  .event-subject {
+    font-weight: 500;
+    color: #333;
+    margin-bottom: 0.25rem;
+  }
+
+  .event-location {
+    font-size: 0.75rem;
+    color: #666;
+  }
+
+  .folder-tree {
+    margin-top: 1rem;
+  }
+
+  .folder-node {
+    padding: 0.5rem;
+    cursor: pointer;
+    border-radius: 4px;
+    margin-bottom: 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .folder-node:hover {
+    background: #f8f9fa;
+  }
+
+  .folder-node.active {
+    background: #e3f2fd;
+    color: #1976d2;
+  }
+
+  .folder-node i {
+    width: 16px;
+    text-align: center;
+  }
+
+  .folder-children {
+    margin-left: 1rem;
+  }
+
+  .level-1 {
+    margin-left: 1rem;
+  }
+  .level-2 {
+    margin-left: 2rem;
+  }
+  .level-3 {
+    margin-left: 3rem;
+  }
+</style>
+
+<div class="content-header d-flex justify-content-between align-items-center">
+  <h1>{{ get_translation(request, 'calendar') }}</h1>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary" onclick="toggleSidebar()">
+      <i class="fas fa-folder-tree"></i> {{ get_translation(request,
+      'calendar_folders') }}
+    </button>
+    <button
+      class="btn btn-primary"
+      data-bs-toggle="modal"
+      data-bs-target="#newEventModal"
+    >
+      <i class="fas fa-plus"></i> {{ get_translation(request, 'add_event') }}
+    </button>
+  </div>
+</div>
+
+<div class="calendar-container">
+  <div class="calendar-main">
+    <div class="calendar-header">
+      <div class="calendar-nav">
+        <button
+          class="btn btn-sm btn-outline-secondary"
+          onclick="previousMonth()"
+        >
+          <i class="fas fa-chevron-left"></i>
+        </button>
+        <span class="calendar-title" id="calendarTitle">September 2025</span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="nextMonth()">
+          <i class="fas fa-chevron-right"></i>
+        </button>
+      </div>
+      <div class="calendar-view-buttons">
+        <button
+          class="btn btn-sm btn-outline-primary active"
+          onclick="setView('month')"
+        >
+          {{ get_translation(request, 'month_view') }}
+        </button>
+        <button
+          class="btn btn-sm btn-outline-primary"
+          onclick="setView('week')"
+        >
+          {{ get_translation(request, 'week_view') }}
+        </button>
+        <button class="btn btn-sm btn-outline-primary" onclick="setView('day')">
+          {{ get_translation(request, 'day_view') }}
+        </button>
+      </div>
+    </div>
+    <div class="calendar-grid" id="calendarGrid">
+      <!-- Calendar grid will be populated by JavaScript -->
+    </div>
+  </div>
+
+  <div class="calendar-sidebar" id="calendarSidebar">
+    <div class="sidebar-header">
+      {{ get_translation(request, 'upcoming_events') }}
+    </div>
+    <div class="sidebar-content">
+      <div class="upcoming-events">
+        <h4>{{ get_translation(request, 'upcoming_events') }}</h4>
+        <ul class="event-list" id="upcomingEventsList">
+          {% if upcoming_events %} {% for event in upcoming_events %}
+          <li>
+            <div class="event-time">
+              {{ event.start_time.strftime('%H:%M') }}
+            </div>
+            <div class="event-subject">{{ event.subject }}</div>
+            {% if event.location %}
+            <div class="event-location">{{ event.location }}</div>
+            {% endif %}
+          </li>
+          {% endfor %} {% else %}
+          <li>{{ get_translation(request, 'no_events') }}</li>
+          {% endif %}
+        </ul>
+      </div>
+
+      <div class="folder-tree" id="folderTree">
+        <div
+          class="folder-node active"
+          data-uuid="{{ active_folder_uuid or '' }}"
+        >
+          <i class="fas fa-calendar"></i>
+          {{ get_translation(request, 'default_calendar') }}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- New Event Modal -->
+<div class="modal fade" id="newEventModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">{{ get_translation(request, 'new_event') }}</h5>
+        <button
+          type="button"
+          class="btn-close"
+          data-bs-dismiss="modal"
+          aria-label="Close"
+        ></button>
+      </div>
+      <div class="modal-body">
+        <form id="eventForm" class="row g-3">
+          <input
+            type="hidden"
+            name="folder_id"
+            id="eventFolderField"
+            value="{{ active_folder_uuid or '' }}"
+          />
+
+          <div class="col-md-12">
+            <label class="form-label"
+              >{{ get_translation(request, 'subject') }}</label
+            >
+            <input class="form-control" name="subject" required />
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label"
+              >{{ get_translation(request, 'start_time') }}</label
+            >
+            <input
+              class="form-control"
+              type="datetime-local"
+              name="start_time"
+              required
+            />
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label"
+              >{{ get_translation(request, 'end_time') }}</label
+            >
+            <input
+              class="form-control"
+              type="datetime-local"
+              name="end_time"
+              required
+            />
+          </div>
+
+          <div class="col-md-12">
+            <div class="form-check">
+              <input
+                class="form-check-input"
+                type="checkbox"
+                name="is_all_day"
+                id="isAllDay"
+              />
+              <label class="form-check-label" for="isAllDay">
+                {{ get_translation(request, 'all_day') }}
+              </label>
+            </div>
+          </div>
+
+          <div class="col-md-12">
+            <label class="form-label"
+              >{{ get_translation(request, 'location') }}</label
+            >
+            <input class="form-control" name="location" />
+          </div>
+
+          <div class="col-md-12">
+            <label class="form-label"
+              >{{ get_translation(request, 'attendees') }}</label
+            >
+            <input
+              class="form-control"
+              name="attendees"
+              placeholder="email1@example.com, email2@example.com"
+            />
+          </div>
+
+          <div class="col-md-12">
+            <div class="form-check">
+              <input
+                class="form-check-input"
+                type="checkbox"
+                name="is_meeting"
+                id="isMeeting"
+              />
+              <label class="form-check-label" for="isMeeting">
+                {{ get_translation(request, 'meeting') }}
+              </label>
+            </div>
+          </div>
+
+          <div class="col-md-12">
+            <label class="form-label"
+              >{{ get_translation(request, 'reminder') }}</label
+            >
+            <select class="form-select" name="reminder_minutes">
+              <option value="0">
+                {{ get_translation(request, 'no_reminder') or 'No reminder' }}
+              </option>
+              <option value="5">
+                5 {{ get_translation(request, 'minutes') or 'minutes' }}
+              </option>
+              <option value="15" selected>
+                15 {{ get_translation(request, 'minutes') or 'minutes' }}
+              </option>
+              <option value="30">
+                30 {{ get_translation(request, 'minutes') or 'minutes' }}
+              </option>
+              <option value="60">
+                1 {{ get_translation(request, 'hour') or 'hour' }}
+              </option>
+            </select>
+          </div>
+
+          <div class="col-md-12">
+            <label class="form-label"
+              >{{ get_translation(request, 'notes') or 'Notes' }}</label
+            >
+            <textarea class="form-control" name="body" rows="3"></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">
+          {{ get_translation(request, 'cancel') }}
+        </button>
+        <button class="btn btn-primary" onclick="saveEvent()">
+          {{ get_translation(request, 'save') }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %} {% block scripts %}
+<script>
+  let currentDate = new Date();
+  let currentView = "month";
+  let activeFolderUuid = "{{ active_folder_uuid or '' }}";
+
+  function toggleSidebar() {
+    document.getElementById("calendarSidebar").classList.toggle("d-none");
+  }
+
+  function setView(view) {
+    currentView = view;
+    // Update active button
+    document.querySelectorAll(".calendar-view-buttons .btn").forEach((btn) => {
+      btn.classList.remove("active");
+    });
+    event.target.classList.add("active");
+
+    // Refresh calendar
+    renderCalendar();
+  }
+
+  function previousMonth() {
+    currentDate.setMonth(currentDate.getMonth() - 1);
+    renderCalendar();
+  }
+
+  function nextMonth() {
+    currentDate.setMonth(currentDate.getMonth() + 1);
+    renderCalendar();
+  }
+
+  function renderCalendar() {
+    const title = currentDate.toLocaleDateString("en-US", {
+      month: "long",
+      year: "numeric",
+    });
+    document.getElementById("calendarTitle").textContent = title;
+
+    // Clear existing grid
+    const grid = document.getElementById("calendarGrid");
+    grid.innerHTML = "";
+
+    if (currentView === "month") {
+      renderMonthView();
+    } else if (currentView === "week") {
+      renderWeekView();
+    } else if (currentView === "day") {
+      renderDayView();
+    }
+  }
+
+  function renderMonthView() {
+    const grid = document.getElementById("calendarGrid");
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+
+    // Get first day of month and number of days
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    const startDay = firstDay.getDay();
+
+    // Add day headers
+    const dayHeaders = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    dayHeaders.forEach((day) => {
+      const header = document.createElement("div");
+      header.className = "calendar-cell-header";
+      header.textContent = day;
+      grid.appendChild(header);
+    });
+
+    // Add empty cells for days before month starts
+    for (let i = 0; i < startDay; i++) {
+      const cell = document.createElement("div");
+      cell.className = "calendar-cell other-month";
+      grid.appendChild(cell);
+    }
+
+    // Add days of month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const cell = document.createElement("div");
+      cell.className = "calendar-cell";
+      cell.innerHTML = `
+        <div class="calendar-cell-header">${day}</div>
+        <div class="calendar-events"></div>
+      `;
+
+      // Mark today
+      const today = new Date();
+      if (
+        year === today.getFullYear() &&
+        month === today.getMonth() &&
+        day === today.getDate()
+      ) {
+        cell.classList.add("today");
+      }
+
+      grid.appendChild(cell);
+    }
+
+    // Load events for this month
+    loadEventsForMonth();
+  }
+
+  function renderWeekView() {
+    // Implementation for week view
+    console.log("Week view not implemented yet");
+  }
+
+  function renderDayView() {
+    // Implementation for day view
+    console.log("Day view not implemented yet");
+  }
+
+  async function loadEventsForMonth() {
+    const startDate = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth(),
+      1,
+    );
+    const endDate = new Date(
+      currentDate.getFullYear(),
+      currentDate.getMonth() + 1,
+      0,
+    );
+
+    try {
+      const response = await fetch(
+        `/calendar/events?start_date=${startDate.toISOString()}&end_date=${endDate.toISOString()}`,
+        {
+          credentials: "include",
+        },
+      );
+
+      if (response.ok) {
+        const events = await response.json();
+        displayEvents(events);
+      }
+    } catch (error) {
+      console.error("Error loading events:", error);
+    }
+  }
+
+  function displayEvents(events) {
+    const cells = document.querySelectorAll(".calendar-cell:not(.other-month)");
+
+    events.forEach((event) => {
+      const eventDate = new Date(event.start_time);
+      const day = eventDate.getDate();
+
+      // Find the cell for this day
+      const cell = Array.from(cells).find((cell) => {
+        const cellDay = parseInt(
+          cell.querySelector(".calendar-cell-header").textContent,
+        );
+        return cellDay === day;
+      });
+
+      if (cell) {
+        const eventsContainer = cell.querySelector(".calendar-events");
+        const eventElement = document.createElement("div");
+        eventElement.className = `event-item ${event.is_meeting ? "meeting" : ""} ${event.is_all_day ? "all-day" : ""}`;
+        eventElement.textContent = event.subject;
+        eventElement.onclick = () => viewEvent(event.uuid);
+        eventsContainer.appendChild(eventElement);
+      }
+    });
+  }
+
+  function viewEvent(eventUuid) {
+    // Implementation for viewing event details
+    console.log("View event:", eventUuid);
+  }
+
+  async function saveEvent() {
+    const form = document.getElementById("eventForm");
+    const formData = new FormData(form);
+
+    // Convert form data to JSON
+    const eventData = {
+      subject: formData.get("subject"),
+      start_time: formData.get("start_time"),
+      end_time: formData.get("end_time"),
+      is_all_day: formData.get("is_all_day") === "on",
+      location: formData.get("location"),
+      is_meeting: formData.get("is_meeting") === "on",
+      reminder_set: formData.get("reminder_minutes") !== "0",
+      reminder_minutes: parseInt(formData.get("reminder_minutes")),
+      body: formData.get("body"),
+      folder_id: activeFolderUuid,
+    };
+
+    try {
+      const response = await fetch("/calendar/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify(eventData),
+      });
+
+      if (response.ok) {
+        // Close modal and refresh calendar
+        const modal = bootstrap.Modal.getInstance(
+          document.getElementById("newEventModal"),
+        );
+        modal.hide();
+        form.reset();
+        renderCalendar();
+      } else {
+        alert("Failed to create event");
+      }
+    } catch (error) {
+      console.error("Error creating event:", error);
+      alert("Error creating event");
+    }
+  }
+
+  // Initialize calendar
+  document.addEventListener("DOMContentLoaded", () => {
+    renderCalendar();
+  });
+</script>
+{% endblock %}

@@ -1,5 +1,59 @@
 {% extends "owa/base.html" %} {% block title %}Contacts - 365{% endblock %} {%
 block content %}
+<style>
+  /* RTL Support for Contacts */
+  [dir="rtl"] .modal-dialog {
+    text-align: right;
+  }
+
+  [dir="rtl"] .form-label {
+    text-align: right;
+  }
+
+  [dir="rtl"] .form-control {
+    text-align: right;
+  }
+
+  [dir="rtl"] .btn {
+    text-align: center;
+  }
+
+  [dir="rtl"] .table {
+    text-align: right;
+  }
+
+  [dir="rtl"] .table th,
+  [dir="rtl"] .table td {
+    text-align: right;
+  }
+
+  [dir="rtl"] .content-header {
+    flex-direction: row-reverse;
+  }
+
+  [dir="rtl"] .content-header h1 {
+    text-align: right;
+  }
+
+  [dir="rtl"] .card-header {
+    text-align: right;
+  }
+
+  [dir="rtl"] .folder-tree {
+    text-align: right;
+  }
+
+  [dir="rtl"] .folder-node {
+    text-align: right;
+    padding-right: 1rem;
+    padding-left: 0;
+  }
+
+  [dir="rtl"] .folder-node i {
+    margin-left: 0.5rem;
+    margin-right: 0;
+  }
+</style>
 <div class="content-header d-flex justify-content-between align-items-center">
   <h1>{{ get_translation(request, 'contacts') }}</h1>
   <div class="d-flex gap-2">
@@ -115,15 +169,21 @@ block content %}
           </div>
 
           <div class="col-md-4">
-            <label class="form-label">Email 1</label>
+            <label class="form-label"
+              >{{ get_translation(request, 'email_1') }}</label
+            >
             <input class="form-control" name="email_address_1" />
           </div>
           <div class="col-md-4">
-            <label class="form-label">Email 2</label>
+            <label class="form-label"
+              >{{ get_translation(request, 'email_2') }}</label
+            >
             <input class="form-control" name="email_address_2" />
           </div>
           <div class="col-md-4">
-            <label class="form-label">Email 3</label>
+            <label class="form-label"
+              >{{ get_translation(request, 'email_3') }}</label
+            >
             <input class="form-control" name="email_address_3" />
           </div>
 

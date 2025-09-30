@@ -199,3 +199,97 @@ class ContactResponse(ContactBase):
 
     class Config:
         from_attributes = True
+
+
+# Calendar Folder Models
+class CalendarFolderBase(BaseModel):
+    display_name: str
+    description: Optional[str] = None
+    color: Optional[str] = "#0078d4"
+    parent_id: Optional[int] = None
+
+
+class CalendarFolderCreate(CalendarFolderBase):
+    pass
+
+
+class CalendarFolderResponse(CalendarFolderBase):
+    id: int
+    uuid: str
+    owner_id: int
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CalendarFolderTree(CalendarFolderResponse):
+    children: List["CalendarFolderTree"] = []
+
+    class Config:
+        from_attributes = True
+
+
+# Calendar Event Models
+class AttendeeBase(BaseModel):
+    email: str
+    name: Optional[str] = None
+    response_status: Optional[str] = "none"  # none, accepted, declined, tentative
+    attendee_type: Optional[str] = "required"  # required, optional, resource
+
+
+class CalendarEventBase(BaseModel):
+    subject: str
+    body: Optional[str] = None
+    body_type: Optional[str] = "text"  # text, html
+    importance: Optional[str] = "normal"  # low, normal, high
+    sensitivity: Optional[str] = "normal"  # normal, personal, private, confidential
+    is_all_day: Optional[bool] = False
+    start_time: datetime
+    end_time: datetime
+    timezone: Optional[str] = "UTC"
+    location: Optional[str] = None
+    is_meeting: Optional[bool] = False
+    is_online_meeting: Optional[bool] = False
+    online_meeting_provider: Optional[str] = None
+    online_meeting_url: Optional[str] = None
+    online_meeting_phone: Optional[str] = None
+    attendees: Optional[List[AttendeeBase]] = []
+    organizer: Optional[str] = None
+    meeting_status: Optional[str] = "free"  # free, tentative, busy, oof
+    response_status: Optional[str] = "none"  # none, accepted, declined, tentative
+    response_requested: Optional[bool] = False
+    reminder_set: Optional[bool] = False
+    reminder_minutes: Optional[int] = 15
+    categories: Optional[List[str]] = []
+    tags: Optional[List[str]] = []
+    folder_id: Optional[int] = None
+
+
+class CalendarEventCreate(CalendarEventBase):
+    pass
+
+
+class CalendarEventResponse(CalendarEventBase):
+    id: int
+    uuid: str
+    owner_id: int
+    is_recurring: bool
+    recurrence_pattern: Optional[str] = None
+    recurrence_start: Optional[datetime] = None
+    recurrence_end: Optional[datetime] = None
+    recurrence_count: Optional[int] = None
+    change_key: str
+    item_class: str
+    created_at: datetime
+    updated_at: datetime
+    last_modified: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Update forward references
+CalendarFolderTree.model_rebuild()

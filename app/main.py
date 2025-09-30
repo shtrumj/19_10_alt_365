@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, status
@@ -15,18 +16,20 @@ from .queue_processor import queue_processor
 from .routers import (
     activesync,
     auth,
+    calendar,
     contacts,
     debug,
     emails,
     ews,
     mapihttp,
-    nspi,
     oab,
     owa,
     queue,
     websocket_simple,
 )
 from .smtp_server import start_smtp_server, stop_smtp_server
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -39,10 +42,12 @@ async def lifespan(app: FastAPI):
     ensure_uuid_columns_and_backfill()
     # Create queue tables
     QueueBase.metadata.create_all(bind=engine)
+    logger.info("Starting SMTP server and queue processor")
     await start_smtp_server()
     await queue_processor.start()
     yield
     # Shutdown
+    logger.info("Shutting down SMTP server and queue processor")
     await queue_processor.stop()
     await stop_smtp_server()
 
@@ -65,15 +70,9 @@ app.include_router(websocket_simple.router)
 app.include_router(ews.router)
 app.include_router(mapihttp.router)
 app.include_router(mapihttp.root_router)
-app.include_router(nspi.router)
-app.include_router(ews.router)
 app.include_router(oab.router)
 app.include_router(contacts.router)
-
-# Import and register OAB router
-from .routers import oab
-
-app.include_router(oab.router)
+app.include_router(calendar.router)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -35,11 +35,18 @@ def _service(db: Session, user: User) -> ContactService:
     return ContactService(db, user.id)
 
 
+@router.get("/test")
+def contacts_test():
+    return {"message": "Contacts router is working"}
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def contacts_home(
     request: Request,
-    current_user: Union[User, HTMLResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, HTMLResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
@@ -74,10 +81,14 @@ def contacts_home(
 
 @router.get("/folders", response_model=List[ContactFolderTree])
 def list_folders(
-    current_user: Union[User, JSONResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
+        if isinstance(current_user, RedirectResponse):
+            return current_user
         raise HTTPException(status_code=401, detail="Unauthorized")
     service = _service(db, current_user)
     return service.build_folder_tree()
@@ -86,10 +97,14 @@ def list_folders(
 @router.post("/folders")
 def create_folder(
     payload: Dict[str, Any],
-    current_user: Union[User, JSONResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
+        if isinstance(current_user, RedirectResponse):
+            return current_user
         raise HTTPException(status_code=401, detail="Unauthorized")
     display_name = payload.get("display_name")
     if not display_name:
@@ -115,10 +130,14 @@ def create_folder(
 @router.get("/list", response_model=List[ContactResponse])
 def list_contacts_endpoint(
     folder_uuid: Optional[str] = None,
-    current_user: Union[User, JSONResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
+        if isinstance(current_user, RedirectResponse):
+            return current_user
         raise HTTPException(status_code=401, detail="Unauthorized")
     service = _service(db, current_user)
     contacts = service.list_contacts(folder_uuid)
@@ -128,7 +147,9 @@ def list_contacts_endpoint(
 @router.post("/create")
 async def create_contact(
     request: Request,
-    current_user: Union[User, HTMLResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, HTMLResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
@@ -143,10 +164,14 @@ async def create_contact(
 @router.get("/{contact_uuid}", response_model=ContactResponse)
 def get_contact(
     contact_uuid: str,
-    current_user: Union[User, JSONResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
+        if isinstance(current_user, RedirectResponse):
+            return current_user
         raise HTTPException(status_code=401, detail="Unauthorized")
     service = _service(db, current_user)
     contact = service.get_contact(contact_uuid)
@@ -159,10 +184,14 @@ def get_contact(
 def update_contact(
     contact_uuid: str,
     payload: Dict[str, Any],
-    current_user: Union[User, JSONResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
+        if isinstance(current_user, RedirectResponse):
+            return current_user
         raise HTTPException(status_code=401, detail="Unauthorized")
     service = _service(db, current_user)
     try:
@@ -175,10 +204,14 @@ def update_contact(
 @router.delete("/{contact_uuid}")
 def delete_contact(
     contact_uuid: str,
-    current_user: Union[User, JSONResponse] = Depends(get_current_user_from_cookie),
+    current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
+        get_current_user_from_cookie
+    ),
     db: Session = Depends(get_db),
 ):
     if not isinstance(current_user, User):
+        if isinstance(current_user, RedirectResponse):
+            return current_user
         raise HTTPException(status_code=401, detail="Unauthorized")
     service = _service(db, current_user)
     if not service.delete_contact(contact_uuid):

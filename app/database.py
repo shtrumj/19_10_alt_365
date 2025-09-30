@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -55,6 +56,8 @@ class User(Base):
     )
     contacts = relationship("Contact", back_populates="owner")
     contact_folders = relationship("ContactFolder", back_populates="owner")
+    calendar_events = relationship("CalendarEvent", back_populates="owner")
+    calendar_folders = relationship("CalendarFolder", back_populates="owner")
 
 
 class Email(Base):
@@ -105,18 +108,80 @@ class EmailAttachment(Base):
 
 
 class CalendarEvent(Base):
+    """Exchange-compatible calendar event"""
+
     __tablename__ = "calendar_events"
     id = Column(Integer, primary_key=True, index=True)
     uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    title = Column(String, nullable=False)
-    description = Column(Text)
-    location = Column(String)
-    start_time = Column(DateTime, nullable=False)
-    end_time = Column(DateTime, nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    folder_id = Column(Integer, ForeignKey("calendar_folders.id"), nullable=True)
+
+    # Basic event information
+    subject = Column(String, nullable=False, index=True)
+    body = Column(Text)
+    body_type = Column(String, default="text")  # text, html
+    importance = Column(String, default="normal")  # low, normal, high
+    sensitivity = Column(
+        String, default="normal"
+    )  # normal, personal, private, confidential
     is_all_day = Column(Boolean, default=False)
+
+    # Date and time
+    start_time = Column(DateTime, nullable=False, index=True)
+    end_time = Column(DateTime, nullable=False, index=True)
+    duration = Column(String)  # ISO 8601 duration format
+    timezone = Column(String, default="UTC")
+
+    # Recurrence
+    is_recurring = Column(Boolean, default=False)
+    recurrence_pattern = Column(Text)  # JSON string for recurrence rules
+    recurrence_start = Column(DateTime)
+    recurrence_end = Column(DateTime)
+    recurrence_count = Column(Integer)
+
+    # Location and meeting
+    location = Column(String)
+    is_meeting = Column(Boolean, default=False)
+    is_online_meeting = Column(Boolean, default=False)
+    online_meeting_provider = Column(String)  # teams, zoom, etc.
+    online_meeting_url = Column(String)
+    online_meeting_phone = Column(String)
+
+    # Attendees (stored as JSON)
+    attendees = Column(Text)  # JSON array of attendee objects
+    organizer = Column(String)  # Email of organizer
+    required_attendees = Column(Text)  # JSON array
+    optional_attendees = Column(Text)  # JSON array
+    resources = Column(Text)  # JSON array of resources
+
+    # Status and response
+    meeting_status = Column(String, default="free")  # free, tentative, busy, oof
+    response_status = Column(
+        String, default="none"
+    )  # none, accepted, declined, tentative
+    response_requested = Column(Boolean, default=False)
+
+    # Reminders
+    reminder_set = Column(Boolean, default=False)
+    reminder_minutes = Column(Integer, default=15)
+
+    # Categories and tags
+    categories = Column(Text)  # JSON array of categories
+    tags = Column(Text)  # JSON array of tags
+
+    # Exchange-specific fields
+    change_key = Column(String, unique=True, default=lambda: str(uuid4()))
+    item_class = Column(String, default="IPM.Appointment")
+    mime_content = Column(Text)  # MIME content for Exchange compatibility
+
+    # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_modified = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    owner = relationship("User", back_populates="calendar_events")
+    folder = relationship("CalendarFolder", back_populates="events")
 
 
 class ActiveSyncDevice(Base):
@@ -244,6 +309,33 @@ class ContactFolder(Base):
     contacts = relationship("Contact", back_populates="folder")
 
 
+class CalendarFolder(Base):
+    """Exchange-compatible calendar folder"""
+
+    __tablename__ = "calendar_folders"
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("calendar_folders.id"), nullable=True)
+    display_name = Column(String, nullable=False)
+    well_known_name = Column(String, nullable=True, index=True)
+    is_default = Column(Boolean, default=False)
+    color = Column(String, default="#0078d4")  # Exchange default blue
+    description = Column(Text)
+    permissions = Column(Text)  # JSON string for folder permissions
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("User", back_populates="calendar_folders")
+    parent = relationship("CalendarFolder", remote_side=[id], back_populates="children")
+    children = relationship(
+        "CalendarFolder",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+    events = relationship("CalendarEvent", back_populates="folder")
+
+
 def create_tables():
     Base.metadata.create_all(bind=engine)
 
@@ -264,6 +356,10 @@ def ensure_uuid_columns_and_backfill():
         with engine.connect() as conn:
             # Ensure contact folders table exists
             ContactFolder.__table__.create(bind=engine, checkfirst=True)
+
+            # Ensure calendar tables exist
+            CalendarFolder.__table__.create(bind=engine, checkfirst=True)
+            CalendarEvent.__table__.create(bind=engine, checkfirst=True)
 
             # Ensure extended contact columns exist
             extended_columns = {
@@ -318,41 +414,49 @@ def ensure_uuid_columns_and_backfill():
                 "sensitivity": "TEXT",
                 "gender": "TEXT",
             }
-            result = conn.execute("PRAGMA table_info(contacts)").fetchall()
+            result = conn.execute(text("PRAGMA table_info(contacts)")).fetchall()
             existing_cols = {row[1] for row in result}
             for col_name, col_type in extended_columns.items():
                 if col_name not in existing_cols:
                     conn.execute(
-                        f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}"
+                        text(f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}")
                     )
                     conn.commit()
 
             # Ensure helpful indexes
             folder_indexes = conn.execute(
-                "PRAGMA index_list(contact_folders)"
+                text("PRAGMA index_list(contact_folders)")
             ).fetchall()
             folder_index_names = {row[1] for row in folder_indexes}
             if "idx_contact_folders_owner" not in folder_index_names:
                 conn.execute(
-                    "CREATE INDEX idx_contact_folders_owner ON contact_folders(owner_id)"
+                    text(
+                        "CREATE INDEX idx_contact_folders_owner ON contact_folders(owner_id)"
+                    )
                 )
                 conn.commit()
             if "idx_contact_folders_parent" not in folder_index_names:
                 conn.execute(
-                    "CREATE INDEX idx_contact_folders_parent ON contact_folders(parent_id)"
+                    text(
+                        "CREATE INDEX idx_contact_folders_parent ON contact_folders(parent_id)"
+                    )
                 )
                 conn.commit()
 
-            contact_indexes = conn.execute("PRAGMA index_list(contacts)").fetchall()
+            contact_indexes = conn.execute(
+                text("PRAGMA index_list(contacts)")
+            ).fetchall()
             contact_index_names = {row[1] for row in contact_indexes}
             if "idx_contacts_folder_id" not in contact_index_names:
                 conn.execute(
-                    "CREATE INDEX idx_contacts_folder_id ON contacts(folder_id)"
+                    text("CREATE INDEX idx_contacts_folder_id ON contacts(folder_id)")
                 )
                 conn.commit()
             if "idx_contacts_email1" not in contact_index_names:
                 conn.execute(
-                    "CREATE INDEX idx_contacts_email1 ON contacts(email_address_1)"
+                    text(
+                        "CREATE INDEX idx_contacts_email1 ON contacts(email_address_1)"
+                    )
                 )
                 conn.commit()
             for tbl in [
