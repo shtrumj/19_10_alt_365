@@ -29,7 +29,7 @@ def send_email(
         raise HTTPException(status_code=500, detail="Failed to send email")
 
 
-@router.get("/", response_model=List[EmailSummary])
+@router.get("/emails", response_model=List[EmailSummary])
 def get_emails(
     request: Request,
     folder: str = Query("inbox", description="Email folder: inbox, sent, deleted"),

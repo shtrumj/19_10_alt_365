@@ -40,8 +40,7 @@ def contacts_test():
     return {"message": "Contacts router is working"}
 
 
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
+@router.get("/contacts", response_class=HTMLResponse)
 def contacts_home(
     request: Request,
     current_user: Union[User, HTMLResponse, RedirectResponse] = Depends(

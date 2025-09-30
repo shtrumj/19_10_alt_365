@@ -354,6 +354,15 @@ def ensure_uuid_columns_and_backfill():
     """Ensure uuid column exists for key tables and backfill missing values using raw SQL."""
     try:
         with engine.connect() as conn:
+            # Drop and recreate calendar tables to ensure correct schema
+            try:
+                conn.execute(text("DROP TABLE IF EXISTS calendar_events"))
+                conn.execute(text("DROP TABLE IF EXISTS calendar_folders"))
+                conn.commit()
+                print("✅ Dropped existing calendar tables")
+            except Exception as e:
+                print(f"⚠️ Error dropping calendar tables: {e}")
+
             # Ensure contact folders table exists
             ContactFolder.__table__.create(bind=engine, checkfirst=True)
 

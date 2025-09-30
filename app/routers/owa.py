@@ -47,6 +47,7 @@ def get_template_context(request: Request, **kwargs):
 
 
 @router.get("/", response_class=HTMLResponse)
+@router.get("/owa", response_class=HTMLResponse)
 def owa_home(
     request: Request,
     current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),

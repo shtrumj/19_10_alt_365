@@ -209,7 +209,6 @@ def get_upcoming_events(
 
 
 # OWA Calendar UI Endpoints
-@router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def calendar_home(
     request: Request,
@@ -239,8 +238,8 @@ def calendar_home(
 
     from fastapi.templating import Jinja2Templates
 
-    templates = Jinja2Templates(directory="templates/owa")
-    return templates.TemplateResponse("calendar.html", context)
+    templates = Jinja2Templates(directory="templates")
+    return templates.TemplateResponse("owa/calendar.html", context)
 
 
 @router.get("/test")
