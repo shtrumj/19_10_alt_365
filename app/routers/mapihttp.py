@@ -221,7 +221,11 @@ async def mapi_emsmdb(request: Request):
                     "WWW-Authenticate": "NTLM",
                     "Content-Type": "application/mapi-http",
                     "X-ClientInfo": "365-Email-System/1.0",
-                    "X-RequestId": request_id
+                    "X-RequestId": request_id,
+                    "Persistent-Auth": "true",
+                    "X-ServerApplication": "365-Email-System/1.0",
+                    "Connection": "close",
+                    "Cache-Control": "private"
                 }
             )
         
@@ -308,7 +312,9 @@ async def mapi_emsmdb(request: Request):
                         "X-RequestId": request_id,
                         "X-RequestType": "Connect",
                         "Cache-Control": "private",
-                        "Connection": "close"
+                        "Connection": "close",
+                        "Persistent-Auth": "true",
+                        "X-ServerApplication": "365-Email-System/1.0"
                     }
                 )
             else:
@@ -330,7 +336,7 @@ async def mapi_emsmdb(request: Request):
                     outlook_diagnostics.log_authentication_flow("NTLM", "type3_received", True, {
                         "request_id": request_id
                     })
-                    return Response(
+                return Response(
                         status_code=200,
                         headers={
                             "Content-Type": "application/mapi-http",
@@ -338,7 +344,9 @@ async def mapi_emsmdb(request: Request):
                             "X-ClientInfo": "365-Email-System/1.0",
                             "X-RequestId": request_id,
                             "X-ResponseCode": "0",
-                            "Cache-Control": "private"
+                        "Cache-Control": "private",
+                        "Persistent-Auth": "true",
+                        "X-ServerApplication": "365-Email-System/1.0"
                         }
                     )
         
@@ -386,7 +394,10 @@ async def mapi_emsmdb(request: Request):
                         "X-ClientInfo": "365-Email-System/1.0",
                         "X-RequestId": request_id,
                         "X-RequestType": "Connect",
-                        "Cache-Control": "private"
+                        "Cache-Control": "private",
+                        "Connection": "close",
+                        "Persistent-Auth": "true",
+                        "X-ServerApplication": "365-Email-System/1.0"
                     }
                 )
             else:
@@ -612,7 +623,10 @@ async def mapi_emsmdb_get(request: Request):
             "X-RequestType": "Connect",
             "X-ClientInfo": "365-Email-System/1.0",
             "X-RequestId": request_id,
-            "Cache-Control": "private"
+            "Cache-Control": "private",
+            "Connection": "close",
+            "Persistent-Auth": "true",
+            "X-ServerApplication": "365-Email-System/1.0"
         }
     )
 
@@ -626,7 +640,10 @@ async def mapi_emsmdb_head(request: Request):
         "X-RequestType": "Connect",
         "X-ClientInfo": "365-Email-System/1.0",
         "X-RequestId": request_id,
-        "Cache-Control": "private"
+        "Cache-Control": "private",
+        "Connection": "close",
+        "Persistent-Auth": "true",
+        "X-ServerApplication": "365-Email-System/1.0"
     })
 
 @router.options("/emsmdb")
@@ -660,7 +677,10 @@ async def mapi_emsmdb_get_root(request: Request):
             "X-RequestType": "Connect",
             "X-ClientInfo": "365-Email-System/1.0",
             "X-RequestId": request_id,
-            "Cache-Control": "private"
+            "Cache-Control": "private",
+            "Connection": "close",
+            "Persistent-Auth": "true",
+            "X-ServerApplication": "365-Email-System/1.0"
         }
     )
 
@@ -674,7 +694,10 @@ async def mapi_emsmdb_head_root(request: Request):
         "X-RequestType": "Connect",
         "X-ClientInfo": "365-Email-System/1.0",
         "X-RequestId": request_id,
-        "Cache-Control": "private"
+        "Cache-Control": "private",
+        "Connection": "close",
+        "Persistent-Auth": "true",
+        "X-ServerApplication": "365-Email-System/1.0"
     })
 
 @root_router.options("/mapi/emsmdb")
