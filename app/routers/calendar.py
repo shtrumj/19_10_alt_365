@@ -221,7 +221,7 @@ def calendar_home(
 
     from ..routers.owa import get_template_context
 
-    context = get_template_context(request, current_user=current_user)
+    context = get_template_context(request, user=current_user)
 
     # Get calendar data
     service = CalendarService(db)
@@ -236,9 +236,7 @@ def calendar_home(
         }
     )
 
-    from fastapi.templating import Jinja2Templates
-
-    templates = Jinja2Templates(directory="templates")
+    from ..routers.owa import templates
     return templates.TemplateResponse("owa/calendar.html", context)
 
 
