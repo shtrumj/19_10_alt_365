@@ -205,6 +205,7 @@ class ActiveSyncState(Base):
     device_id = Column(String, nullable=False)
     collection_id = Column(String, nullable=False, default="1")
     sync_key = Column(String, nullable=False, default="1")
+    foldersync_attempts = Column(Integer, default=0)
     last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     __table_args__ = (

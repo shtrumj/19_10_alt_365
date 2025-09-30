@@ -12,6 +12,7 @@ from ..mapi_protocol import (
 )
 from ..mapi_store import message_store
 from ..database import SessionLocal, User, get_db
+from ..auth import authenticate_user
 import os
 import logging
 import uuid
@@ -34,6 +35,20 @@ root_router = APIRouter(tags=["mapihttp-root"])
 
 def log_mapi(event: str, details: dict):
     _write_json_line("web/mapi/mapi.log", {"event": event, **(details or {})})
+
+def authenticate_basic_auth(auth_header: str, db: Session) -> Optional[User]:
+    """Authenticate user from Basic Authentication header"""
+    if not auth_header or not auth_header.startswith("Basic "):
+        return None
+    
+    try:
+        encoded = auth_header.split(" ")[1]
+        decoded = base64.b64decode(encoded).decode('utf-8')
+        username, password = decoded.split(":", 1)
+        return authenticate_user(db, username, password)
+    except Exception as e:
+        log_mapi("basic_auth_error", {"error": str(e)})
+        return None
 
 def log_outlook_debug(request: Request, event: str, details: dict = None):
     """Enhanced logging for Outlook debugging"""
@@ -402,30 +417,56 @@ async def mapi_emsmdb(request: Request):
                 else:
                     raise parse_error
         else:
-            # Empty body with Basic auth - Outlook often sends this as a test request
+            # Empty body with Basic auth - authenticate the user
             if auth_header and auth_header.startswith("Basic"):
-                # Instead of faking Connect, force NTLM upgrade so Outlook proceeds properly
-                log_mapi("empty_basic_request_ntlm_challenge", {
-                    "request_id": request_id,
-                    "message": "Empty Basic auth - replying with NTLM challenge"
-                })
-                outlook_diagnostics.log_authentication_flow("NTLM", "challenge_sent_on_basic_empty", True, {
-                    "request_id": request_id
-                })
-                return Response(
-                    status_code=401,
-                    headers={
-                        "WWW-Authenticate": "Negotiate, NTLM",
-                        "Content-Type": "application/mapi-http",
-                        "X-ClientInfo": "365-Email-System/1.0",
-                        "X-RequestId": request_id,
-                        "X-RequestType": "Connect",
-                        "Cache-Control": "private",
-                        "Connection": "close",
-                        "Persistent-Auth": "true",
-                        "X-ServerApplication": "365-Email-System/1.0"
-                    }
-                )
+                # Authenticate the user with Basic auth
+                db = SessionLocal()
+                try:
+                    user = authenticate_basic_auth(auth_header, db)
+                    if user:
+                        log_mapi("basic_auth_success", {
+                            "request_id": request_id,
+                            "username": user.username,
+                            "message": "Basic auth successful - proceeding with MAPI"
+                        })
+                        outlook_diagnostics.log_authentication_flow("Basic", "authentication_successful", True, {
+                            "request_id": request_id,
+                            "username": user.username
+                        })
+                        
+                        # Return a successful MAPI response
+                        return Response(
+                            status_code=200,
+                            headers={
+                                "Content-Type": "application/mapi-http",
+                                "X-ClientInfo": "365-Email-System/1.0",
+                                "X-RequestId": request_id,
+                                "X-RequestType": "Connect",
+                                "Cache-Control": "private",
+                                "Connection": "close",
+                                "Persistent-Auth": "true",
+                                "X-ServerApplication": "365-Email-System/1.0"
+                            },
+                            content=b'\x00\x00\x00\x00'  # Empty MAPI response
+                        )
+                    else:
+                        log_mapi("basic_auth_failed", {
+                            "request_id": request_id,
+                            "message": "Basic auth failed - invalid credentials"
+                        })
+                        outlook_diagnostics.log_authentication_flow("Basic", "authentication_failed", False, {
+                            "request_id": request_id
+                        })
+                        return Response(
+                            status_code=401,
+                            headers={
+                                "WWW-Authenticate": "Basic",
+                                "Content-Type": "application/mapi-http",
+                                "X-RequestId": request_id
+                            }
+                        )
+                finally:
+                    db.close()
             else:
                 # Empty body without any valid auth - this is an error
                 log_outlook_connection_issue("invalid_empty_request", "Received empty MAPI request without valid auth", {
@@ -553,6 +594,7 @@ async def mapi_emsmdb(request: Request):
             headers={"X-ClientInfo": "365-Email-System/1.0"}
         )
 
+@router.get("/nspi")
 @router.post("/nspi")
 async def mapi_nspi(request: Request, db: Session = Depends(get_db)):
     """MAPI/HTTP NSPI endpoint - handles address book operations"""
@@ -632,6 +674,7 @@ async def mapi_nspi(request: Request, db: Session = Depends(get_db)):
         )
 
 @router.get("/emsmdb")
+@router.head("/emsmdb")
 async def mapi_emsmdb_get(request: Request):
     """Respond to Outlook probe with NTLM challenge on GET."""
     request_id = str(uuid.uuid4())

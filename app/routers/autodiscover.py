@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import Response, RedirectResponse
 from ..config import settings
 from ..database import SessionLocal, User
 import logging
@@ -11,6 +11,7 @@ from ..diagnostic_logger import (
 
 router = APIRouter()
 
+@router.get("/Autodiscover/Autodiscover.xml")
 @router.post("/Autodiscover/Autodiscover.xml")
 async def autodiscover(request: Request):
     """ActiveSync-compatible autodiscover response (Outlook/Exchange style)."""
@@ -162,7 +163,7 @@ async def autodiscover(request: Request):
           <UMUrl>{owa_url}/um</UMUrl>
           <OABUrl>https://{host}/oab/oab.xml</OABUrl>
           <ServerExclusiveConnect>On</ServerExclusiveConnect>
-          <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+          <ASUrl>https://{host}/activesync/Microsoft-Server-ActiveSync</ASUrl>
           <EwsPartnerUrl>{ews_url}</EwsPartnerUrl>
           <CertPrincipalName>msstd:{exch_server}</CertPrincipalName>
           <GroupingInformation>Exchange</GroupingInformation>
@@ -174,7 +175,7 @@ async def autodiscover(request: Request):
           <UMUrl>{owa_url}/um</UMUrl>
           <OABUrl>https://{host}/oab/oab.xml</OABUrl>
           <ServerExclusiveConnect>On</ServerExclusiveConnect>
-          <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
+          <ASUrl>https://{host}/activesync/Microsoft-Server-ActiveSync</ASUrl>
           <EwsPartnerUrl>{ews_url}</EwsPartnerUrl>
           <CertPrincipalName>msstd:{exch_server}</CertPrincipalName>
           <GroupingInformation>Exchange</GroupingInformation>
@@ -340,22 +341,23 @@ async def autodiscover_json(email_address: str, request: Request):
                 pass
         
         # Build JSON response compatible with Office 365/Exchange Online format
-        json_response = {
-            "Protocol": "Exchange",
-            "Url": f"https://{host}",
-            "AuthPackage": "Ntlm", 
-            "ServerExclusiveConnect": False,
-            "CertPrincipalName": f"msstd:{host}",
-            "GroupingInformation": "Exchange",
-            "EwsUrl": f"https://{host}/EWS/Exchange.asmx",
-            "EcpUrl": f"https://{host}/owa",
-            "OOFUrl": f"https://{host}/owa/oof",
-            "UMUrl": f"https://{host}/owa/um"
-        }
+        # Include MAPI HTTP settings that Outlook needs to proceed
+        mapi_server_url = f"https://{host}/mapi/emsmdb"
         
-        log_autodiscover("json_response", {"email": email_address, "protocol": "Exchange"})
+        # RESEARCH FINDING: Outlook 2021 has known compatibility issues with JSON autodiscover
+        # Many users report Outlook getting stuck after receiving JSON responses
+        # Solution: Redirect JSON requests to XML autodiscover for better compatibility
         
-        return json_response
+        log_autodiscover("json_redirect_to_xml", {
+            "email": email_address, 
+            "reason": "Outlook 2021 JSON compatibility issues - redirecting to XML",
+            "ua": request.headers.get("User-Agent", "")
+        })
+        
+        # Redirect to XML autodiscover which has better Outlook 2021 support
+        from fastapi.responses import RedirectResponse
+        xml_url = f"https://{host}/Autodiscover/Autodiscover.xml"
+        return RedirectResponse(url=xml_url, status_code=302)
         
     except Exception as e:
         logger.error(f"Error in JSON autodiscover: {e}")
@@ -368,5 +370,76 @@ async def autodiscover_json_with_params(email_address: str, request: Request):
     # Extract just the email part if there are query parameters
     email_only = email_address.split('?')[0] if '?' in email_address else email_address
     return await autodiscover_json(email_only, request)
+
+# Microsoft Autodiscover Specification Compliance
+# Based on: https://learn.microsoft.com/en-us/previous-versions/office/developer/exchange-server-interoperability-guidance/hh352638(v=exchg.140)
+
+# Additional autodiscover endpoints for Microsoft specification compliance
+@router.get("/autodiscover/autodiscover.xml")
+@router.post("/autodiscover/autodiscover.xml")
+async def autodiscover_domain_based(request: Request):
+    """Domain-based autodiscover endpoint (step 1 in Microsoft spec)"""
+    return await autodiscover(request)
+
+# Error response endpoints for testing Microsoft specification compliance
+@router.get("/autodiscover/error/401")
+async def autodiscover_error_401():
+    """401 Unauthorized response for authentication failures"""
+    raise HTTPException(status_code=401, detail="Authentication required")
+
+@router.get("/autodiscover/error/403")
+async def autodiscover_error_403():
+    """403 Forbidden response for access denied"""
+    raise HTTPException(status_code=403, detail="Access denied")
+
+@router.get("/autodiscover/error/404")
+async def autodiscover_error_404():
+    """404 Not Found response for missing autodiscover"""
+    raise HTTPException(status_code=404, detail="Autodiscover service not found")
+
+@router.get("/autodiscover/error/500")
+async def autodiscover_error_500():
+    """500 Internal Server Error response for server errors"""
+    raise HTTPException(status_code=500, detail="Internal server error")
+
+# Redirect response endpoints for testing Microsoft specification compliance
+@router.get("/autodiscover/redirect/302")
+async def autodiscover_redirect_302(request: Request):
+    """302 Redirect response with Location header"""
+    host = settings.HOSTNAME or request.headers.get("Host", "")
+    redirect_url = f"https://{host}/Autodiscover/Autodiscover.xml"
+    
+    log_autodiscover("redirect_302", {
+        "ip": (request.client.host if request.client else None),
+        "ua": request.headers.get("User-Agent"),
+        "host": request.headers.get("Host"),
+        "redirect_url": redirect_url
+    })
+    
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+@router.get("/autodiscover/redirect/451")
+async def autodiscover_redirect_451(request: Request):
+    """451 Redirect response with X-MS-Location header"""
+    host = settings.HOSTNAME or request.headers.get("Host", "")
+    new_url = f"https://{host}/Microsoft-Server-ActiveSync"
+    
+    log_autodiscover("redirect_451", {
+        "ip": (request.client.host if request.client else None),
+        "ua": request.headers.get("User-Agent"),
+        "host": request.headers.get("Host"),
+        "new_url": new_url
+    })
+    
+    response = Response(
+        content="",
+        status_code=451,
+        headers={
+            "X-MS-Location": new_url,
+            "Cache-Control": "private",
+            "Content-Length": "0"
+        }
+    )
+    return response
 
 

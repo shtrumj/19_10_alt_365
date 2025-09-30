@@ -24,6 +24,7 @@ def ews_error(message: str) -> str:
     inner = f"<m:ResponseCode xmlns:m=\"{EWS_NS_MESSAGES}\">ErrorInternalServerError</m:ResponseCode><m:MessageText xmlns:m=\"{EWS_NS_MESSAGES}\">{message}</m:MessageText>"
     return soap_envelope(f"<m:ResponseMessages xmlns:m=\"{EWS_NS_MESSAGES}\">{inner}</m:ResponseMessages>")
 
+@router.get("/Exchange.asmx")
 @router.post("/Exchange.asmx")
 async def ews_aspx(request: Request, db: Session = Depends(get_db)):
     """Very minimal EWS endpoint to make Outlook probe pass. Supports FindItem on Inbox with a tiny response.

@@ -1,19 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Form
-from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
-from ..database import get_db, User
-from ..auth import authenticate_user, create_access_token, get_password_hash
-
-router = APIRouter(prefix="/basic", tags=["basic-auth"])
-
-@router.post("/token")
-def basic_token(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-    user = authenticate_user(db, username, password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = create_access_token({"sub": user.username})
-    return {"access_token": token, "token_type": "bearer"}
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.templating import Jinja2Templates
@@ -27,6 +12,14 @@ from ..language import get_language, get_translation, get_direction, get_all_tra
 templates = Jinja2Templates(directory="templates")
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+@router.post("/basic/token")
+def basic_token(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    user = authenticate_user(db, username, password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token({"sub": user.username})
+    return {"access_token": token, "token_type": "bearer"}
 
 def get_template_context(request: Request, **kwargs):
     """Get template context with language support"""

@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 @router.get("/test")
 async def shares_test():
     """Test endpoint"""
-    return {"message": "Shares router is working", "status": "success"}
+    return {"message": "Shares router is working", "status": "success", "timestamp": "2025-09-30T21:10:00Z"}
 
 @router.get("/")
 async def shares_index(request: Request):
@@ -111,17 +111,30 @@ async def shares_index(request: Request):
         
         <div class="file-card">
             <h3><span class="icon">🔧</span>Registry Fix for Outlook 2021</h3>
-            <p>Windows registry fix to prevent Outlook 2021 from trying Office 365 endpoints first. Critical for custom Exchange server setup.</p>
+            <p>Basic Windows registry fix to prevent Outlook 2021 from trying Office 365 endpoints first. Critical for custom Exchange server setup.</p>
             <a href="/shares/outlook-2021-registry-fix" class="download-btn">📥 Download .reg</a>
+        </div>
+        
+        <div class="file-card">
+            <h3><span class="icon">⚙️</span>Enhanced Registry Fix for Outlook 2021</h3>
+            <p>Comprehensive registry fix that addresses MAPI HTTP issues and forces Outlook 2021 to use custom Exchange servers. Recommended for persistent connection problems.</p>
+            <a href="/shares/outlook-2021-registry-fix-enhanced" class="download-btn">📥 Download Enhanced .reg</a>
+        </div>
+        
+        <div class="file-card">
+            <h3><span class="icon">🚀</span>Aggressive Registry Fix for Outlook 2021</h3>
+            <p>Most aggressive registry fix that completely disables Office 365 integration and forces MAPI over HTTP. Use this if the enhanced fix doesn't work.</p>
+            <a href="/shares/outlook-2021-registry-fix-aggressive" class="download-btn">📥 Download Aggressive .reg</a>
         </div>
         
         <div style="margin-top: 30px; padding: 20px; background: #e7f3ff; border-radius: 8px; border-left: 4px solid #0066cc;">
             <h4 style="margin-top: 0; color: #0066cc;">💡 Usage Instructions</h4>
             <ol>
-                <li><strong>Download the Registry Fix</strong> and apply it to your Windows machine first</li>
+                <li><strong>Download the Enhanced Registry Fix</strong> (recommended) or basic registry fix and apply it to your Windows machine first</li>
                 <li><strong>Download the Setup Guide</strong> and follow the step-by-step instructions</li>
                 <li><strong>Use the Local XML</strong> if automatic autodiscover fails</li>
                 <li><strong>Restart Outlook</strong> after applying the registry fix</li>
+                <li><strong>If still having issues</strong>, try the enhanced registry fix which addresses MAPI HTTP problems</li>
             </ol>
         </div>
     </div>
@@ -169,6 +182,34 @@ async def download_registry_fix():
     return FileResponse(
         path=str(file_path),
         filename="outlook_2021_registry_fix.reg",
+        media_type="application/x-msdownload"
+    )
+
+@router.get("/outlook-2021-registry-fix-enhanced")
+async def download_enhanced_registry_fix():
+    """Download Enhanced Outlook 2021 Registry Fix"""
+    file_path = PROJECT_ROOT / "outlook_2021_registry_fix_enhanced.reg"
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Enhanced registry fix not found")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename="outlook_2021_registry_fix_enhanced.reg",
+        media_type="application/x-msdownload"
+    )
+
+@router.get("/outlook-2021-registry-fix-aggressive")
+async def download_aggressive_registry_fix():
+    """Download Aggressive Outlook 2021 Registry Fix"""
+    file_path = PROJECT_ROOT / "outlook_2021_registry_fix_aggressive.reg"
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Aggressive registry fix not found")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename="outlook_2021_registry_fix_aggressive.reg",
         media_type="application/x-msdownload"
     )
 
@@ -224,4 +265,18 @@ async def view_local_autodiscover():
     return FileResponse(
         path=str(file_path),
         media_type="application/xml"
+    )
+
+@router.get("/outlook-2021-registry-fix-force-mapi")
+async def download_force_mapi_registry_fix():
+    """Download Force MAPI Registry Fix for Outlook 2021"""
+    file_path = PROJECT_ROOT / "outlook_2021_registry_fix_force_mapi.reg"
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Force MAPI registry fix not found")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename="outlook_2021_registry_fix_force_mapi.reg",
+        media_type="application/x-msdownload"
     )

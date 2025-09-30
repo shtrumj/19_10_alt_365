@@ -1,15 +1,19 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from xml.etree import ElementTree as ET
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user
+from ..auth import get_current_user_from_basic_auth
 from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
 from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
+
+# Rate limiting for sync requests
+_sync_rate_limits = {}
 
 router = APIRouter(prefix="/activesync", tags=["activesync"])
 
@@ -25,12 +29,24 @@ class ActiveSyncResponse:
 
 
 def _eas_headers() -> dict:
-    """Headers required by Microsoft Exchange ActiveSync clients."""
+    """Headers required by Microsoft Exchange ActiveSync clients with IPM subtree compatibility."""
     return {
         # Protocol identification and version support
         "MS-Server-ActiveSync": "15.0",
         "Server": "365-Email-System",
         "Allow": "OPTIONS,POST",
+        "Content-Type": "application/vnd.ms-sync.wbxml",
+        # Performance optimization headers
+        "Cache-Control": "private, no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+        # IPM subtree compatibility headers
+        "X-MS-ASProtocolVersion": "16.1",
+        "X-MS-ASProtocolCommands": (
+            "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
+            "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
+            "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar"
+        ),
         # Commonly advertised versions and commands
         "MS-ASProtocolVersions": "12.1,14.0,14.1,16.0,16.1",
         "MS-ASProtocolCommands": (
@@ -38,52 +54,106 @@ def _eas_headers() -> dict:
             "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
             "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar"
         ),
+        # IPM subtree specific headers
+        "X-MS-ASProtocolSupports": "ItemOperations,SendMail,SmartForward,SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar",
+        "X-MS-ASProtocolVersion": "16.1",
     }
 
 
-def create_sync_response(emails: List, sync_key: str = "1"):
-    """Create ActiveSync XML response for email synchronization"""
+def create_sync_response(emails: List, sync_key: str = "1", collection_id: str = "1"):
+    """Create ActiveSync XML response for email synchronization according to MS-ASCMD specification"""
     root = ET.Element("Sync")
     root.set("xmlns", "AirSync")
 
-    # Add collection
-    collection = ET.SubElement(root, "Collection")
-    collection.set("Class", "Email")
+    # Add Collections wrapper (required by ActiveSync spec)
+    collections = ET.SubElement(root, "Collections")
+    
+    # Add collection with proper structure according to Microsoft documentation
+    collection = ET.SubElement(collections, "Collection")
     collection.set("SyncKey", sync_key)
-    collection.set("CollectionId", "1")
+    collection.set("CollectionId", collection_id)
+    collection.set("Status", "1")  # Success status
 
-    # Add commands for each email
+    # Add commands for each email according to Microsoft documentation
     for email in emails:
         add = ET.SubElement(collection, "Add")
-        add.set("ServerId", str(email.id))
+        add.set("ServerId", f"{collection_id}:{email.id}")  # Format: CollectionId:EmailId
 
-        # Email properties
+        # Email properties according to Microsoft documentation
         application_data = ET.SubElement(add, "ApplicationData")
 
-        # Subject
+        # Subject (required)
         subject_elem = ET.SubElement(application_data, "Subject")
-        subject_elem.text = email.subject
+        subject_elem.text = email.subject or "(no subject)"
 
-        # From
+        # From (required)
         from_elem = ET.SubElement(application_data, "From")
-        from_elem.text = getattr(getattr(email, "sender", None), "email", "")
+        from_elem.text = getattr(getattr(email, "sender", None), "email", "") or ""
 
-        # To
+        # To (required)
         to_elem = ET.SubElement(application_data, "To")
-        to_elem.text = getattr(getattr(email, "recipient", None), "email", "")
+        to_elem.text = getattr(getattr(email, "recipient", None), "email", "") or ""
 
-        # Body
-        if email.body:
-            body_elem = ET.SubElement(application_data, "Body")
-            body_elem.text = email.body
-
-        # Date
+        # DateReceived (required)
         date_elem = ET.SubElement(application_data, "DateReceived")
         date_elem.text = email.created_at.isoformat()
 
-        # Read status
+        # DisplayTo (required)
+        display_to = ET.SubElement(application_data, "DisplayTo")
+        display_to.text = getattr(getattr(email, "recipient", None), "email", "") or ""
+
+        # ThreadTopic (required)
+        thread_topic = ET.SubElement(application_data, "ThreadTopic")
+        thread_topic.text = email.subject or "(no subject)"
+
+        # Importance (required)
+        importance = ET.SubElement(application_data, "Importance")
+        importance.text = "1"  # Normal importance
+
+        # Read status (required)
         read_elem = ET.SubElement(application_data, "Read")
         read_elem.text = "1" if email.is_read else "0"
+
+        # Body (required) - according to Microsoft documentation format
+        body_elem = ET.SubElement(application_data, "Body")
+        body_elem.set("Type", "2")  # HTML
+        body_elem.set("EstimatedDataSize", str(len(email.body or "")))
+        
+        # Body data
+        body_data = ET.SubElement(body_elem, "Data")
+        body_data.text = email.body or ""
+        
+        # Body preview
+        body_preview = ET.SubElement(body_elem, "Preview")
+        body_preview.text = (email.body or "")[:100]  # First 100 characters
+
+        # MessageClass (required for Exchange compatibility)
+        message_class = ET.SubElement(application_data, "MessageClass")
+        message_class.text = "IPM.Note"
+
+        # InternetCPID (required)
+        internet_cpid = ET.SubElement(application_data, "InternetCPID")
+        internet_cpid.text = "28591"  # UTF-8
+
+        # ContentClass (required)
+        content_class = ET.SubElement(application_data, "ContentClass")
+        content_class.text = "urn:content-classes:message"
+
+        # NativeBodyType (required)
+        native_body_type = ET.SubElement(application_data, "NativeBodyType")
+        native_body_type.text = "2"  # HTML
+
+        # ConversationId (required for threading)
+        conversation_id = ET.SubElement(application_data, "ConversationId")
+        conversation_id.text = f"96198F80F06044EDA67815EB92B45573"  # Fixed conversation ID
+
+        # ConversationIndex (required for threading)
+        conversation_index = ET.SubElement(application_data, "ConversationIndex")
+        conversation_index.text = "CD4F18CF13"  # Fixed conversation index
+
+        # Categories (required)
+        categories = ET.SubElement(application_data, "Categories")
+        categories.text = ""
 
     return ET.tostring(root, encoding="unicode")
 
@@ -146,8 +216,38 @@ def _get_or_init_state(
         db.add(state)
         db.commit()
         db.refresh(state)
+    
+    # Reset foldersync attempts if it's too high (device reset mechanism)
+    # Based on grommunio-sync community reports, we need to be more aggressive
+    if state.foldersync_attempts and state.foldersync_attempts > 2:
+        state.foldersync_attempts = 0
+        state.sync_key = "1"
+        db.commit()
+        _write_json_line(
+            "activesync/activesync.log",
+            {"event": "device_reset", "user_id": user_id, "device_id": device_id, "message": "Device reset due to excessive foldersync attempts - forcing client to proceed to email sync"},
+        )
+    
     return state
 
+
+def _check_rate_limit(user_id: int, device_id: str, cmd: str) -> bool:
+    """Check if user is making too many requests (rate limiting)"""
+    key = f"{user_id}:{device_id}:{cmd}"
+    now = time.time()
+    
+    if key not in _sync_rate_limits:
+        _sync_rate_limits[key] = []
+    
+    # Clean old entries (older than 1 minute)
+    _sync_rate_limits[key] = [t for t in _sync_rate_limits[key] if now - t < 60]
+    
+    # Check rate limit (max 100 requests per minute for sync commands - very lenient)
+    if len(_sync_rate_limits[key]) >= 100:
+        return False
+    
+    _sync_rate_limits[key].append(now)
+    return True
 
 def _bump_sync_key(state: ActiveSyncState, db: Session) -> str:
     try:
@@ -163,7 +263,7 @@ def _bump_sync_key(state: ActiveSyncState, db: Session) -> str:
 @router.post("/Microsoft-Server-ActiveSync")
 async def eas_dispatch(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_basic_auth),
     db: Session = Depends(get_db),
 ):
     """Basic dispatcher for Microsoft-Server-ActiveSync commands.
@@ -175,18 +275,95 @@ async def eas_dispatch(
     device_id = request.query_params.get("DeviceId", "device-generic")
     device_type = request.query_params.get("DeviceType", "SmartPhone")
     collection_id = request.query_params.get("CollectionId", "1")
+    # Temporarily disable rate limiting to fix sync issues
+    # if cmd in ["sync", "foldersync"] and not _check_rate_limit(current_user.id, device_id, cmd):
+    #     _write_json_line(
+    #         "activesync/activesync.log",
+    #         {"event": "rate_limit_exceeded", "user": current_user.username, "cmd": cmd},
+    #     )
+    #     # Return proper ActiveSync error response instead of 429
+    #     if cmd == "foldersync":
+    #         xml = "<FolderSync><Status>3</Status><SyncKey>0</SyncKey></FolderSync>"
+    #         return Response(
+    #             content=xml, media_type="application/vnd.ms-sync.wbxml", headers=headers
+    #         )
+    #     else:
+    #         xml = "<Sync><Status>3</Status><SyncKey>0</SyncKey></Sync>"
+    #         return Response(
+    #             content=xml, media_type="application/vnd.ms-sync.wbxml", headers=headers
+    #         )
+    
     _get_or_create_device(db, current_user.id, device_id, device_type)
     state = _get_or_init_state(db, current_user.id, device_id, collection_id)
 
     if cmd == "sync":
-        # Simple incremental: bump key and return emails
-        email_service = EmailService(db)
-        emails = email_service.get_user_emails(current_user.id, "inbox", limit=100)
-        xml_response = create_sync_response(emails, sync_key=_bump_sync_key(state, db))
+        # Microsoft ActiveSync Sync implementation according to MS-ASCMD specification
+        client_sync_key = request.query_params.get("SyncKey", "0")
+        collection_id = request.query_params.get("CollectionId", "1")
+        
+        # Handle sync key validation according to ActiveSync spec
+        try:
+            client_key_int = int(client_sync_key) if client_sync_key.isdigit() else 0
+            server_key_int = int(state.sync_key) if state.sync_key.isdigit() else 0
+        except (ValueError, TypeError):
+            client_key_int = 0
+            server_key_int = 0
+        
+        # Debug logging for sync key comparison
         _write_json_line(
             "activesync/activesync.log",
-            {"event": "sync_response", "bytes": len(xml_response)},
+            {"event": "sync_debug", "client_key": client_sync_key, "client_key_int": client_key_int, "server_key": state.sync_key, "server_key_int": server_key_int, "user_id": current_user.id},
         )
+        
+        # Get emails for the specified collection
+        # Map CollectionId to folder type for simplified folder structure
+        folder_map = {
+            "1": "inbox",       # Inbox (Type 2)
+            "2": "drafts",       # Drafts (Type 3)
+            "3": "deleted",      # Deleted Items (Type 4)
+            "4": "sent",         # Sent Items (Type 5)
+            "5": "outbox"        # Outbox (Type 6)
+        }
+        folder_type = folder_map.get(collection_id, "inbox")
+        
+        email_service = EmailService(db)
+        emails = email_service.get_user_emails(current_user.id, folder_type, limit=50)
+        _write_json_line(
+            "activesync/activesync.log",
+            {"event": "sync_emails_found", "count": len(emails), "user_id": current_user.id},
+        )
+        
+        # Initial sync (SyncKey=0) - return all available emails
+        if client_key_int == 0:
+            new_sync_key = _bump_sync_key(state, db)
+            xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "sync_initial", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id},
+            )
+        # Client sync key matches server - no changes
+        elif client_key_int == server_key_int and client_key_int > 0:
+            xml_response = f"<Sync><Status>1</Status><SyncKey>{state.sync_key}</SyncKey><Collections></Collections></Sync>"
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "sync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "No changes - client and server in sync"},
+            )
+        # Client sync key is behind server - return current server sync key with available emails
+        elif client_key_int < server_key_int:
+            new_sync_key = _bump_sync_key(state, db)
+            xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "sync_client_behind", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id},
+            )
+        # Client sync key is ahead of server - this shouldn't happen, return error
+        else:
+            xml_response = f"<Sync><Status>2</Status><SyncKey>{state.sync_key}</SyncKey></Sync>"
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "sync_sync_key_error", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "Sync key error - client ahead of server"},
+            )
+        
         return Response(
             content=xml_response,
             media_type="application/vnd.ms-sync.wbxml",
@@ -211,24 +388,140 @@ async def eas_dispatch(
         _write_json_line("activesync/activesync.log", {"event": "sendmail"})
         return Response(status_code=200, headers=headers)
     if cmd == "provision":
-        # Minimal Provision acknowledgement with PolicyKey echo
+        # Enhanced Provision response with device management policies
         policy_key = "1024"
-        xml = f"<Provision><Status>1</Status><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType><PolicyKey>{policy_key}</PolicyKey><Status>1</Status></Policy></Policies></Provision>"
+        xml = f"""<Provision xmlns="Provision:">
+    <Status>1</Status>
+    <Policies>
+        <Policy>
+            <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
+            <PolicyKey>{policy_key}</PolicyKey>
+            <Status>1</Status>
+            <Data>
+                <EASProvisionDoc>
+                    <DevicePasswordEnabled>false</DevicePasswordEnabled>
+                    <AlphanumericDevicePasswordRequired>false</AlphanumericDevicePasswordRequired>
+                    <MinDevicePasswordLength>0</MinDevicePasswordLength>
+                    <MaxInactivityTimeDeviceLock>0</MaxInactivityTimeDeviceLock>
+                    <RequireDeviceEncryption>false</RequireDeviceEncryption>
+                    <AllowSimpleDevicePassword>true</AllowSimpleDevicePassword>
+                    <DevicePasswordExpiration>0</DevicePasswordExpiration>
+                    <PasswordRecoveryEnabled>false</PasswordRecoveryEnabled>
+                    <AttachmentsEnabled>true</AttachmentsEnabled>
+                    <MaxAttachmentSize>0</MaxAttachmentSize>
+                    <AllowStorageCard>true</AllowStorageCard>
+                    <AllowCamera>true</AllowCamera>
+                    <RequireStorageCardEncryption>false</RequireStorageCardEncryption>
+                    <AllowUnsignedApplications>true</AllowUnsignedApplications>
+                    <AllowUnsignedInstallationPackages>true</AllowUnsignedInstallationPackages>
+                    <MinDevicePasswordComplexCharacters>0</MinDevicePasswordComplexCharacters>
+                    <AllowWiFi>true</AllowWiFi>
+                    <AllowTextMessaging>true</AllowTextMessaging>
+                    <AllowPOPIMAPEmail>true</AllowPOPIMAPEmail>
+                    <AllowBluetooth>true</AllowBluetooth>
+                    <AllowIrDA>true</AllowIrDA>
+                    <RequireManualSyncWhenRoaming>false</RequireManualSyncWhenRoaming>
+                    <AllowDesktopSync>true</AllowDesktopSync>
+                    <MaxCalendarAgeFilter>0</MaxCalendarAgeFilter>
+                    <AllowHTMLEmail>true</AllowHTMLEmail>
+                    <MaxEmailAgeFilter>0</MaxEmailAgeFilter>
+                    <MaxEmailBodyTruncation>0</MaxEmailBodyTruncation>
+                    <MaxEmailHTMLBodyTruncation>0</MaxEmailHTMLBodyTruncation>
+                    <RequireSignedSMIMEMessages>false</RequireSignedSMIMEMessages>
+                    <RequireEncryptedSMIMEMessages>false</RequireEncryptedSMIMEMessages>
+                    <RequireSignedSMIMEAlgorithm>0</RequireSignedSMIMEAlgorithm>
+                    <RequireEncryptedSMIMEAlgorithm>0</RequireEncryptedSMIMEAlgorithm>
+                    <AllowSMIMESoftCerts>true</AllowSMIMESoftCerts>
+                    <AllowBrowser>true</AllowBrowser>
+                    <AllowConsumerEmail>true</AllowConsumerEmail>
+                    <AllowRemoteDesktop>true</AllowRemoteDesktop>
+                    <AllowInternetSharing>true</AllowInternetSharing>
+                    <UnapprovedInROMApplicationList></UnapprovedInROMApplicationList>
+                    <ApprovedApplicationList></ApprovedApplicationList>
+                </EASProvisionDoc>
+            </Data>
+        </Policy>
+    </Policies>
+</Provision>"""
         _write_json_line("activesync/activesync.log", {"event": "provision"})
         return Response(
             content=xml, media_type="application/vnd.ms-sync.wbxml", headers=headers
         )
     if cmd == "foldersync":
-        # Minimal FolderSync response with Inbox as CollectionId=1
-        xml = (
-            f"<FolderSync><Status>1</Status><SyncKey>{state.sync_key}</SyncKey><Changes>"
-            f"<Add><ServerId>{collection_id}</ServerId><ParentId>0</ParentId><DisplayName>Inbox</DisplayName><Type>2</Type></Add>"
-            "</Changes></FolderSync>"
-        )
-        _write_json_line(
-            "activesync/activesync.log",
-            {"event": "foldersync", "sync_key": state.sync_key},
-        )
+        # Microsoft ActiveSync FolderSync implementation according to MS-ASCMD specification
+        client_sync_key = request.query_params.get("SyncKey", "0")
+        
+        # Handle sync key validation according to ActiveSync spec
+        try:
+            client_key_int = int(client_sync_key) if client_sync_key.isdigit() else 0
+            server_key_int = int(state.sync_key) if state.sync_key.isdigit() else 0
+        except (ValueError, TypeError):
+            client_key_int = 0
+            server_key_int = 0
+        
+        # Initial folder sync (SyncKey=0) - provide complete folder hierarchy
+        if client_key_int == 0:
+            # Increment foldersync attempts counter
+            state.foldersync_attempts = (state.foldersync_attempts or 0) + 1
+            db.commit()
+            
+            # Aggressive loop breaking - after 2 attempts, force client to proceed
+            if state.foldersync_attempts > 2:
+                # Based on grommunio-sync community reports, the issue is that clients never progress to email sync
+                # We need to force the client to proceed by returning empty changes and a valid sync key
+                # This tells the client that foldersync is complete and it should proceed to email sync
+                state.foldersync_attempts = 0
+                state.sync_key = "1"
+                db.commit()
+                
+                # Return empty changes to force client to proceed to email sync
+                xml = f"<FolderSync><Status>1</Status><SyncKey>{state.sync_key}</SyncKey><Changes></Changes></FolderSync>"
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "force_email_sync", "sync_key": state.sync_key, "client_key": client_sync_key, "attempts": state.foldersync_attempts, "message": "Forcing client to proceed to email sync - returning empty changes", "xml_length": len(xml), "xml_preview": xml[:200]},
+                )
+            else:
+                # First attempt - provide minimal folder structure
+                state.sync_key = "1"
+                db.commit()
+                new_sync_key = _bump_sync_key(state, db)
+                
+                # Provide minimal folder structure - only Inbox to start
+                xml = (
+                    f"<FolderSync><Status>1</Status><SyncKey>{new_sync_key}</SyncKey><Changes>"
+                    f"<Count>1</Count>"
+                    f"<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Inbox</DisplayName><Type>2</Type></Add>"
+                    "</Changes></FolderSync>"
+                )
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "foldersync_initial", "sync_key": new_sync_key, "client_key": client_sync_key, "attempts": state.foldersync_attempts, "message": "Initial folder sync - providing minimal folder structure", "xml_length": len(xml), "xml_preview": xml[:200]},
+                )
+        # Client sync key matches server - no changes
+        elif client_key_int == server_key_int and client_key_int > 0:
+            # Reset foldersync attempts counter when client progresses
+            state.foldersync_attempts = 0
+            db.commit()
+            xml = f"<FolderSync><Status>1</Status><SyncKey>{state.sync_key}</SyncKey><Changes></Changes></FolderSync>"
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "foldersync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "No folder changes - client and server in sync"},
+            )
+        # Client sync key is behind server - return current server sync key with no changes
+        elif client_key_int < server_key_int:
+            xml = f"<FolderSync><Status>1</Status><SyncKey>{state.sync_key}</SyncKey><Changes></Changes></FolderSync>"
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "foldersync_client_behind", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "Client behind server - returning current sync key"},
+            )
+        # Client sync key is ahead of server - this shouldn't happen, return error
+        else:
+            xml = f"<FolderSync><Status>2</Status><SyncKey>{state.sync_key}</SyncKey></FolderSync>"
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "foldersync_sync_key_error", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "Sync key error - client ahead of server"},
+            )
+        
         return Response(
             content=xml, media_type="application/vnd.ms-sync.wbxml", headers=headers
         )
@@ -317,7 +610,7 @@ def _calendar_to_eas_xml(events: list[CalendarEvent]) -> str:
 
 @router.get("/activesync/calendar")
 def calendar_list(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user_from_basic_auth), db: Session = Depends(get_db)
 ):
     events = (
         db.query(CalendarEvent)
@@ -343,7 +636,7 @@ def calendar_list(
 @router.post("/activesync/calendar")
 def calendar_create(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_basic_auth),
     db: Session = Depends(get_db),
 ):
     import json
@@ -375,7 +668,7 @@ def calendar_create(
 
 @router.get("/activesync/calendar/sync")
 def calendar_sync(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user_from_basic_auth), db: Session = Depends(get_db)
 ):
     events = (
         db.query(CalendarEvent)
@@ -409,7 +702,7 @@ async def eas_options_alias(request: Request):
 @router.post("/../Microsoft-Server-ActiveSync")
 async def eas_dispatch_alias(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_basic_auth),
     db: Session = Depends(get_db),
 ):
     return await eas_dispatch(request, current_user, db)
@@ -418,7 +711,7 @@ async def eas_dispatch_alias(
 @router.post("/sync")
 async def sync_emails(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_basic_auth),
     db: Session = Depends(get_db),
 ):
     """ActiveSync email synchronization endpoint"""
@@ -448,7 +741,7 @@ def ping():
 
 @router.post("/provision")
 async def device_provisioning(
-    request: Request, current_user: User = Depends(get_current_user)
+    request: Request, current_user: User = Depends(get_current_user_from_basic_auth)
 ):
     """Device provisioning for ActiveSync"""
     # In a real implementation, this would handle device registration
@@ -461,13 +754,15 @@ async def device_provisioning(
 
 @router.get("/folders")
 def get_folders(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user_from_basic_auth), db: Session = Depends(get_db)
 ):
-    """Get available email folders for ActiveSync"""
+    """Get available email folders for ActiveSync with IPM subtree compatibility"""
     folders = [
-        {"id": "1", "name": "Inbox", "type": "inbox"},
-        {"id": "2", "name": "Sent Items", "type": "sent"},
-        {"id": "3", "name": "Deleted Items", "type": "deleted"},
+        {"id": "1", "name": "Inbox", "type": "inbox", "parent_id": "0"},
+        {"id": "2", "name": "Outbox", "type": "outbox", "parent_id": "0"},
+        {"id": "3", "name": "Sent Items", "type": "sent", "parent_id": "0"},
+        {"id": "4", "name": "Deleted Items", "type": "deleted", "parent_id": "0"},
+        {"id": "5", "name": "Drafts", "type": "drafts", "parent_id": "0"},
     ]
     return {"folders": folders}
 
@@ -475,13 +770,19 @@ def get_folders(
 @router.get("/folders/{folder_id}/emails")
 def get_folder_emails(
     folder_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_from_basic_auth),
     db: Session = Depends(get_db),
 ):
     """Get emails from a specific folder for ActiveSync"""
     email_service = EmailService(db)
 
-    folder_map = {"1": "inbox", "2": "sent", "3": "deleted"}
+    folder_map = {
+        "1": "inbox", 
+        "2": "outbox", 
+        "3": "sent", 
+        "4": "deleted", 
+        "5": "drafts"
+    }
 
     folder = folder_map.get(folder_id, "inbox")
     emails = email_service.get_user_emails(current_user.id, folder, limit=50)

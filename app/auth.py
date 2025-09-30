@@ -4,10 +4,11 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, HTTPBasic, HTTPBasicCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+import base64
 
 from .database import User, get_db
 from .models import TokenData
@@ -22,6 +23,9 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # JWT token scheme
 security = HTTPBearer()
+
+# Basic authentication for ActiveSync
+basic_security = HTTPBasic()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -109,4 +113,19 @@ def get_current_user_from_cookie(request: Request, db: Session = Depends(get_db)
         # Redirect to login page with current language
         lang = get_language(request)
         return RedirectResponse(url=f"/auth/login?lang={lang}", status_code=302)
+    return user
+
+
+def get_current_user_from_basic_auth(
+    credentials: HTTPBasicCredentials = Depends(basic_security),
+    db: Session = Depends(get_db)
+):
+    """Get current user from Basic Authentication (for ActiveSync)"""
+    user = authenticate_user(db, credentials.username, credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     return user

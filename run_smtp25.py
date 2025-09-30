@@ -26,12 +26,15 @@ from app.routers import (
     calendar,
     contacts,
     debug,
+    deep_debug,
     emails,
     ews,
     mapihttp,
     oab,
     owa,
     queue,
+    rpc_proxy,
+    shares,
 )
 from app.routers import websocket as ws_router
 from app.routers import (
@@ -86,6 +89,9 @@ app.include_router(ews.router)
 app.include_router(mapihttp.router)
 app.include_router(mapihttp.root_router)
 app.include_router(oab.router)
+app.include_router(rpc_proxy.router)
+app.include_router(deep_debug.router)
+app.include_router(shares.router, prefix="/shares")
 
 # Root-level Microsoft-Server-ActiveSync aliases for client compatibility
 app.add_api_route(
