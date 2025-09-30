@@ -285,29 +285,11 @@ async def autodiscover(request: Request):
 async def autodiscover_lower(request: Request):
     return await autodiscover(request)
 
-# Helpful GET handler for browsers/tools (Outlook uses POST)
-@router.get("/Autodiscover/Autodiscover.xml")
-async def autodiscover_get(request: Request):
-    """GET handler for autodiscover - returns full response like POST"""
-    host = settings.HOSTNAME or request.headers.get("Host", "")
-    
-    # Log GET hits as well (browsers, some clients probe with GET)
-    try:
-        log_autodiscover("get", {
-            "ip": (request.client.host if request.client else None),
-            "ua": request.headers.get("User-Agent"),
-            "host": request.headers.get("Host"),
-        })
-    except Exception:
-        pass
-    
-    # Use the same full autodiscover response as POST
-    # This ensures Outlook gets all the settings it needs
-    return await autodiscover(request)
+# FIXED: Removed duplicate route definition - the main autodiscover function already handles both GET and POST
 
 @router.get("/autodiscover/autodiscover.xml")
 async def autodiscover_get_lower(request: Request):
-    return await autodiscover_get(request)
+    return await autodiscover(request)
 
 # JSON Autodiscover endpoint for modern Outlook clients
 @router.get("/autodiscover/autodiscover.json/v1.0/{email_address}")
@@ -344,22 +326,43 @@ async def autodiscover_json(email_address: str, request: Request):
         # Include MAPI HTTP settings that Outlook needs to proceed
         mapi_server_url = f"https://{host}/mapi/emsmdb"
         
-        # RESEARCH FINDING: Outlook 2021 has known compatibility issues with JSON autodiscover
-        # Many users report Outlook getting stuck after receiving JSON responses
-        # Solution: Redirect JSON requests to XML autodiscover for better compatibility
+        # FIXED: Provide proper JSON autodiscover response instead of redirecting
+        # This ensures Outlook gets the settings it needs in JSON format
         
-        log_autodiscover("json_redirect_to_xml", {
+        log_autodiscover("json_response", {
             "email": email_address, 
-            "reason": "Outlook 2021 JSON compatibility issues - redirecting to XML",
+            "reason": "Providing JSON autodiscover response for Outlook compatibility",
             "ua": request.headers.get("User-Agent", "")
         })
         
-        # Redirect to XML autodiscover which has better Outlook 2021 support
-        from fastapi.responses import RedirectResponse
-        xml_url = f"https://{host}/Autodiscover/Autodiscover.xml"
-        return RedirectResponse(url=xml_url, status_code=302)
+        # Build proper JSON autodiscover response
+        json_response = {
+            "Protocol": [
+                {
+                    "Type": "EXCH",
+                    "Server": host,
+                    "Port": 443,
+                    "SSL": "On",
+                    "AuthPackage": "Ntlm",
+                    "MapiHttpEnabled": True,
+                    "MapiHttpVersion": 2,
+                    "MapiHttpServerUrl": f"https://{host}/mapi/emsmdb",
+                    "Internal": {
+                        "Url": f"https://{host}/mapi/emsmdb",
+                        "ASUrl": f"https://{host}/activesync/Microsoft-Server-ActiveSync"
+                    },
+                    "External": {
+                        "Url": f"https://{host}/mapi/emsmdb",
+                        "ASUrl": f"https://{host}/activesync/Microsoft-Server-ActiveSync"
+                    }
+                }
+            ]
+        }
+        
+        return json_response
         
     except Exception as e:
+        logger = logging.getLogger(__name__)
         logger.error(f"Error in JSON autodiscover: {e}")
         # Return error response
         return {"error": "AutodiscoverFailed", "message": "Unable to retrieve settings"}
