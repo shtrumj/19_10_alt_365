@@ -620,6 +620,15 @@ async def eas_dispatch(
             # MS-ASCMD compliant: Always provide emails for SyncKey=0
             state.sync_key = "1"
             db.commit()
+            # Detect iPhone / WBXML-capable clients by content-type/body header
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
+                wbxml = create_sync_wbxml(sync_key=state.sync_key, emails=emails, collection_id=collection_id)
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "sync_initial_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_first20": wbxml[:20].hex()},
+                )
+                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = create_sync_response(emails, sync_key=state.sync_key, collection_id=collection_id)
             _write_json_line(
                 "activesync/activesync.log",
@@ -627,6 +636,15 @@ async def eas_dispatch(
             )
         # Client sync key matches server - no changes
         elif client_key_int == server_key_int and client_key_int > 0:
+            # If WBXML client, return minimal WBXML no-change frame
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
+                wbxml = create_sync_wbxml(sync_key=state.sync_key, emails=[], collection_id=collection_id)
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_first20": wbxml[:20].hex()},
+                )
+                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync">
     <Status>1</Status>
@@ -639,6 +657,14 @@ async def eas_dispatch(
         # Client sync key is behind server - return current server sync key with available emails
         elif client_key_int < server_key_int:
             new_sync_key = _bump_sync_key(state, db)
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
+                wbxml = create_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id)
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "sync_client_behind_wbxml", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_first20": wbxml[:20].hex()},
+                )
+                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
             _write_json_line(
                 "activesync/activesync.log",

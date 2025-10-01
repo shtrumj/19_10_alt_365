@@ -299,49 +299,173 @@ def create_foldersync_wbxml(sync_key: str = "1", count: int = 7) -> bytes:
     return output.getvalue()
 
 
-def create_sync_wbxml(sync_key: str = "1", emails: List = None) -> bytes:
-    """Create a WBXML Sync response"""
+def create_sync_wbxml(sync_key: str = "1", emails: List | None = None, collection_id: str = "1") -> bytes:
+    """Create a WBXML Sync response with simple email payloads for initial compatibility."""
     if emails is None:
         emails = []
-        
+
     output = io.BytesIO()
     encoder = WBXMLEncoder(output)
-    
+
     # Start WBXML
     encoder.start_wbxml()
-    
-    # Sync
+
+    # <AirSync:Sync>
     encoder.start_tag("AirSync:Sync")
-    
-    # Collections
+
+    # <AirSync:Collections>
     encoder.start_tag("AirSync:Collections")
-    
-    # Collection
+
+    # <AirSync:Collection>
     encoder.start_tag("AirSync:Collection")
-    
-    # CollectionId
+
+    # <AirSync:CollectionId>
     encoder.start_tag("AirSync:CollectionId")
-    encoder.content("1")
+    encoder.content(collection_id)
     encoder.end_tag()
-    
-    # Status
+
+    # <AirSync:Status>1</AirSync:Status>
     encoder.start_tag("AirSync:Status")
     encoder.content("1")
     encoder.end_tag()
-    
-    # SyncKey
+
+    # <AirSync:SyncKey>
     encoder.start_tag("AirSync:SyncKey")
     encoder.content(sync_key)
     encoder.end_tag()
-    
-    # Commands (empty for now)
+
+    # <AirSync:Commands>
     encoder.start_tag("AirSync:Commands")
-    encoder.end_tag()
-    
-    encoder.end_tag()  # End Collection
-    encoder.end_tag()  # End Collections
-    encoder.end_tag()  # End Sync
-    
+
+    for email in emails:
+        # <AirSync:Add>
+        encoder.start_tag("AirSync:Add")
+
+        # <AirSync:ServerId>
+        encoder.start_tag("AirSync:ServerId")
+        server_id = f"{collection_id}:{getattr(email, 'id', '0')}"
+        encoder.content(server_id)
+        encoder.end_tag()
+
+        # <AirSync:ApplicationData>
+        encoder.start_tag("AirSync:ApplicationData")
+
+        # Core email fields (mapped under AirSync for our encoder)
+        def _safe(val: str | None) -> str:
+            return val if isinstance(val, str) and val is not None else ""
+
+        subject = _safe(getattr(email, 'subject', '(no subject)'))
+        sender_email = _safe(getattr(getattr(email, 'sender', None), 'email', None))
+        recipient_email = _safe(getattr(getattr(email, 'recipient', None), 'email', None))
+        created_at = getattr(email, 'created_at', None)
+        created_ts = (
+            created_at.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if created_at else ""
+        )
+        body_text = _safe(getattr(email, 'body', ''))
+
+        # Subject
+        encoder.start_tag("AirSync:Subject")
+        encoder.content(subject)
+        encoder.end_tag()
+
+        # From
+        encoder.start_tag("AirSync:From")
+        encoder.content(sender_email)
+        encoder.end_tag()
+
+        # To
+        encoder.start_tag("AirSync:To")
+        encoder.content(recipient_email)
+        encoder.end_tag()
+
+        # DateReceived
+        encoder.start_tag("AirSync:DateReceived")
+        encoder.content(created_ts)
+        encoder.end_tag()
+
+        # DisplayTo
+        encoder.start_tag("AirSync:DisplayTo")
+        encoder.content(recipient_email)
+        encoder.end_tag()
+
+        # ThreadTopic
+        encoder.start_tag("AirSync:ThreadTopic")
+        encoder.content(subject)
+        encoder.end_tag()
+
+        # Importance (1 = normal)
+        encoder.start_tag("AirSync:Importance")
+        encoder.content("1")
+        encoder.end_tag()
+
+        # Read
+        encoder.start_tag("AirSync:Read")
+        encoder.content("1" if getattr(email, 'is_read', False) else "0")
+        encoder.end_tag()
+
+        # Body wrapper
+        encoder.start_tag("AirSync:Body")
+        # Type (2 = HTML)
+        encoder.start_tag("AirSync:Type")
+        encoder.content("2")
+        encoder.end_tag()
+        # EstimatedDataSize
+        encoder.start_tag("AirSync:EstimatedDataSize")
+        encoder.content(str(len(body_text)))
+        encoder.end_tag()
+        # Data
+        encoder.start_tag("AirSync:Data")
+        encoder.content(body_text)
+        encoder.end_tag()
+        # Preview (first 100 chars)
+        encoder.start_tag("AirSync:Preview")
+        encoder.content(body_text[:100])
+        encoder.end_tag()
+        encoder.end_tag()  # </Body>
+
+        # MessageClass
+        encoder.start_tag("AirSync:MessageClass")
+        encoder.content("IPM.Note")
+        encoder.end_tag()
+
+        # InternetCPID (28591 for UTF-8 placeholder)
+        encoder.start_tag("AirSync:InternetCPID")
+        encoder.content("28591")
+        encoder.end_tag()
+
+        # ContentClass
+        encoder.start_tag("AirSync:ContentClass")
+        encoder.content("urn:content-classes:message")
+        encoder.end_tag()
+
+        # NativeBodyType (2 = HTML)
+        encoder.start_tag("AirSync:NativeBodyType")
+        encoder.content("2")
+        encoder.end_tag()
+
+        # ConversationId
+        encoder.start_tag("AirSync:ConversationId")
+        encoder.content("conv-" + server_id)
+        encoder.end_tag()
+
+        # ConversationIndex
+        encoder.start_tag("AirSync:ConversationIndex")
+        encoder.content(created_ts.replace('-', '').replace(':', '').replace('.', ''))
+        encoder.end_tag()
+
+        # Categories (empty)
+        encoder.start_tag("AirSync:Categories")
+        encoder.content("")
+        encoder.end_tag()
+
+        encoder.end_tag()  # </ApplicationData>
+        encoder.end_tag()  # </Add>
+
+    encoder.end_tag()  # </Commands>
+    encoder.end_tag()  # </Collection>
+    encoder.end_tag()  # </Collections>
+    encoder.end_tag()  # </Sync>
+
     return output.getvalue()
 
 
