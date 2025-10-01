@@ -14,6 +14,7 @@ from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
 from ..wbxml_encoder import create_foldersync_wbxml, create_sync_wbxml
 from ..minimal_wbxml import create_minimal_foldersync_wbxml
+from ..minimal_sync_wbxml import create_minimal_sync_wbxml
 from ..zpush_wbxml import create_zpush_style_foldersync_wbxml
 from ..iphone_wbxml import create_iphone_foldersync_wbxml
 
@@ -618,15 +619,24 @@ async def eas_dispatch(
         # Initial sync (SyncKey=0) - always return all available emails according to MS-ASCMD
         if client_key_int == 0:
             # MS-ASCMD compliant: Always provide emails for SyncKey=0
-            state.sync_key = "1"
-            db.commit()
+            # Only set sync_key if it's actually 0 in the database (true first request)
+            if state.sync_key == "0":
+                state.sync_key = "1"
+                db.commit()
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_initial_sync_key_updated", 
+                    "device_id": device_id,
+                    "collection_id": collection_id,
+                    "old_sync_key": "0",
+                    "new_sync_key": "1"
+                })
             # Detect iPhone / WBXML-capable clients by content-type/body header
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
-                wbxml = create_sync_wbxml(sync_key=state.sync_key, emails=emails, collection_id=collection_id)
+                wbxml = create_minimal_sync_wbxml(sync_key=state.sync_key, emails=emails, collection_id=collection_id)
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "sync_initial_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_first20": wbxml[:20].hex()},
+                    {"event": "sync_initial_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex(), "wbxml_analysis": {"header": wbxml[:6].hex(), "has_emails": len(emails) > 0, "codepage_0_airsync": True}},
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = create_sync_response(emails, sync_key=state.sync_key, collection_id=collection_id)
@@ -639,10 +649,10 @@ async def eas_dispatch(
             # If WBXML client, return minimal WBXML no-change frame
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
-                wbxml = create_sync_wbxml(sync_key=state.sync_key, emails=[], collection_id=collection_id)
+                wbxml = create_minimal_sync_wbxml(sync_key=state.sync_key, emails=[], collection_id=collection_id)
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_first20": wbxml[:20].hex()},
+                    {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -659,10 +669,10 @@ async def eas_dispatch(
             new_sync_key = _bump_sync_key(state, db)
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
-                wbxml = create_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id)
+                wbxml = create_minimal_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id)
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "sync_client_behind_wbxml", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_first20": wbxml[:20].hex()},
+                    {"event": "sync_client_behind_wbxml", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
