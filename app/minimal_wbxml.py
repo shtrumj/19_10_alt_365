@@ -21,9 +21,9 @@ def create_minimal_foldersync_wbxml(sync_key: str = "1") -> bytes:
     output.write(b'\x6a')  # Charset 106 (UTF-8)
     output.write(b'\x00')  # String table length 0 (1 byte)
     
-    # Switch to FolderHierarchy namespace (codepage 1)
+    # Switch to FolderHierarchy namespace (codepage 7)
     output.write(b'\x00')  # SWITCH_PAGE
-    output.write(b'\x01')  # Codepage 1 (FolderHierarchy)
+    output.write(b'\x07')  # Codepage 7 (FolderHierarchy)
     
     # FolderSync (0x05 with content flag = 0x45)
     output.write(b'\x45')  # FolderSync start tag with content
