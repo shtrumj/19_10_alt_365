@@ -23,6 +23,7 @@ from .routers import (
     emails,
     ews,
     mapihttp,
+    modern_auth,
     oab,
     owa,
     queue,
@@ -64,6 +65,7 @@ app = FastAPI(
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(modern_auth.router)
 app.include_router(emails.router)
 app.include_router(owa.router)
 app.include_router(calendar.router)

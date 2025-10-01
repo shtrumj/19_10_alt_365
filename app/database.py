@@ -46,6 +46,45 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     admin = Column(Boolean, default=False)  # Admin flag for auditing/management
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Modern Authentication Fields
+    # TOTP (Time-based One-Time Password)
+    totp_secret = Column(String, nullable=True)
+    totp_enabled = Column(Boolean, default=False)
+    
+    # WebAuthn (FIDO2)
+    webauthn_credentials = Column(Text, nullable=True)  # JSON array of credentials
+    webauthn_enabled = Column(Boolean, default=False)
+    webauthn_challenge = Column(String, nullable=True)  # Temporary challenge storage
+    
+    # API Key Authentication
+    api_key_hash = Column(String, nullable=True)
+    api_key_created = Column(DateTime, nullable=True)
+    
+    # OAuth2
+    oauth2_provider = Column(String, nullable=True)  # google, microsoft, etc.
+    oauth2_id = Column(String, nullable=True)
+    oauth2_access_token = Column(Text, nullable=True)
+    oauth2_refresh_token = Column(Text, nullable=True)
+    oauth2_token_expires = Column(DateTime, nullable=True)
+    
+    # SAML
+    saml_name_id = Column(String, nullable=True)
+    saml_session_index = Column(String, nullable=True)
+    
+    # LDAP
+    ldap_dn = Column(String, nullable=True)  # Distinguished Name
+    
+    # Kerberos
+    kerberos_principal = Column(String, nullable=True)
+    
+    # Client Certificate
+    client_cert_serial = Column(String, nullable=True)
+    client_cert_issuer = Column(String, nullable=True)
+    
+    # Last login tracking
+    last_login = Column(DateTime, nullable=True)
+    last_login_method = Column(String, nullable=True)  # password, totp, webauthn, etc.
 
     # Relationships
     sent_emails = relationship(
@@ -192,6 +231,7 @@ class ActiveSyncDevice(Base):
     device_id = Column(String, nullable=False)
     device_type = Column(String, nullable=True)
     policy_key = Column(String, nullable=True)
+    is_provisioned = Column(Integer, default=0)
     last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     __table_args__ = (UniqueConstraint("user_id", "device_id", name="uq_user_device"),)

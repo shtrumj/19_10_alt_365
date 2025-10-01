@@ -15,3 +15,7 @@ cryptography==41.0.7
 requests==2.32.3
 gssapi==1.8.3
 ntlm-auth==1.5.0
+# Modern Authentication Dependencies (simplified for compatibility)
+pyotp==2.9.0
+qrcode[pil]==7.4.2
+authlib==1.2.1
