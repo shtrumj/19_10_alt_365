@@ -48,9 +48,7 @@ def create_minimal_sync_wbxml(sync_key: str = "1", emails: List = None, collecti
     output.write(b'\x6a')  # Charset 106 (UTF-8)
     output.write(b'\x00')  # String table length 0
     
-    # Switch to AirSync namespace (codepage 0)
-    output.write(b'\x00')  # SWITCH_PAGE
-    output.write(b'\x00')  # Codepage 0 (AirSync)
+    # Note: Codepage 0 (AirSync) is default, no SWITCH_PAGE needed
     
     # Sync (0x05 + 0x40 content flag = 0x45)
     output.write(b'\x45')  # Sync start tag with content
