@@ -2,16 +2,15 @@
 
 #!/usr/bin/env python3
 """
-Minimal WBXML FolderSync response for iPhone compatibility
-Uses correct FolderHierarchy namespace codes
+Correct WBXML FolderSync response for iPhone based on MS-ASWBXML specification
 """
 
 import io
 
 def create_minimal_foldersync_wbxml(sync_key: str = "1") -> bytes:
     """
-    Create a minimal WBXML FolderSync response with correct tag codes
-    FolderHierarchy namespace is codepage 1
+    Create WBXML FolderSync response with CORRECT tag codes from MS-ASWBXML spec
+    Code Page 7 (FolderHierarchy) tag values per Microsoft documentation
     """
     output = io.BytesIO()
     
@@ -25,28 +24,28 @@ def create_minimal_foldersync_wbxml(sync_key: str = "1") -> bytes:
     output.write(b'\x00')  # SWITCH_PAGE
     output.write(b'\x07')  # Codepage 7 (FolderHierarchy)
     
-    # FolderSync (0x05 with content flag = 0x45)
-    output.write(b'\x45')  # FolderSync start tag with content
+    # FolderSync (0x16 + 0x40 content flag = 0x56)
+    output.write(b'\x56')  # FolderSync tag with content
     
-    # Status (0x06 with content flag = 0x46)
-    output.write(b'\x46')  # Status tag with content
+    # Status (0x0C + 0x40 = 0x4C)
+    output.write(b'\x4C')  # Status tag with content
     output.write(b'\x03')  # STR_I (inline string)
     output.write(b'1')     # Status value
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END tag
     
-    # SyncKey (0x07 with content flag = 0x47)
-    output.write(b'\x47')  # SyncKey tag with content
+    # SyncKey (0x12 + 0x40 = 0x52)
+    output.write(b'\x52')  # SyncKey tag with content
     output.write(b'\x03')  # STR_I
     output.write(sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END tag
     
-    # Changes (0x08 with content flag = 0x48)
-    output.write(b'\x48')  # Changes tag with content
+    # Changes (0x0E + 0x40 = 0x4E)
+    output.write(b'\x4E')  # Changes tag with content
     
-    # Count (0x09 with content flag = 0x49)
-    output.write(b'\x49')  # Count tag with content
+    # Count (0x17 + 0x40 = 0x57)
+    output.write(b'\x57')  # Count tag with content
     output.write(b'\x03')  # STR_I
     output.write(b'5')     # Count = 5 folders
     output.write(b'\x00')  # String terminator
@@ -62,32 +61,32 @@ def create_minimal_foldersync_wbxml(sync_key: str = "1") -> bytes:
     ]
     
     for server_id, parent_id, display_name, folder_type in folders:
-        # Add (0x0A with content flag = 0x4A)
-        output.write(b'\x4A')  # Add tag with content
+        # Add (0x0F + 0x40 = 0x4F)
+        output.write(b'\x4F')  # Add tag with content
         
-        # ServerId (0x0B with content flag = 0x4B)
-        output.write(b'\x4B')  # ServerId tag with content
+        # ServerId (0x08 + 0x40 = 0x48)
+        output.write(b'\x48')  # ServerId tag with content
         output.write(b'\x03')  # STR_I
         output.write(server_id.encode())
         output.write(b'\x00')  # String terminator
         output.write(b'\x01')  # END tag
         
-        # ParentId (0x0C with content flag = 0x4C)
-        output.write(b'\x4C')  # ParentId tag with content
+        # ParentId (0x09 + 0x40 = 0x49)
+        output.write(b'\x49')  # ParentId tag with content
         output.write(b'\x03')  # STR_I
         output.write(parent_id.encode())
         output.write(b'\x00')  # String terminator
         output.write(b'\x01')  # END tag
         
-        # DisplayName (0x0D with content flag = 0x4D)
-        output.write(b'\x4D')  # DisplayName tag with content
+        # DisplayName (0x07 + 0x40 = 0x47)
+        output.write(b'\x47')  # DisplayName tag with content
         output.write(b'\x03')  # STR_I
         output.write(display_name.encode())
         output.write(b'\x00')  # String terminator
         output.write(b'\x01')  # END tag
         
-        # Type (0x0E with content flag = 0x4E)
-        output.write(b'\x4E')  # Type tag with content
+        # Type (0x0A + 0x40 = 0x4A)
+        output.write(b'\x4A')  # Type tag with content
         output.write(b'\x03')  # STR_I
         output.write(folder_type.encode())
         output.write(b'\x00')  # String terminator
