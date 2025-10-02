@@ -213,8 +213,9 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END To
                 
-                # Read (0x10 in Email2 + 0x40 = 0x50)
-                output.write(b'\x50')  # Read with content
+                # CRITICAL FIX: Read (0x16 in Email2 + 0x40 = 0x56) - NOT 0x10!
+                # 0x50 was colliding with Class token!
+                output.write(b'\x56')  # Read with content
                 output.write(b'\x03')  # STR_I
                 is_read = '1' if getattr(email, 'is_read', False) else '0'
                 output.write(is_read.encode())
