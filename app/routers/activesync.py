@@ -283,7 +283,8 @@ async def eas_dispatch(
     # iOS requires X-MS-PolicyKey header on ALL commands after provisioning
     # Without it, iOS won't commit sync state and keeps reverting to SyncKey=0
     device = _get_or_create_device(db, current_user.id, device_id, device_type)
-    policy_key = "1"  # Simple static policy key (permissive mode)
+    # MS-ASPROV: PolicyKey must be 10-digit number after provisioning handshake
+    policy_key = "1234567890" if device.is_provisioned == 1 else "0"
     headers = _eas_headers(policy_key=policy_key)
 
     # High-resolution request logging
@@ -325,33 +326,91 @@ async def eas_dispatch(
 
     # --- Command Handling ---
 
+    # FULL MS-ASPROV COMPLIANT PROVISION HANDLER
     # The client MUST be allowed to Provision itself at any time.
     if cmd == "provision":
-        # The Provisioning process is a two-step handshake.
-        # Step 1: Client sends an empty Provision request. Server responds with policies.
-        # Step 2: Client sends the policies back, acknowledging them. Server responds with success.
+        # MS-ASPROV Two-Step Handshake:
+        # Step 1: Client sends initial request (no PolicyKey or PolicyKey=0)
+        #         Server responds with PolicyKey=0 + policy settings
+        # Step 2: Client acknowledges by sending back PolicyKey=0
+        #         Server responds with final PolicyKey=1234567890 (10-digit number)
+        # Step 3: Client includes PolicyKey=1234567890 in all subsequent requests
         
-        # In a real implementation, you would parse the WBXML body to see if the client
-        # is acknowledging a policy. For now, we assume any Provision request is an attempt to comply.
+        # Parse WBXML request to detect which step we're in
+        is_wbxml = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+        is_acknowledgment = False
+        client_policy_key = None
         
-        # Mark the device as provisioned. This is the critical step.
-        if device.is_provisioned != 1:
+        if is_wbxml and len(request_body_bytes) > 20:
+            # Look for PolicyKey in request (token 0x0F in Provision codepage + 0x40 = 0x4F)
+            # If PolicyKey=0 present, this is Step 2 (acknowledgment)
+            pos = 0
+            while pos < len(request_body_bytes) - 4:
+                if (request_body_bytes[pos] == 0x4F and  # PolicyKey tag
+                    pos + 1 < len(request_body_bytes) and request_body_bytes[pos + 1] == 0x03):  # STR_I
+                    str_start = pos + 2
+                    str_end = str_start
+                    while str_end < len(request_body_bytes) and request_body_bytes[str_end] != 0x00:
+                        str_end += 1
+                    if str_end < len(request_body_bytes):
+                        client_policy_key = request_body_bytes[str_start:str_end].decode('utf-8', errors='ignore')
+                        if client_policy_key == "0":
+                            is_acknowledgment = True
+                        break
+                pos += 1
+        
+        # Determine response based on step
+        if is_acknowledgment:
+            # Step 2: Client acknowledged, send FINAL policy key
+            policy_key = "1234567890"  # MS-ASPROV: Must be 10-digit number
+            
+            # Mark device as fully provisioned
             device.is_provisioned = 1
             db.commit()
-            _write_json_line("activesync/activesync.log", {"event": "device_provisioned", "device_id": device_id})
-
-        policy_key = "1" # A simple, static policy key is sufficient.
+            
+            _write_json_line("activesync/activesync.log", {
+                "event": "provision_acknowledgment_final",
+                "device_id": device_id,
+                "step": 2,
+                "policy_key": policy_key,
+                "message": "Client acknowledged policy, sending final PolicyKey"
+            })
+        else:
+            # Step 1: Initial request, send temporary PolicyKey=0
+            policy_key = "0"
+            
+            _write_json_line("activesync/activesync.log", {
+                "event": "provision_initial_request",
+                "device_id": device_id,
+                "step": 1,
+                "policy_key": policy_key,
+                "message": "Sending initial policy with temporary PolicyKey=0"
+            })
         
-        # This is a full, compliant Provision response that clients expect.
-        # The iPhone requires a complete EASProvisionDoc with all policy settings.
-        xml = f"""<?xml version="1.0" encoding="utf-8"?>
+        # Build XML response based on step
+        if is_acknowledgment:
+            # Step 2 response: Just PolicyKey, no Data
+            xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <Provision xmlns="Provision:">
     <Status>1</Status>
     <Policies>
         <Policy>
             <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
-            <PolicyKey>{policy_key}</PolicyKey>
             <Status>1</Status>
+            <PolicyKey>{policy_key}</PolicyKey>
+        </Policy>
+    </Policies>
+</Provision>"""
+        else:
+            # Step 1 response: PolicyKey=0 + full policy settings
+            xml = f"""<?xml version="1.0" encoding="utf-8"?>
+<Provision xmlns="Provision:">
+    <Status>1</Status>
+    <Policies>
+        <Policy>
+            <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
+            <Status>1</Status>
+            <PolicyKey>{policy_key}</PolicyKey>
             <Data>
                 <EASProvisionDoc>
                     <DevicePasswordEnabled>0</DevicePasswordEnabled>
@@ -362,14 +421,41 @@ async def eas_dispatch(
                     <MinDevicePasswordLength>0</MinDevicePasswordLength>
                     <MaxInactivityTimeDeviceLock>0</MaxInactivityTimeDeviceLock>
                     <MaxDevicePasswordFailedAttempts>0</MaxDevicePasswordFailedAttempts>
+                    <MaxEmailAgeFilter>0</MaxEmailAgeFilter>
                     <AllowSimpleDevicePassword>1</AllowSimpleDevicePassword>
+                    <MaxAttachmentSize>51200000</MaxAttachmentSize>
+                    <AllowStorageCard>1</AllowStorageCard>
+                    <AllowCamera>1</AllowCamera>
+                    <AllowUnsignedApplications>1</AllowUnsignedApplications>
+                    <AllowUnsignedInstallationPackages>1</AllowUnsignedInstallationPackages>
+                    <MinDevicePasswordComplexCharacters>0</MinDevicePasswordComplexCharacters>
+                    <AllowWiFi>1</AllowWiFi>
+                    <AllowTextMessaging>1</AllowTextMessaging>
+                    <AllowPOPIMAPEmail>1</AllowPOPIMAPEmail>
+                    <AllowBluetooth>2</AllowBluetooth>
+                    <AllowIrDA>1</AllowIrDA>
+                    <RequireManualSyncWhenRoaming>0</RequireManualSyncWhenRoaming>
+                    <AllowDesktopSync>1</AllowDesktopSync>
+                    <MaxCalendarAgeFilter>0</MaxCalendarAgeFilter>
+                    <AllowHTMLEmail>1</AllowHTMLEmail>
+                    <MaxEmailBodyTruncationSize>-1</MaxEmailBodyTruncationSize>
+                    <MaxEmailHTMLBodyTruncationSize>-1</MaxEmailHTMLBodyTruncationSize>
+                    <RequireSignedSMIMEMessages>0</RequireSignedSMIMEMessages>
+                    <RequireEncryptedSMIMEMessages>0</RequireEncryptedSMIMEMessages>
+                    <RequireSignedSMIMEAlgorithm>0</RequireSignedSMIMEAlgorithm>
+                    <RequireEncryptionSMIMEAlgorithm>0</RequireEncryptionSMIMEAlgorithm>
+                    <AllowSMIMEEncryptionAlgorithmNegotiation>2</AllowSMIMEEncryptionAlgorithmNegotiation>
+                    <AllowSMIMESoftCerts>1</AllowSMIMESoftCerts>
+                    <AllowBrowser>1</AllowBrowser>
+                    <AllowConsumerEmail>1</AllowConsumerEmail>
+                    <AllowRemoteDesktop>1</AllowRemoteDesktop>
+                    <AllowInternetSharing>1</AllowInternetSharing>
                 </EASProvisionDoc>
             </Data>
         </Policy>
     </Policies>
 </Provision>"""
         
-        _write_json_line("activesync/activesync.log", {"event": "provision_response", "device_id": device_id})
         return Response(content=xml, media_type="application/vnd.ms-sync.wbxml", headers=_eas_headers(policy_key=policy_key))
 
     # All other commands require that the device has completed the provisioning step above.
