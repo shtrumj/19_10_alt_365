@@ -737,14 +737,16 @@ async def eas_dispatch(
             })
             # Fall through to compute next batch
         
-        # 2) Client didn't get last response? (retries with previous key)
-        elif state.pending_sync_key and client_sync_key == state.sync_key:
+        # 2) Client didn't get last response? (retries with old key OR sends 0 when pending exists)
+        # CRITICAL: If client sends "0" but we have pending="1", they didn't get our first response!
+        elif state.pending_sync_key and (client_sync_key == state.sync_key or client_sync_key == "0"):
             # Re-send the exact same pending batch!
             _write_json_line("activesync/activesync.log", {
                 "event": "sync_resend_pending",
                 "client_sync_key": client_sync_key,
+                "server_sync_key": state.sync_key,
                 "pending_sync_key": state.pending_sync_key,
-                "message": "Client retry - resending pending batch idempotently"
+                "message": "Client retry - resending pending batch idempotently (client never got it!)"
             })
             
             # Fetch the specific emails from pending
