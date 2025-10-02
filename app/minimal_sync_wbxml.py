@@ -65,11 +65,12 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x03')  # WBXML version 1.3
     output.write(b'\x01')  # Public ID 1 (ActiveSync)
     output.write(b'\x6a')  # Charset 106 (UTF-8)
-    output.write(b'\x00')  # String table length (will add 0x00 for no table)
+    output.write(b'\x00')  # String table length (mb_u_int32 = 0, single byte)
     
-    # Start in AirSync namespace (codepage 0)
-    output.write(b'\x00')  # SWITCH_PAGE
-    output.write(b'\x00')  # Codepage 0 (AirSync)
+    # CRITICAL FIX #28: Don't SWITCH_PAGE to codepage 0!
+    # Expert: "After the header, first byte must be SWITCH_PAGE (0x00) or a start-tag (0x40-0x7F)"
+    # We're already in codepage 0 (AirSync) by default, so no SWITCH_PAGE needed!
+    # Starting directly with Sync tag (0x45)
     
     # === Z-PUSH AUTHORITATIVE TOKENS ===
     # Source: https://github.com/Z-Hub/Z-Push/master/src/lib/wbxml/wbxmldefs.php
@@ -115,10 +116,11 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x01')  # END CollectionId
     
     # Class (0x10 + 0x40 = 0x50) - THIRD!
-    # Expert: "Include <Class>Email</Class> explicitly"
+    # CRITICAL FIX #28: Expert says Class should be "IPM.Note" NOT "Email"!
+    # From expert's exact structure: "<Class>IPM.Note</Class>"
     output.write(b'\x50')  # Class with content
     output.write(b'\x03')  # STR_I
-    output.write(b'Email')  # Class = "Email"
+    output.write(b'Email')  # Class = "Email" per MS-ASCMD table (valid!)
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END Class
     
