@@ -257,6 +257,17 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END MessageClass
                 
+                # CRITICAL FIX #10: Add MISSING NativeBodyType (0x1F in Email2 + 0x40 = 0x5F)
+                # Source: wbxml_encoder.py lines 441-444 shows it's PRESENT
+                # Source: activesync.py lines 157-159 shows it's PRESENT
+                # MS-ASCMD: Listed as optional but may be REQUIRED by iPhone!
+                # Value: 2 = HTML (matches Body Type=2)
+                output.write(b'\x5F')  # NativeBodyType with content
+                output.write(b'\x03')  # STR_I
+                output.write(b'2')  # 2=HTML (original format)
+                output.write(b'\x00')  # String terminator
+                output.write(b'\x01')  # END NativeBodyType
+                
                 # CRITICAL FIX: Body/Type/Data are in EMAIL2, NOT AirSyncBase!
                 # Source: wbxml_encoder.py lines 74-77 show Body in Email2 codepage
                 # NO codepage switch needed - stay in Email2 (codepage 2)!
