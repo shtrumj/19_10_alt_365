@@ -51,7 +51,9 @@ def _eas_headers(policy_key: str = None) -> dict:
         "Pragma": "no-cache",
         "Connection": "keep-alive",
         # MS-ASHTTP protocol headers (single instance, not duplicated)
-        "MS-ASProtocolVersions": "12.1,14.0,14.1,16.0,16.1",
+        # CRITICAL FIX #23-5: Add singular MS-ASProtocolVersion per expert
+        "MS-ASProtocolVersion": "14.1",  # Singular version (current)
+        "MS-ASProtocolVersions": "12.1,14.0,14.1,16.0,16.1",  # Plural (supported)
         "MS-ASProtocolCommands": (
             "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
             "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
