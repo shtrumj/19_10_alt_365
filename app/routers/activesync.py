@@ -275,10 +275,16 @@ async def eas_dispatch(
     db: Session = Depends(get_db),
 ):
     """Dispatcher for Microsoft-Server-ActiveSync commands."""
-    headers = _eas_headers()
     cmd = request.query_params.get("Cmd", "").lower()
     device_id = request.query_params.get("DeviceId", "device-generic")
     device_type = request.query_params.get("DeviceType", "SmartPhone")
+    
+    # CRITICAL FIX #11: Get device and policy key FIRST, then create headers with it
+    # iOS requires X-MS-PolicyKey header on ALL commands after provisioning
+    # Without it, iOS won't commit sync state and keeps reverting to SyncKey=0
+    device = _get_or_create_device(db, current_user.id, device_id, device_type)
+    policy_key = "1"  # Simple static policy key (permissive mode)
+    headers = _eas_headers(policy_key=policy_key)
 
     # High-resolution request logging
     request_body_bytes = await request.body()
@@ -314,7 +320,8 @@ async def eas_dispatch(
             status_code=200
         )
     
-    device = _get_or_create_device(db, current_user.id, device_id, device_type)
+    # Device already created above (line 285) for policy_key header
+    # device = _get_or_create_device(db, current_user.id, device_id, device_type)  # ← Removed duplicate
 
     # --- Command Handling ---
 
