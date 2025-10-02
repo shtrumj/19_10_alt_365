@@ -929,10 +929,33 @@ async def eas_dispatch(
             
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
-                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails, collection_id=collection_id, window_size=window_size)
+                # CRITICAL FIX #13 (APPLIED TO ALL CODE PATHS): Respect WindowSize!
+                # Expert diagnosis: "you dump 19 items in one batch with WindowSize=4"
+                # This code path was missing the WindowSize enforcement!
+                emails_to_send = emails[:window_size] if window_size else emails
+                has_more = len(emails) > window_size if window_size else False
+                
+                wbxml = create_minimal_sync_wbxml(
+                    sync_key=response_sync_key, 
+                    emails=emails_to_send,  # ← LIMITED to WindowSize!
+                    collection_id=collection_id, 
+                    window_size=window_size,
+                    has_more=has_more  # ← MoreAvailable flag
+                )
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "sync_emails_sent_wbxml_simple", "sync_key": response_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
+                    {
+                        "event": "sync_emails_sent_wbxml_simple", 
+                        "sync_key": response_sync_key, 
+                        "client_key": client_sync_key, 
+                        "email_count_total": len(emails),  # ← Total available
+                        "email_count_sent": len(emails_to_send),  # ← Actually sent
+                        "window_size": window_size,  # ← Client requested
+                        "has_more": has_more,  # ← MoreAvailable flag
+                        "collection_id": collection_id, 
+                        "wbxml_length": len(wbxml), 
+                        "wbxml_first20": wbxml[:20].hex()
+                    },
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
         # Client sync key matches server - check if we need to send emails
