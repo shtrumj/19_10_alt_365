@@ -307,14 +307,19 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
             output.write(b'\x00')  # String terminator
             output.write(b'\x01')  # END EstimatedDataSize
             
-            # CRITICAL FIX #21: Add Truncated if body was truncated
-            # Expert: "If you exceed 500, either truncate or add ASB:Truncated"
-            # Truncated (0x0C in AirSyncBase) - empty tag (no content flag!)
-            # We always truncate to 512, so always send Truncated
-            # Actually, client requested 500, we send ≤512, so include if original was longer
+            # CRITICAL FIX #30: Truncated must use content flag!
+            # Per MS-ASWBXML + Z-Push: Truncated is a boolean container (has content)
+            # NOT an empty tag! iOS rejects empty tag 0x0C!
+            # Truncated (0x0C in AirSyncBase + 0x40 = 0x4C) - WITH CONTENT!
             original_body_size = len(getattr(email, 'body', '') or '')
+            output.write(b'\x4C')  # Truncated with content (0x4C)
+            output.write(b'\x03')  # STR_I
             if original_body_size > len(body_text):
-                output.write(b'\x0C')  # Truncated EMPTY TAG (0x0C, no 0x40!)
+                output.write(b'1')  # Truncated = true
+            else:
+                output.write(b'0')  # Truncated = false (not truncated)
+            output.write(b'\x00')  # String terminator
+            output.write(b'\x01')  # END Truncated
             
             # Data (0x09 in AirSyncBase + 0x40 = 0x49)
             output.write(b'\x49')  # Data with content (AirSyncBase)
