@@ -38,8 +38,39 @@ class ActiveSyncResponse:
         )
 
 
-def _eas_headers(policy_key: str = None) -> dict:
-    """Headers required by Microsoft Exchange ActiveSync clients according to MS-ASHTTP specification."""
+def _eas_options_headers() -> dict:
+    """Headers for OPTIONS discovery only (no singular MS-ASProtocolVersion)."""
+    return {
+        # MS-ASHTTP required headers
+        "MS-Server-ActiveSync": "15.0",
+        "Server": "365-Email-System",
+        "Allow": "OPTIONS,POST",
+        # MS-ASHTTP performance headers
+        "Cache-Control": "private, no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+        # OPTIONS advertises list of versions (plural only)
+        # CRITICAL FIX #31: Cap to 14.1 while debugging!
+        # iOS picks the HIGHEST version and expects that format!
+        "MS-ASProtocolVersions": "14.1",  # Only advertise what we can deliver!
+        # OPTIONS includes commands list
+        "MS-ASProtocolCommands": (
+            "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
+            "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
+            "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar,"
+            "ResolveRecipients,ValidateCert"
+        ),
+        # MS-ASHTTP protocol support headers
+        "MS-ASProtocolSupports": "14.0,14.1",  # Only what we support!
+    }
+
+
+def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
+    """Headers for ActiveSync command responses (POST).
+    
+    CRITICAL FIX #31: Echo the client's requested protocol version!
+    iOS expects MS-ASProtocolVersion (singular) to match what it sent.
+    """
     headers = {
         # MS-ASHTTP required headers
         "MS-Server-ActiveSync": "15.0",
@@ -50,10 +81,11 @@ def _eas_headers(policy_key: str = None) -> dict:
         "Cache-Control": "private, no-cache",
         "Pragma": "no-cache",
         "Connection": "keep-alive",
-        # MS-ASHTTP protocol headers (single instance, not duplicated)
-        # CRITICAL FIX #23-5: Add singular MS-ASProtocolVersion per expert
-        "MS-ASProtocolVersion": "14.1",  # Singular version (current)
-        "MS-ASProtocolVersions": "12.1,14.0,14.1,16.0,16.1",  # Plural (supported)
+        # CRITICAL FIX #31: Echo the negotiated version (singular)
+        # This MUST match what the client sent in MS-ASProtocolVersion header!
+        "MS-ASProtocolVersion": protocol_version or "14.1",
+        # Can include list too (optional on POST responses)
+        "MS-ASProtocolVersions": "14.1",
         "MS-ASProtocolCommands": (
             "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
             "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
@@ -61,7 +93,7 @@ def _eas_headers(policy_key: str = None) -> dict:
             "ResolveRecipients,ValidateCert"
         ),
         # MS-ASHTTP protocol support headers
-        "MS-ASProtocolSupports": "1.0,2.0,2.1,2.5,12.0,12.1,14.0,14.1,16.0,16.1",
+        "MS-ASProtocolSupports": "14.0,14.1",
     }
     
     # Add X-MS-PolicyKey header if provided (iOS expects this after provisioning)
@@ -179,8 +211,11 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
 
 @router.options("/Microsoft-Server-ActiveSync")
 async def eas_options(request: Request):
-    """Respond to ActiveSync OPTIONS discovery with required headers and log it."""
-    headers = _eas_headers()
+    """Respond to ActiveSync OPTIONS discovery with required headers and log it.
+    
+    CRITICAL FIX #31: Use separate OPTIONS headers (no singular MS-ASProtocolVersion)!
+    """
+    headers = _eas_options_headers()  # ← Use OPTIONS-specific headers!
     _write_json_line(
         "activesync/activesync.log",
         {
@@ -281,13 +316,27 @@ async def eas_dispatch(
     device_id = request.query_params.get("DeviceId", "device-generic")
     device_type = request.query_params.get("DeviceType", "SmartPhone")
     
+    # CRITICAL FIX #31: Read and echo the client's requested protocol version!
+    # iOS sends MS-ASProtocolVersion header with the version it wants to use
+    # We MUST echo this back or iOS will reject our responses!
+    client_version = request.headers.get("MS-ASProtocolVersion", "14.1")
+    # Validate it's one we support (cap to 14.1 for now)
+    if client_version not in ["12.1", "14.0", "14.1"]:
+        logger.warning(f"Client requested unsupported version {client_version}, capping to 14.1")
+        client_version = "14.1"
+    
     # CRITICAL FIX #11: Get device and policy key FIRST, then create headers with it
     # iOS requires X-MS-PolicyKey header on ALL commands after provisioning
     # Without it, iOS won't commit sync state and keeps reverting to SyncKey=0
     device = _get_or_create_device(db, current_user.id, device_id, device_type)
     # MS-ASPROV: PolicyKey must be 10-digit number after provisioning handshake
     policy_key = "1234567890" if device.is_provisioned == 1 else "0"
-    headers = _eas_headers(policy_key=policy_key)
+    
+    # CRITICAL FIX #31: Pass protocol_version to echo client's request!
+    headers = _eas_headers(policy_key=policy_key, protocol_version=client_version)
+    
+    # Log version negotiation
+    logger.info(f"Protocol negotiation: client={client_version}, echoing back={client_version}")
 
     # High-resolution request logging
     request_body_bytes = await request.body()
@@ -1657,7 +1706,8 @@ def calendar_sync(
 # Root-level aliases (some clients call without /activesync prefix)
 @router.options("/../Microsoft-Server-ActiveSync")
 async def eas_options_alias(request: Request):
-    headers = _eas_headers()
+    """CRITICAL FIX #31: Use OPTIONS-specific headers (no singular version)!"""
+    headers = _eas_options_headers()  # ← Use OPTIONS headers!
     _write_json_line(
         "activesync/activesync.log",
         {
