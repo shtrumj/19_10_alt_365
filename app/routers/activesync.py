@@ -697,12 +697,25 @@ async def eas_dispatch(
         
         # Initial sync (SyncKey=0) - Use SIMPLE INTEGER like FolderSync!
         if client_sync_key == "0":
-            # CRITICAL DISCOVERY: iPhone accepts simple integers for FolderSync
-            # UUID format was a misinterpretation - Exchange uses simple synckeys!
-            state.synckey_counter = 1
-            response_sync_key = str(state.synckey_counter)  # Simple "1"
-            state.sync_key = response_sync_key  # Update legacy field too
-            db.commit()
+            # CRITICAL FIX: Only initialize state if it's truly initial (server state is also "0")
+            # If server state is already "1", iPhone is stuck in retry loop - don't reset!
+            if state.sync_key == "0" or state.synckey_counter == 0:
+                # True initial sync - set state to "1"
+                state.synckey_counter = 1
+                response_sync_key = str(state.synckey_counter)  # Simple "1"
+                state.sync_key = response_sync_key  # Update legacy field too
+                db.commit()
+            else:
+                # Server already has state "1" but client still sending "0"
+                # This means client rejected our previous response
+                # DON'T reset - keep the "1" state and respond with it again
+                response_sync_key = state.sync_key
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_client_retry_loop_detected",
+                    "client_sync_key": "0",
+                    "server_sync_key": state.sync_key,
+                    "message": "Client still sending 0, server already has 1 - retry loop detected, NOT resetting state"
+                })
             
             _write_json_line("activesync/activesync.log", {
                 "event": "sync_initial_simple_integer", 
