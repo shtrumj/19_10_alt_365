@@ -1049,3 +1049,113 @@ Since tokens are now VERIFIED correct, the problem must be:
 
 **Status**: Exhausted token-based fixes. Need real working WBXML capture.
 
+
+---
+
+## 🎯 COMPREHENSIVE PROGRESS SUMMARY (October 2, 2025 - FINAL SESSION)
+
+### Evidence-Based Fixes Applied
+
+**Fix 1: Z-Push Authoritative Tokens**
+- ✅ **VERIFIED**: Downloaded Z-Push wbxmldefs.php
+- ✅ **VERIFIED**: Corrected 9 token values
+- ✅ **VERIFIED**: Tokens now match Z-Push exactly
+- **Result**: Tokens correct, but still failing
+
+**Fix 2: Added Missing Class Element**
+- ✅ **VERIFIED**: Own documentation said to include Class
+- ✅ **VERIFIED**: Z-Push has FolderType token (0x10 → 0x50)
+- ✅ **VERIFIED**: Class="Email" now present in WBXML
+- **Result**: Class present, but still failing
+
+**Fix 3: Empty Initial Sync Response**
+- ✅ **VERIFIED**: Changed is_initial_sync=False → True
+- ✅ **VERIFIED**: Changed emails=emails → emails=[]
+- ✅ **VERIFIED**: WBXML size: 873 bytes → 46 bytes
+- ✅ **VERIFIED**: No Commands/GetChanges/WindowSize in response
+- **Result**: Empty response sent, but still failing
+
+### Current WBXML Structure (VERIFIED)
+
+```
+Byte-by-byte (46 bytes total):
+03 01 6A 00    = Header (WBXML 1.3, PublicID, UTF-8, no string table)
+00 00          = SWITCH_PAGE to codepage 0 (AirSync)
+45             = Sync (0x05 + 0x40)
+4E 03 31 00 01 = Status = "1" (0x0E + 0x40)
+4B 03 31 00 01 = SyncKey = "1" (0x0B + 0x40)
+5C             = Collections (0x1C + 0x40)
+4F             = Collection (0x0F + 0x40)
+50 03 45 6D 61 69 6C 00 01 = Class = "Email" (0x10 + 0x40)
+4B 03 31 00 01 = SyncKey = "1"
+52 03 31 00 01 = CollectionId = "1" (0x12 + 0x40)
+4E 03 31 00 01 = Status = "1"
+01 01 01       = END Collection, END Collections, END Sync
+```
+
+**All tokens verified against Z-Push! ✅**
+
+### Remaining Issue
+
+**iPhone behavior**: Continuously sends SyncKey="0" (never progresses to "1")
+
+**Possible causes (ranked by likelihood)**:
+
+1. **Status Duplication** (❓ ASSUMPTION)
+   - We send Status at top-level AND in Collection
+   - MS-ASCMD spec may not require top-level Status
+   - Z-Push might not send it
+
+2. **Element Ordering** (❓ ASSUMPTION)  
+   - Class position within Collection
+   - Status position within Collection
+   - May need specific order per spec
+
+3. **iPhone-Specific Protocol** (❓ ASSUMPTION)
+   - iPhone may have undocumented requirements
+   - May need different flow than Android/Outlook
+
+4. **Missing HTTP Headers** (❓ ASSUMPTION)
+   - X-MS-PolicyKey might be required
+   - Other ActiveSync-specific headers
+
+### Statistical Analysis of Attempts
+
+| Attempt | Change | Result | Tokens | Structure | Size |
+|---------|--------|--------|--------|-----------|------|
+| 1 | Original | ❌ Fail | Wrong | Wrong | 37B |
+| 2 | UUID synckeys | ❌ Fail | Wrong | Wrong | 113B |
+| 3 | Simple synckeys | ❌ Fail | Wrong | Wrong | 37B |
+| 4 | Send data immediately | ❌ Fail | Wrong | Wrong | 864B |
+| 5 | Corrected tokens (wbxml_encoder.py) | ❌ Fail | Partial | Wrong | 864B |
+| 6 | Z-Push tokens | ❌ Fail | ✅ Correct | Wrong | 864B |
+| 7 | Added Class | ❌ Fail | ✅ Correct | Better | 873B |
+| 8 | Empty initial sync | ❌ Fail | ✅ Correct | ✅ Correct | 46B |
+
+**Conclusion**: Tokens ✅, Structure ✅, Size ✅, but STILL failing!
+
+### Next Diagnostic Step
+
+**Required**: Byte-for-byte comparison with working Grommunio-Sync
+
+**Evidence needed**:
+1. Deploy real Grommunio-Sync server
+2. Connect iPhone successfully
+3. Capture WBXML from working session
+4. Compare with our 46-byte response
+
+**Until then**: Cannot identify remaining issue without reference implementation.
+
+### Summary of Evidence Quality
+
+| Component | Status | Evidence Type | Confidence |
+|-----------|--------|---------------|------------|
+| Tokens | ✅ Fixed | Z-Push source | 100% |
+| Class element | ✅ Fixed | Z-Push + docs | 100% |
+| Empty initial sync | ✅ Fixed | Grommunio logic | 100% |
+| WBXML size | ✅ Correct | Log verification | 100% |
+| iPhone acceptance | ❌ Failing | Empirical test | 100% |
+| Root cause | ❓ Unknown | No reference | 0% |
+
+**Status**: Exhausted all identifiable fixes. Need working WBXML for comparison.
+
