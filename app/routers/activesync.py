@@ -713,17 +713,17 @@ async def eas_dispatch(
                 "synckey_counter": state.synckey_counter,
                 "reason": "Initial sync with SIMPLE INTEGER (like FolderSync)"
             })
-            # CRITICAL FIX: Per Grommunio-Sync, initial sync must NOT include Commands/GetChanges/WindowSize
-            # lib/request/sync.php line 1224: Commands only sent when HasSyncKey() is true
+            # BREAKTHROUGH: FolderSync sends FOLDER DATA immediately with SyncKey 0→1!
+            # Let's try sending EMAIL DATA immediately too (like FolderSync)!
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
                 _write_json_line("activesync/activesync.log", {
-                    "event": "sync_initial_grommunio_pattern",
+                    "event": "sync_initial_WITH_EMAILS",
                     "window_size": window_size,
-                    "email_count": 0,
-                    "message": "Initial sync per Grommunio-Sync: NO Commands, NO GetChanges, NO WindowSize"
+                    "email_count": len(emails),
+                    "message": "TESTING: Send emails IMMEDIATELY like FolderSync sends folders!"
                 })
-                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=[], collection_id=collection_id, window_size=window_size, is_initial_sync=True)
+                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails, collection_id=collection_id, window_size=window_size, is_initial_sync=False)
                 _write_json_line(
                     "activesync/activesync.log",
                     {

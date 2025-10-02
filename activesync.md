@@ -696,3 +696,77 @@ if client_sync_key == "0":
 }
 ```
 
+
+---
+
+## 📝 SESSION UPDATE - October 2, 2025 (Final Iteration)
+
+### 🔄 UUID Synckey Experiment - REVERTED
+
+**Hypothesis**: Grommunio uses `{UUID}Counter` format for synckeys  
+**Implementation**: Added UUID parsing/generation, sent `{1fddbfd9-f320-4b2f-b68c-bd757523bce5}1`  
+**Result**: ❌ iPhone STILL rejected (WBXML: 113 bytes)  
+
+**Key Insight**: UUID format was a **misinterpretation**!
+- Grommunio's UUID is for **internal state management**
+- What's sent to clients is likely **simple integers**
+- FolderSync works with synckey="1" (37 bytes)
+
+### ✅ Reverted to Simple Integer Synckeys
+
+**Current Implementation**:
+```python
+# Initial sync
+state.synckey_counter = 1
+response_sync_key = str(state.synckey_counter)  # Simple "1"
+```
+
+**Result**: ❌ iPhone **STILL rejecting!**
+- WBXML: 37 bytes (same as before)
+- Format: Simple "1" (same as FolderSync)
+- iPhone: Still stuck at SyncKey="0" loop
+
+### 🎯 CRITICAL CONCLUSION
+
+**The problem is NOT:**
+- ❌ Synckey format (UUID vs simple integer)
+- ❌ WBXML token values (all verified correct)
+- ❌ Element ordering (matches Grommunio exactly)
+- ❌ Initial sync structure (no Commands/GetChanges/WindowSize)
+
+**The problem MUST be:**
+- Something **fundamentally different** between FolderSync and Sync WBXML
+- A protocol-level incompatibility that we haven't identified
+- Possibly iPhone-specific ActiveSync variant
+
+### 📊 Evidence Summary
+
+| Test | SyncKey | WBXML Size | Result |
+|------|---------|------------|--------|
+| FolderSync | "1" | 170 bytes | ✅ Works |
+| Sync (UUID) | "{uuid}1" | 113 bytes | ❌ Rejected |
+| Sync (Simple) | "1" | 37 bytes | ❌ Rejected |
+
+**Observation**: FolderSync (170 bytes) works, but Sync (37 bytes) fails!
+
+### 🔍 Next Investigation Required
+
+1. **Byte-by-byte comparison** of FolderSync vs Sync WBXML
+2. **Packet capture** from real Exchange server + iPhone
+3. **Test with different ActiveSync client** (Android, Outlook)
+4. **Examine codepage switches** in Folder vs Sync
+5. **Check if Sync requires different namespace handling**
+
+### 💡 Hypothesis for Next Iteration
+
+The 37-byte Sync response might be **too minimal**. FolderSync is 170 bytes and works!
+
+**Possible issues:**
+- Missing required elements (even for initial sync)
+- Wrong codepage sequence
+- Missing opcodes that FolderSync includes
+
+**Action**: Create detailed hex dump comparison of:
+- FolderSync WBXML (170 bytes, ✅ works)
+- Sync WBXML (37 bytes, ❌ fails)
+
