@@ -251,6 +251,10 @@ class ActiveSyncState(Base):
     sync_key = Column(String, nullable=False, default="0")
     # CRITICAL FIX #24: Track pagination for proper email sync
     last_synced_email_id = Column(Integer, default=0)  # Last email ID sent to client
+    # CRITICAL FIX #26: Two-phase commit - stage pending batches
+    pending_sync_key = Column(String, nullable=True)  # SyncKey of pending batch
+    pending_max_email_id = Column(Integer, nullable=True)  # Max email ID in pending batch
+    pending_item_ids = Column(String, nullable=True)  # JSON array of email IDs in pending batch
     foldersync_attempts = Column(Integer, default=0)
     last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
