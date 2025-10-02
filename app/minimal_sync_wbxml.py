@@ -153,10 +153,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
             output.write(b'\x00')  # String terminator
             output.write(b'\x01')  # END ServerId
             
-            # CRITICAL FIX #16-2: ApplicationData token WRONG!
-            # Expert: "ApplicationData = cp0 0x0F | 0x40 = 0x4F (NOT 0x4E which is Status!)"
-            # Was using Status token (0x4E), should be ApplicationData (0x4F)
-            output.write(b'\x4F')  # ApplicationData with content (CORRECTED!)
+            # CRITICAL FIX #32: ApplicationData token is 0x5D, NOT 0x4F!
+            # Latest expert analysis: "ApplicationData in AirSync cp0 is 0x1D, NOT 0x0F!"
+            # "0x1D + 0x40 (content flag) = 0x5D"
+            # "0x4F is Collection, not ApplicationData!"
+            # Previous expert was WRONG: ApplicationData ≠ 0x0F
+            # Per MS-ASWBXML AirSync codepage 0: ApplicationData = 0x1D
+            # Per Microsoft Sync example: <Add><ServerId>...<ApplicationData>...</ApplicationData></Add>
+            # iOS rejects responses without proper ApplicationData wrapper!
+            output.write(b'\x5D')  # ApplicationData with content (0x1D + 0x40 = 0x5D) CORRECTED!
             
             # CRITICAL FIX #16-4: This is Email codepage, NOT "Email2"!
             # Expert: "Email is codepage 2. Comment says Email2 which is contradictory"
