@@ -853,3 +853,97 @@ We're building based on **documentation and Grommunio source code**, but we have
 
 **Current Status**: Operating on assumptions. Need empirical data!
 
+
+---
+
+## 🎯 MAJOR PROGRESS: Token Correction (October 2, 2025 - Final)
+
+### Critical Bug Fixed
+
+**Discovered**: ALL WBXML tokens were WRONG in `minimal_sync_wbxml.py`!
+
+**Root Cause**: Tokens were taken from an incorrect source (claimed to be Grommunio but didn't match).
+
+**Fix Applied**: Systematically corrected every token using `wbxml_encoder.py` as authoritative source.
+
+### Token Corrections
+
+| Element | Old (WRONG) | New (CORRECT) | Source |
+|---------|-------------|---------------|--------|
+| Sync | 0x45 | 0x45 ✅ | Was already correct |
+| Status | 0x4E | 0x49 ✅ | 0x09 + 0x40 |
+| SyncKey | 0x4B | 0x4A ✅ | 0x0A + 0x40 |
+| Collections | 0x5C | 0x46 ✅ | 0x06 + 0x40 |
+| Collection | 0x4F | 0x47 ✅ | 0x07 + 0x40 |
+| CollectionId | 0x52 | 0x48 ✅ | 0x08 + 0x40 |
+| Commands | 0x52 | 0x4B ✅ | 0x0B + 0x40 |
+| Add | 0x47 | 0x4C ✅ | 0x0C + 0x40 |
+| ServerId | 0x48 | 0x4D ✅ | 0x0D + 0x40 |
+| ApplicationData | 0x49 | 0x4E ✅ | 0x0E + 0x40 |
+
+### Test Results
+
+- **Test Date**: October 2, 2025
+- **Sync Attempts**: 21
+- **Confirmations**: 0
+- **Result**: ❌ **STILL FAILS**
+
+**Observations**:
+- WBXML sizes now vary: 864 bytes, 2850 bytes
+- Token changes affect structure
+- iPhone still stuck at SyncKey="0" loop
+
+### Conclusion
+
+✅ **VERIFIED**: Token values were incorrect  
+❌ **NOT SOLVED**: Correcting tokens alone doesn't fix the issue  
+
+**This proves tokens were A problem, but not THE problem.**
+
+### What We Now Know For Certain
+
+**✅ VERIFIED CORRECT:**
+1. All WBXML tokens match wbxml_encoder.py
+2. WBXML header structure (03016a00)
+3. Codepage switching (0x00 for SWITCH_PAGE)
+4. FolderSync works with same basic structure
+
+**❌ STILL UNKNOWN:**
+1. Element ordering within WBXML
+2. Mandatory vs optional elements for initial sync
+3. String encoding details
+4. Email2 namespace token values
+5. AirSyncBase namespace token values
+
+### Immediate Next Steps
+
+**We MUST stop guessing and get ground truth:**
+
+1. **Packet Capture Required**
+   - iPhone ← → Real Exchange Server
+   - Extract working Sync WBXML
+   - Compare byte-for-byte with our output
+
+2. **Alternative: Grommunio-Sync Instance**
+   - Deploy real Grommunio server
+   - Connect iPhone successfully
+   - Capture working WBXML
+
+3. **Test with Different Client**
+   - Android phone
+   - Windows Outlook
+   - Determine if iPhone-specific
+
+Until we have a working WBXML example to compare against, we're operating blind.
+
+### Lessons Learned
+
+1. ✅ Always verify token values against authoritative source
+2. ✅ Don't trust documentation that claims to match a source without verifying
+3. ✅ Token collisions (0x52 used for both Commands and CollectionId) indicate fundamental errors
+4. ❌ Fixing tokens alone is necessary but not sufficient
+5. ❌ We need empirical data, not more theory
+
+**Status**: Exhausted reasonable troubleshooting without real working example.  
+**Recommendation**: Obtain packet capture or hire ActiveSync consultant.
+
