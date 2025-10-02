@@ -1,0 +1,319 @@
+# File: minimal_sync_wbxml.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Spec-correct WBXML Sync response builder for EAS 14.1 (iOS-friendly).
+
+This version fixes ALL AirSync code page 0 token IDs, uses the correct code pages:
+- AirSync (code page 0)
+- Email (code page 2)
+- AirSyncBase (code page 17)
+
+And encodes AirSyncBase/Truncated as a BOOLEAN CONTAINER with inline text ("0"/"1").
+
+References:
+- MS-ASWBXML Code Page 0 (AirSync): Add=0x07, ServerId=0x0D, Status=0x0E, Collection=0x0F,
+  Class=0x10, CollectionId=0x12, MoreAvailable=0x14, Commands=0x16, Collections=0x1C,
+  ApplicationData=0x1D.
+- MS-ASWBXML Code Page 2 (Email): DateReceived=0x0F, DisplayTo=0x11, Importance=0x12,
+  MessageClass=0x13, Subject=0x14, Read=0x15, To=0x16, From=0x18, ThreadTopic=0x35, InternetCPID=0x39.
+- MS-ASWBXML Code Page 17 (AirSyncBase): Body=0x0A, Data=0x0B, EstimatedDataSize=0x0C, Truncated=0x0D.
+"""
+
+from typing import Iterable, Optional
+import io
+import binascii
+
+# WBXML header constants
+WBXML_VERSION_1_3 = 0x03
+WBXML_PUBLIC_ID_ACTIVESYNC = 0x01    # per MS-ASWBXML
+WBXML_CHARSET_UTF8 = 0x6A
+WBXML_STR_TBL_LEN_0 = 0x00
+
+# WBXML control tokens
+SWITCH_PAGE = 0x00
+END        = 0x01
+STR_I      = 0x03
+
+# Code pages (per spec)
+CP_AIRSYNC     = 0x00  # Code Page 0
+CP_EMAIL       = 0x02  # Code Page 2
+CP_AIRSYNCBASE = 0x11  # Code Page 17
+
+# ---------------------------
+# AirSync (Code Page 0) tags
+# ---------------------------
+TAGS_AIRSYNC = {
+    "Sync":            0x05,
+    "Responses":       0x06,
+    "Add":             0x07,
+    "Change":          0x08,
+    "Delete":          0x09,
+    "Fetch":           0x0A,
+    "SyncKey":         0x0B,
+    "ClientId":        0x0C,
+    "ServerId":        0x0D,
+    "Status":          0x0E,
+    "Collection":      0x0F,
+    "Class":           0x10,
+    # 0x11 reserved/unused in this table
+    "CollectionId":    0x12,
+    "GetChanges":      0x13,
+    "MoreAvailable":   0x14,
+    "WindowSize":      0x15,
+    "Commands":        0x16,
+    "Options":         0x17,
+    "FilterType":      0x18,
+    "Truncation":      0x19,  # (legacy 2.5)
+    "Conflict":        0x1B,
+    "Collections":     0x1C,
+    "ApplicationData": 0x1D,
+    "DeletesAsMoves":  0x1E,
+    "Supported":       0x20,
+    "SoftDelete":      0x21,
+    "MIMESupport":     0x22,
+    "MIMETruncation":  0x23,
+    "Wait":            0x24,
+    "Limit":           0x25,
+    "Partial":         0x26,
+    "ConversationMode":0x27,
+    "MaxItems":        0x28,
+    "HeartbeatInterval":0x29,
+}
+
+# ---------------------------
+# Email (Code Page 2) tags
+# ---------------------------
+TAGS_EMAIL = {
+    "DateReceived":  0x0F,
+    "DisplayTo":     0x11,
+    "Importance":    0x12,
+    "MessageClass":  0x13,
+    "Subject":       0x14,
+    "Read":          0x15,
+    "To":            0x16,
+    "From":          0x18,
+    "ThreadTopic":   0x35,
+    "InternetCPID":  0x39,
+}
+
+# --------------------------------
+# AirSyncBase (Code Page 17) tags
+# --------------------------------
+TAGS_AIRSYNCBASE = {
+    "Body":              0x0A,
+    "Data":              0x0B,
+    "EstimatedDataSize": 0x0C,
+    "Truncated":         0x0D,
+    # (many more exist; omitted intentionally)
+}
+
+ASB_BODY_TYPE_PLAIN_TEXT = "1"  # text/plain
+
+class WBXMLWriter:
+    def __init__(self):
+        self._b = io.BytesIO()
+        self.current_page = None
+
+    # primitives
+    def write_byte(self, v: int): self._b.write(bytes((v,)))
+    def write_bytes(self, bs: bytes): self._b.write(bs)
+
+    def str_i(self, s: str):
+        self.write_byte(STR_I)
+        self.write_bytes(s.encode("utf-8"))
+        self.write_byte(0x00)
+
+    def page(self, cp: int):
+        if self.current_page != cp:
+            self.write_byte(SWITCH_PAGE)
+            self.write_byte(cp)
+            self.current_page = cp
+
+    def start(self, tok: int, with_content: bool = True):
+        self.write_byte((tok | 0x40) if with_content else tok)
+
+    def end(self):
+        self.write_byte(END)
+
+    # helpers
+    def start_named(self, cp: int, tags: dict, name: str):
+        self.page(cp); self.start(tags[name], True)
+
+    def empty_named(self, cp: int, tags: dict, name: str):
+        self.page(cp); self.start(tags[name], False)
+
+    def text_named(self, cp: int, tags: dict, name: str, text: str):
+        self.page(cp); self.start(tags[name], True); self.str_i(text); self.end()
+
+    # header
+    def header(self):
+        self.write_byte(WBXML_VERSION_1_3)
+        self.write_byte(WBXML_PUBLIC_ID_ACTIVESYNC)
+        self.write_byte(WBXML_CHARSET_UTF8)
+        self.write_byte(WBXML_STR_TBL_LEN_0)
+
+    def value(self) -> bytes:
+        return self._b.getvalue()
+
+class EmailItem:
+    def __init__(
+        self,
+        server_id: str,
+        subject: str,
+        from_addr: str,
+        to_addr: str,
+        date_received_iso: str,
+        message_class: str = "IPM.Note",
+        read: bool = False,
+        preview_text: Optional[str] = None,
+        estimated_size: Optional[int] = None,
+        truncated: bool = False,
+    ):
+        self.server_id = server_id
+        self.subject = subject
+        self.from_addr = from_addr
+        self.to_addr = to_addr
+        self.date_received_iso = date_received_iso
+        self.message_class = message_class
+        self.read = read
+        self.preview_text = preview_text or ""
+        self.estimated_size = (
+            estimated_size if estimated_size is not None else len(self.preview_text)
+        )
+        self.truncated = truncated
+
+def build_sync_response_wbxml(
+    collection_id: str,
+    new_sync_key: str,
+    class_name: str,
+    items: Iterable[EmailItem],
+    window_size: int,
+    more_available: bool,
+) -> bytes:
+    """
+    <Sync>
+      <Collections>
+        <Collection>
+          <Class>Email</Class>
+          <SyncKey>...</SyncKey>
+          <CollectionId>...</CollectionId>
+          <Status>1</Status>
+          [<MoreAvailable/>]
+          <Commands>
+            <Add>
+              <ServerId>...</ServerId>
+              <ApplicationData>...</ApplicationData>
+            </Add>
+          </Commands>
+        </Collection>
+      </Collections>
+    </Sync>
+    """
+    w = WBXMLWriter()
+    w.header()
+
+    # <Sync>
+    w.start_named(CP_AIRSYNC, TAGS_AIRSYNC, "Sync")
+
+    # <Collections>
+    w.start_named(CP_AIRSYNC, TAGS_AIRSYNC, "Collections")
+
+    # <Collection>
+    w.start_named(CP_AIRSYNC, TAGS_AIRSYNC, "Collection")
+
+    # Recommended ordering
+    w.text_named(CP_AIRSYNC, TAGS_AIRSYNC, "Class", class_name)               # "Email"
+    w.text_named(CP_AIRSYNC, TAGS_AIRSYNC, "SyncKey", new_sync_key)           # e.g., "12"
+    w.text_named(CP_AIRSYNC, TAGS_AIRSYNC, "CollectionId", collection_id)
+    w.text_named(CP_AIRSYNC, TAGS_AIRSYNC, "Status", "1")
+
+    if more_available:
+        # Empty tag (no content bit)
+        w.empty_named(CP_AIRSYNC, TAGS_AIRSYNC, "MoreAvailable")
+
+    # <Commands>
+    w.start_named(CP_AIRSYNC, TAGS_AIRSYNC, "Commands")
+
+    count = 0
+    for it in items:
+        if count >= window_size:
+            break
+
+        # <Add>
+        w.start_named(CP_AIRSYNC, TAGS_AIRSYNC, "Add")
+
+        # <ServerId> (REQUIRED)
+        w.text_named(CP_AIRSYNC, TAGS_AIRSYNC, "ServerId", it.server_id)
+
+        # <ApplicationData>
+        w.start_named(CP_AIRSYNC, TAGS_AIRSYNC, "ApplicationData")
+
+        # Email fields (switch to CP 2)
+        w.text_named(CP_EMAIL, TAGS_EMAIL, "MessageClass", it.message_class)
+        w.text_named(CP_EMAIL, TAGS_EMAIL, "Subject", it.subject)
+        w.text_named(CP_EMAIL, TAGS_EMAIL, "From", it.from_addr)
+        w.text_named(CP_EMAIL, TAGS_EMAIL, "To", it.to_addr)
+        w.text_named(CP_EMAIL, TAGS_EMAIL, "DateReceived", it.date_received_iso)
+        w.text_named(CP_EMAIL, TAGS_EMAIL, "Read", "1" if it.read else "0")
+
+        # AirSyncBase body preview (CP 17)
+        w.start_named(CP_AIRSYNCBASE, TAGS_AIRSYNCBASE, "Body")
+
+        # Type=1 (plain text)
+        w.text_named(CP_AIRSYNCBASE, TAGS_AIRSYNCBASE, "EstimatedDataSize", str(it.estimated_size))
+        # Truncated as BOOLEAN CONTAINER
+        w.start_named(CP_AIRSYNCBASE, TAGS_AIRSYNCBASE, "Truncated")
+        w.str_i("1" if it.truncated else "0")
+        w.end()
+        # Data (payload/preview). Type comes first in some implementations; both orders work,
+        # but to be strict we will also add Type explicitly:
+        w.text_named(CP_AIRSYNCBASE, TAGS_AIRSYNCBASE, "Data", it.preview_text or "")
+        w.text_named(CP_AIRSYNCBASE, TAGS_AIRSYNCBASE, "Type", ASB_BODY_TYPE_PLAIN_TEXT)
+
+        w.end()  # </Body>
+
+        w.end()  # </ApplicationData>
+        w.end()  # </Add>
+
+        count += 1
+
+    w.end()  # </Commands>
+    w.end()  # </Collection>
+    w.end()  # </Collections>
+    w.end()  # </Sync>
+
+    return w.value()
+
+# --- Debug helpers ---
+def hex_preview(b: bytes, n: int = 20) -> str:
+    return binascii.hexlify(b[:n]).decode()
+
+if __name__ == "__main__":
+    # Self-check: 1-item batch, MoreAvailable=True
+    sample = [
+        EmailItem(
+            server_id="35",
+            subject="Fwd: בדיקה",
+            from_addr="shtrumj@gmail.com",
+            to_addr="yonatan@shtrum.com",
+            date_received_iso="2025-10-01T21:53:55.000Z",
+            message_class="IPM.Note",
+            read=False,
+            preview_text="Test email",
+            estimated_size=10,
+            truncated=False,
+        )
+    ]
+    wb = build_sync_response_wbxml(
+        collection_id="1",
+        new_sync_key="12",
+        class_name="Email",
+        items=sample,
+        window_size=1,
+        more_available=True,
+    )
+    print("wbxml_length:", len(wb))
+    print("wbxml_first20:", hex_preview(wb, 20))
+    # print("wbxml_full_hex:", binascii.hexlify(wb).decode())

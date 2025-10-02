@@ -20,9 +20,12 @@ from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
 from ..wbxml_encoder import create_foldersync_wbxml, create_sync_wbxml
 from ..minimal_wbxml import create_minimal_foldersync_wbxml
-from ..minimal_sync_wbxml import create_minimal_sync_wbxml
+# REMOVED: from ..minimal_sync_wbxml import create_minimal_sync_wbxml
 from ..zpush_wbxml import create_zpush_style_foldersync_wbxml
 from ..iphone_wbxml import create_iphone_foldersync_wbxml
+
+# CRITICAL FIX #42-44: Import expert's Z-Push-compliant WBXML builder!
+from ..sync_wbxml_adapter import create_sync_response_with_expert_builder
 from ..wbxml_parser import parse_wbxml_sync_request, parse_wbxml_foldersync_request
 from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
@@ -803,11 +806,14 @@ async def eas_dispatch(
             try:
                 client_int = int(client_sync_key) if client_sync_key.isdigit() else 0
                 pending_int = int(state.pending_sync_key) if state.pending_sync_key.isdigit() else 0
-                # Client is asking for pending if: client==pending OR client==pending-1 OR client==0
+                # CRITICAL FIX #38: DON'T treat SyncKey=0 as "asking for pending"!
+                # When client sends SyncKey=0, it's a FRESH initial sync (e.g., after account re-add).
+                # We should ONLY resend pending if client is retrying with a non-zero key.
+                # Client is asking for pending if: client==pending OR client==server OR client==pending-1
                 is_asking_for_pending = (
                     client_sync_key == state.pending_sync_key or  # Exact match
                     client_sync_key == state.sync_key or  # Old server key
-                    client_sync_key == "0" or  # Initial sync retry
+                    # client_sync_key == "0" or  # ← REMOVED! Don't treat 0 as retry!
                     (client_int > 0 and pending_int > 0 and client_int == pending_int - 1)  # One behind
                 )
             except:
@@ -989,8 +995,14 @@ async def eas_dispatch(
                     "has_more": has_more,
                     "message": "Sending items immediately on SyncKey 0→1"
                 })
-                # Send actual items on initial sync!
-                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails_to_send, collection_id=collection_id, window_size=window_size, is_initial_sync=True, has_more=has_more)
+                # CRITICAL FIX #42: Use expert's builder for initial sync!
+                wbxml = create_sync_response_with_expert_builder(
+                    collection_id=collection_id,
+                    sync_key=response_sync_key,
+                    db_emails=[],  # Empty on initial sync per expert
+                    window_size=0,
+                    is_initial_sync=True
+                )
                 
                 # CRITICAL FIX #26: Stage as PENDING, don't commit yet!
                 # Expert: "Only commit when client echoes back the SyncKey"
@@ -1106,12 +1118,13 @@ async def eas_dispatch(
                 emails_to_send = emails[:window_size] if window_size else emails
                 has_more = len(emails) > window_size if window_size else False
                 
-                wbxml = create_minimal_sync_wbxml(
-                    sync_key=response_sync_key, 
-                    emails=emails_to_send,  # ← LIMITED to WindowSize!
-                    collection_id=collection_id, 
+                # CRITICAL FIX #42: Use expert's Z-Push-compliant WBXML builder!
+                wbxml = create_sync_response_with_expert_builder(
+                    collection_id=collection_id,
+                    sync_key=response_sync_key,
+                    db_emails=emails_to_send,  # Already limited to WindowSize
                     window_size=window_size,
-                    has_more=has_more  # ← MoreAvailable flag
+                    is_initial_sync=False
                 )
                 
                 # CRITICAL FIX #26 + #27: Stage as PENDING and advance SyncKey!
