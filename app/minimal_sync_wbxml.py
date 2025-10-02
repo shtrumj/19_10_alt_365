@@ -71,46 +71,49 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x00')  # SWITCH_PAGE
     output.write(b'\x00')  # Codepage 0 (AirSync)
     
-    # === CORRECTED TOKENS per wbxml_encoder.py ===
-    # Sync (0x05 + 0x40 = 0x45)
+    # === Z-PUSH AUTHORITATIVE TOKENS ===
+    # Source: https://github.com/Z-Hub/Z-Push/master/src/lib/wbxml/wbxmldefs.php
+    # Codepage 0 (AirSync)
+    
+    # Sync (0x05 + 0x40 = 0x45) - Z-Push "Synchronize"
     output.write(b'\x45')  # Sync with content
     
-    # Status (0x09 + 0x40 = 0x49) - CORRECTED!
-    output.write(b'\x49')  # Status with content
+    # Status (0x0E + 0x40 = 0x4E) - Z-Push "Status" - FIXED!
+    output.write(b'\x4E')  # Status with content
     output.write(b'\x03')  # STR_I
     output.write(str(status).encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END Status
     
-    # SyncKey (0x0A + 0x40 = 0x4A) - CORRECTED!
-    output.write(b'\x4A')  # SyncKey with content
+    # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey" - FIXED!
+    output.write(b'\x4B')  # SyncKey with content
     output.write(b'\x03')  # STR_I
     output.write(sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
     
-    # Collections (0x06 + 0x40 = 0x46) - CORRECTED!
-    output.write(b'\x46')  # Collections with content
+    # Collections (0x1C + 0x40 = 0x5C) - Z-Push "Folders" - FIXED!
+    output.write(b'\x5C')  # Collections with content
     
-    # Collection (0x07 + 0x40 = 0x47) - CORRECTED!
-    output.write(b'\x47')  # Collection with content
+    # Collection (0x0F + 0x40 = 0x4F) - Z-Push "Folder" - FIXED!
+    output.write(b'\x4F')  # Collection with content
     
-    # SyncKey (0x0A + 0x40 = 0x4A) - CORRECTED!
-    output.write(b'\x4A')  # SyncKey with content
+    # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey"
+    output.write(b'\x4B')  # SyncKey with content
     output.write(b'\x03')  # STR_I
     output.write(sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
     
-    # CollectionId (0x08 + 0x40 = 0x48) - CORRECTED!
-    output.write(b'\x48')  # CollectionId with content
+    # CollectionId (0x12 + 0x40 = 0x52) - Z-Push "FolderId" - FIXED!
+    output.write(b'\x52')  # CollectionId with content
     output.write(b'\x03')  # STR_I
     output.write(collection_id.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END CollectionId
     
-    # Status (0x09 + 0x40 = 0x49) - CORRECTED!
-    output.write(b'\x49')  # Status with content
+    # Status (0x0E + 0x40 = 0x4E) - Z-Push "Status" - FIXED!
+    output.write(b'\x4E')  # Status with content
     output.write(b'\x03')  # STR_I
     output.write(str(status).encode())
     output.write(b'\x00')  # String terminator
@@ -120,35 +123,35 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     # Initial sync (SyncKey 0→1) must NOT include these elements!
     if not is_initial_sync:
         # Per Z-Push line 98: MoreAvailable → GetChanges → WindowSize THEN Commands
-        # MoreAvailable (0x15 + 0x40 = 0x55) - optional if more emails exist
+        # MoreAvailable (0x14 + 0x40 = 0x54) - Z-Push "MoreAvailable" - FIXED!
         if emails and len(emails) > max_emails:
-            output.write(b'\x55')  # MoreAvailable with content
+            output.write(b'\x54')  # MoreAvailable with content
             output.write(b'\x03')  # STR_I
             output.write(b'1')
             output.write(b'\x00')  # String terminator
             output.write(b'\x01')  # END MoreAvailable
         
-        # GetChanges (0x18) - EMPTY TAG per MS-ASCMD, no content flag, SELF-CLOSING
-        # In WBXML, empty tag = tag byte without 0x40 flag, NO END tag needed
-        output.write(b'\x18')  # GetChanges SELF-CLOSING empty tag
+        # GetChanges (0x13) - Z-Push "GetChanges" - FIXED! (was 0x18, wrong!)
+        # EMPTY TAG per MS-ASCMD, no content flag, SELF-CLOSING
+        output.write(b'\x13')  # GetChanges SELF-CLOSING empty tag
         
-        # WindowSize (0x1F + 0x40 = 0x5F) per MS-ASCMD line 24
-        output.write(b'\x5F')  # WindowSize with content
+        # WindowSize (0x15 + 0x40 = 0x55) - Z-Push "WindowSize" - FIXED! (was 0x5F, wrong!)
+        output.write(b'\x55')  # WindowSize with content
         output.write(b'\x03')  # STR_I
         output.write(str(window_size).encode())
         output.write(b'\x00')  # String terminator
         output.write(b'\x01')  # END WindowSize
         
         if emails and len(emails) > 0:
-            # Commands (0x0B + 0x40 = 0x4B) - CORRECTED!
-            output.write(b'\x4B')  # Commands with content
+            # Commands (0x16 + 0x40 = 0x56) - Z-Push "Perform" - FIXED!
+            output.write(b'\x56')  # Commands with content
             
             # Add emails (respect WindowSize)
             for email in emails[:max_emails]:
-                # Add (0x0C + 0x40 = 0x4C) - CORRECTED!
-                output.write(b'\x4C')  # Add with content
+                # Add (0x07 + 0x40 = 0x47) - Z-Push "Add" - FIXED!
+                output.write(b'\x47')  # Add with content
                 
-                # ServerId (0x0D + 0x40 = 0x4D) - CORRECTED!
+                # ServerId (0x0D + 0x40 = 0x4D) - Z-Push "ServerEntryId" - CORRECT!
                 output.write(b'\x4D')  # ServerId with content
                 output.write(b'\x03')  # STR_I
                 server_id = f"{collection_id}:{email.id}"
@@ -156,8 +159,8 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END ServerId
                 
-                # ApplicationData (0x0E + 0x40 = 0x4E) - CORRECTED!
-                output.write(b'\x4E')  # ApplicationData with content
+                # Data (0x1D + 0x40 = 0x5D) - Z-Push "Data" for ApplicationData
+                output.write(b'\x5D')  # Data with content
                 
                 # Switch to Email2 namespace (codepage 2)
                 output.write(b'\x00')  # SWITCH_PAGE
