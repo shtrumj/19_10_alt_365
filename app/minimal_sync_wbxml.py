@@ -99,9 +99,12 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x01')  # END Class
     
     # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey"
+    # CRITICAL FIX #16-3: Initial sync MUST return new SyncKey="1", not echo "0"!
+    # Expert: "when is_initial_sync=True, force the collection SyncKey to '1'"
+    new_sync_key = "1" if is_initial_sync else sync_key
     output.write(b'\x4B')  # SyncKey with content
     output.write(b'\x03')  # STR_I
-    output.write(sync_key.encode())
+    output.write(new_sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
     
@@ -141,13 +144,16 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END ServerId
                 
-                # CRITICAL FIX: ApplicationData (0x0E + 0x40 = 0x4E) - NOT Data (0x1D)!
-                # ApplicationData is the correct tag for email properties
-                output.write(b'\x4E')  # ApplicationData with content
+                # CRITICAL FIX #16-2: ApplicationData token WRONG!
+                # Expert: "ApplicationData = cp0 0x0F | 0x40 = 0x4F (NOT 0x4E which is Status!)"
+                # Was using Status token (0x4E), should be ApplicationData (0x4F)
+                output.write(b'\x4F')  # ApplicationData with content (CORRECTED!)
                 
-                # Switch to Email2 namespace (codepage 2)
+                # CRITICAL FIX #16-4: This is Email codepage, NOT "Email2"!
+                # Expert: "Email is codepage 2. Comment says Email2 which is contradictory"
+                # Switch to Email namespace (codepage 2)
                 output.write(b'\x00')  # SWITCH_PAGE
-                output.write(b'\x02')  # Codepage 2 (Email2)
+                output.write(b'\x02')  # Codepage 2 (Email - NOT Email2!)
                 
                 # Get sender
                 sender_email = 'Unknown'
@@ -307,13 +313,12 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
             
             output.write(b'\x01')  # END Commands
             
-            # CRITICAL FIX #15: Add MoreAvailable AFTER Commands (EMPTY tag)
-            # Expert diagnosis: "MoreAvailable (cp0 tag 0x16; no content)"
-            # Wait, expert says 0x16... but Z-Push says 0x08
-            # Let me use 0x08 (MoreAvailable in AirSync cp0) as EMPTY tag (no content flag)
+            # CRITICAL FIX #16-1: MoreAvailable token WRONG!
+            # Expert: "In AirSync codepage 0, MoreAvailable is 0x16 (empty tag, no content)"
+            # "Your code writes b'\x08', which collides with other tokens"
             # Placement: AFTER Commands, BEFORE END Collection
             if has_more:
-                output.write(b'\x08')  # MoreAvailable EMPTY TAG (no content flag!)
+                output.write(b'\x16')  # MoreAvailable EMPTY TAG (0x16, no content flag!)
     
     output.write(b'\x01')  # END Collection
     output.write(b'\x01')  # END Collections
