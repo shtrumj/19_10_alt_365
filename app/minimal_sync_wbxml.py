@@ -345,12 +345,16 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
             
         output.write(b'\x01')  # END Commands
         
-        # CRITICAL FIX #16-1: MoreAvailable token WRONG!
-        # Expert: "In AirSync codepage 0, MoreAvailable is 0x16 (empty tag, no content)"
-        # "Your code writes b'\x08', which collides with other tokens"
-        # Placement: AFTER Commands, BEFORE END Collection
+        # CRITICAL FIX #33: MoreAvailable token is 0x1B, NOT 0x16!
+        # Latest expert analysis: "In AirSync codepage 0, MoreAvailable is 0x1B (empty element)"
+        # "0x16 is Commands (base), not MoreAvailable!"
+        # Previous expert was WRONG: MoreAvailable ≠ 0x16
+        # Per MS-ASWBXML AirSync codepage 0: MoreAvailable = 0x1B
+        # Per Z-Push wbxmldefs.php: define('SYNC_MOREAVAILABLE', 0x1B);
+        # Placement: AFTER Commands, BEFORE END Collection (this is correct)
+        # iOS rejects 0x16 in this position as unexpected "Commands" token!
         if has_more:
-            output.write(b'\x16')  # MoreAvailable EMPTY TAG (0x16, no content flag!)
+            output.write(b'\x1B')  # MoreAvailable EMPTY ELEMENT (0x1B) CORRECTED!
     
     output.write(b'\x01')  # END Collection
     output.write(b'\x01')  # END Collections
