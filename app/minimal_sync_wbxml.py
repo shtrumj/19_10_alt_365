@@ -194,15 +194,7 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END From
                 
-                # DateReceived (0x12 in Email2 + 0x40 = 0x52) - FIXED from 0x4F!
-                output.write(b'\x52')  # DateReceived with content
-                output.write(b'\x03')  # STR_I
-                created_at = email.created_at if hasattr(email, 'created_at') else datetime.utcnow()
-                date_str = created_at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-                output.write(date_str.encode())
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END DateReceived
-                
+                # CRITICAL FIX #9: REORDER - To BEFORE DateReceived per MS-ASCMD!
                 # To (0x11 in Email2 + 0x40 = 0x51) - FIXED from 0x43!
                 recipient_email = 'Unknown'
                 if hasattr(email, 'external_recipient') and email.external_recipient:
@@ -215,6 +207,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(recipient_email.encode('utf-8'))
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END To
+                
+                # DateReceived (0x12 in Email2 + 0x40 = 0x52) - NOW AFTER To per MS-ASCMD!
+                output.write(b'\x52')  # DateReceived with content
+                output.write(b'\x03')  # STR_I
+                created_at = email.created_at if hasattr(email, 'created_at') else datetime.utcnow()
+                date_str = created_at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                output.write(date_str.encode())
+                output.write(b'\x00')  # String terminator
+                output.write(b'\x01')  # END DateReceived
                 
                 # CRITICAL FIX #6: Add MISSING DisplayTo (0x13 in Email2 + 0x40 = 0x53)
                 # Source: wbxml_encoder.py line 70, line 387-389 shows it's REQUIRED
@@ -232,7 +233,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END ThreadTopic
                 
-                # CRITICAL FIX: Read (0x16 in Email2 + 0x40 = 0x56) - NOT 0x10!
+                # CRITICAL FIX #9: REORDER - Importance BEFORE Read per MS-ASCMD!
+                # Importance (0x15 in Email2 + 0x40 = 0x55) - FIXED from 0x46!
+                output.write(b'\x55')  # Importance with content
+                output.write(b'\x03')  # STR_I
+                output.write(b'1')  # Normal importance
+                output.write(b'\x00')  # String terminator
+                output.write(b'\x01')  # END Importance
+                
+                # Read (0x16 in Email2 + 0x40 = 0x56) - NOW AFTER Importance per MS-ASCMD!
                 # 0x50 was colliding with Class token!
                 output.write(b'\x56')  # Read with content
                 output.write(b'\x03')  # STR_I
@@ -241,19 +250,12 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Read
                 
-                # MessageClass (0x1C in Email2 + 0x40 = 0x5C) - FIXED from 0x5A!
+                # MessageClass (0x1C in Email2 + 0x40 = 0x5C) - NOW AFTER Read per MS-ASCMD!
                 output.write(b'\x5C')  # MessageClass with content
                 output.write(b'\x03')  # STR_I
                 output.write(b'IPM.Note')
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END MessageClass
-                
-                # Importance (0x15 in Email2 + 0x40 = 0x55) - FIXED from 0x46!
-                output.write(b'\x55')  # Importance with content
-                output.write(b'\x03')  # STR_I
-                output.write(b'1')  # Normal importance
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END Importance
                 
                 # CRITICAL FIX: Body/Type/Data are in EMAIL2, NOT AirSyncBase!
                 # Source: wbxml_encoder.py lines 74-77 show Body in Email2 codepage

@@ -1774,3 +1774,298 @@ encoder.end_tag()
 
 Each test should be committed separately with clear documentation.
 
+
+---
+
+## 🔬 Deep Data Format Investigation (October 2, 2025 - Continued)
+
+### Test Results: Body Type=2 Fix
+
+**Result**: ❌ Still Rejecting
+- SyncKey progression: 48→49→50→51→52→53
+- Pattern unchanged: Every email send followed by retry loop
+- **Conclusion**: Body Type alone is NOT the issue
+
+### HTML Body Content Investigation
+
+#### Question: Should plain text be wrapped in HTML tags when Type=2?
+
+**Current Implementation**:
+```python
+body_text = getattr(email, 'body', '') or ''
+if not body_text or not body_text.strip():
+    body_text = ' '  # Minimum body content
+```
+
+**Sends**: `" "` (single space) or raw text
+
+**Question**: Should we send `<html><body> </body></html>` when Type=2 (HTML)?
+
+#### Checking Reference Implementations
+
+**wbxml_encoder.py** (lines 404-422):
+```python
+body_text = _safe(getattr(email, 'body', ''))
+
+# Body wrapper
+encoder.start_tag("AirSync:Body")
+# Type (2 = HTML)
+encoder.start_tag("AirSync:Type")
+encoder.content("2")
+encoder.end_tag()
+
+# EstimatedDataSize
+encoder.start_tag("AirSync:EstimatedDataSize")
+encoder.content(str(len(body_text.encode('utf-8'))))
+encoder.end_tag()
+
+# Data
+encoder.start_tag("AirSync:Data")
+encoder.content(body_text)  # ← NO HTML WRAPPER!
+encoder.end_tag()
+```
+
+**Conclusion**: Reference does NOT wrap plain text in HTML tags!
+
+### Empty Body Handling Investigation
+
+**Current**: Sending single space `" "` when body is empty
+**Question**: Is this acceptable?
+
+**Database Check**:
+```sql
+SELECT id, subject, length(body), body FROM emails LIMIT 5;
+```
+
+Let me check actual email bodies:
+
+
+📧 EMAIL BODY ANALYSIS:
+======================================================================
+ID: 17
+  Subject: 
+  Body Length: 5084
+  Body Preview: (using TLS with cipher ECDHE-RSA-AES128-GCM-SHA256
+
+ID: 18
+  Subject: 
+  Body Length: 4010
+  Body Preview: (using TLS with cipher ECDHE-RSA-AES128-GCM-SHA256
+
+ID: 19
+  Subject: 
+  Body Length: 4015
+  Body Preview: (using TLS with cipher ECDHE-RSA-AES128-GCM-SHA256
+
+ID: 20
+  Subject: 
+  Body Length: 3985
+  Body Preview: (using TLS with cipher ECDHE-RSA-AES128-GCM-SHA256
+
+ID: 21
+  Subject: 
+  Body Length: 4056
+  Body Preview: (using TLS with cipher ECDHE-RSA-AES128-GCM-SHA256
+
+
+### Email Body Content Status
+
+**Finding**: Need to check if emails have actual body content or are empty.
+
+### ServerID Format Investigation
+
+**Current Format**: `f"{collection_id}:{email.id}"`
+**Example**: `"1:35"` for collection 1, email ID 35
+
+**Question**: Is this format correct?
+
+**Reference Implementations**:
+
+**wbxml_encoder.py** (line 346):
+```python
+server_id = f"{collection_id}:{getattr(email, 'id', '0')}"
+```
+**Status**: ✅ MATCHES our format
+
+**activesync.py** (line 94):
+```python
+add.set("ServerId", f"{collection_id}:{email.id}")
+```
+**Status**: ✅ MATCHES our format
+
+**Conclusion**: ServerID format is CORRECT
+
+### Field Value Format Deep Dive
+
+#### DateReceived Format
+
+**MS-ASCMD Requirement**: `YYYY-MM-DDTHH:MM:SS.SSSZ`
+
+**Our Implementation**:
+```python
+created_at = email.created_at if hasattr(email, 'created_at') else datetime.utcnow()
+date_str = created_at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+```
+
+**Example Output**: `"2025-10-01T21:53:55.000Z"`
+
+**Issue**: We hardcode `.000` for milliseconds instead of using actual milliseconds!
+
+**Reference Implementation** (wbxml_encoder.py line 362):
+```python
+created_ts = (
+    created_at.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z' if created_at else ""
+)
+```
+
+**Example**: `"2025-10-01T21:53:55.281Z"` (actual milliseconds)
+
+**Status**: ⚠️ MINOR ISSUE - We use `.000` instead of actual milliseconds
+
+### Character Encoding Investigation
+
+**Question**: Are we handling UTF-8 correctly for international characters?
+
+**Example Subject** (from logs):
+```
+"Fwd: שנה טובה וגמר חתימה טובה - בית החינוך ״קדם״"
+```
+(Hebrew text: "Happy New Year and G'mar Chatima Tova - Kedem School")
+
+**Our Encoding**:
+```python
+output.write(subject.encode('utf-8'))
+```
+
+**Question**: Does WBXML require any special handling for UTF-8?
+
+**MS-ASWBXML**: WBXML uses STR_I (0x03) for inline strings, which are UTF-8 encoded.
+
+**Status**: ✅ CORRECT - UTF-8 is the standard encoding
+
+### Missing Fields Deep Analysis
+
+#### NativeBodyType Investigation
+
+**Definition**: Indicates the original format of the body content.
+
+**Values**:
+- 1 = Plain Text
+- 2 = HTML  
+- 3 = RTF
+
+**wbxml_encoder.py** (lines 441-444):
+```python
+# NativeBodyType (2 = HTML)
+encoder.start_tag("AirSync:NativeBodyType")
+encoder.content("2")
+encoder.end_tag()
+```
+
+**Token**: 0x1F (from Email2 codepage)
+
+**Question**: Is NativeBodyType REQUIRED or OPTIONAL?
+
+**MS-ASCMD**: Listed in Email class but marked as OPTIONAL in protocol version 12.0+
+
+**Status**: ❓ UNCLEAR - May be required by iPhone even if spec says optional
+
+#### ConversationId Investigation
+
+**wbxml_encoder.py** includes ConversationId (token 0x20):
+```python
+encoder.start_tag("AirSync:ConversationId")
+encoder.content(conversation_id)
+encoder.end_tag()
+```
+
+**Question**: Is ConversationId required?
+
+**MS-ASCMD**: ConversationId is for threading, should be base64-encoded GUID.
+
+**Status**: ❓ UNCLEAR - Might be required for proper threading
+
+### Email Field Presence Matrix
+
+| Field | Our Code | wbxml_encoder | activesync.py | Required? |
+|-------|----------|---------------|---------------|-----------|
+| Subject | ✅ | ✅ | ✅ | YES |
+| From | ✅ | ✅ | ✅ | YES |
+| To | ✅ | ✅ | ✅ | YES |
+| DateReceived | ✅ | ✅ | ✅ | YES |
+| DisplayTo | ✅ | ✅ | ✅ | YES |
+| ThreadTopic | ✅ | ✅ | ✅ | YES |
+| Importance | ✅ | ✅ | ✅ | YES |
+| Read | ✅ | ✅ | ✅ | YES |
+| MessageClass | ✅ | ❌ | ✅ | YES |
+| Body | ✅ | ✅ | ✅ | YES |
+| Type | ✅ | ✅ | ✅ | YES |
+| EstimatedDataSize | ✅ | ✅ | ✅ | YES |
+| Data | ✅ | ✅ | ✅ | YES |
+| **NativeBodyType** | ❌ | ✅ | ✅ | ❓ |
+| **ContentClass** | ❌ | ❌ | ✅ | ❓ |
+| **ConversationId** | ❌ | ✅ | ❌ | ❓ |
+
+### Field Order Investigation
+
+**Hypothesis**: iPhone may require EXACT field order as specified in MS-ASCMD
+
+**MS-ASCMD Email Element Order** (from specification):
+```
+<airsync:Subject>
+<email:From>
+<email:To>
+<email:Cc>
+<email:DateReceived>
+<email:DisplayTo>
+<email:ThreadTopic>
+<email:Importance>
+<email:Read>
+<email:MessageClass>
+<email:InternetCPID>
+<email:ContentClass>
+<email:NativeBodyType>
+<email:Body>
+  <airsyncbase:Type>
+  <airsyncbase:EstimatedDataSize>
+  <airsyncbase:Data>
+</email:Body>
+```
+
+**Our Current Order**:
+1. Subject ✅
+2. From ✅
+3. DateReceived ❌ (should be after To/Cc)
+4. To ❌ (should be before DateReceived)
+5. DisplayTo ✅ (correct after DateReceived IF DateReceived was after To)
+6. ThreadTopic ✅
+7. Read ❌ (should be after Importance)
+8. MessageClass ❌ (should be after Read)
+9. Importance ❌ (should be before Read)
+10. Body ✅
+
+**Issues Found**: 5 fields out of order!
+
+### Next Steps Analysis
+
+**Priority 1 - HIGH CONFIDENCE**:
+1. ❌ Reorder fields to match MS-ASCMD exactly
+2. ❓ Add NativeBodyType (present in wbxml_encoder.py)
+
+**Priority 2 - MEDIUM CONFIDENCE**:
+3. ⚠️ Fix DateReceived to use actual milliseconds
+4. ❓ Add ContentClass if required
+
+**Priority 3 - LOW CONFIDENCE**:
+5. Check body content (empty vs space)
+6. Add ConversationId if required
+
+### Testing Protocol
+
+Apply fixes in order, test each one:
+- FIX #9: Reorder fields → Test
+- FIX #10: Add NativeBodyType → Test
+- FIX #11: Fix DateReceived milliseconds → Test
+
+Document results for each test in activesync.md.
+
