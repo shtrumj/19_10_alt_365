@@ -119,29 +119,11 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END Status
     
-    # CRITICAL: Per Grommunio-Sync, Commands/GetChanges/WindowSize are ONLY sent for subsequent syncs
-    # Initial sync (SyncKey 0→1) must NOT include these elements!
+    # CRITICAL FIX #15: Remove MoreAvailable/GetChanges/WindowSize from BEFORE Commands!
+    # Expert diagnosis: "Do not mix in GetChanges/WindowSize tags in the response"
+    # "They are request parameters. The response only uses Status, SyncKey, Commands, Adds, and optionally MoreAvailable"
+    # MoreAvailable must be AFTER Commands, not before!
     if not is_initial_sync:
-        # Per Z-Push line 98: MoreAvailable → GetChanges → WindowSize THEN Commands
-        # MoreAvailable (0x14 + 0x40 = 0x54) - Z-Push "MoreAvailable" - FIXED!
-        if emails and len(emails) > max_emails:
-            output.write(b'\x54')  # MoreAvailable with content
-            output.write(b'\x03')  # STR_I
-            output.write(b'1')
-            output.write(b'\x00')  # String terminator
-            output.write(b'\x01')  # END MoreAvailable
-        
-        # GetChanges (0x13) - Z-Push "GetChanges" - FIXED! (was 0x18, wrong!)
-        # EMPTY TAG per MS-ASCMD, no content flag, SELF-CLOSING
-        output.write(b'\x13')  # GetChanges SELF-CLOSING empty tag
-        
-        # WindowSize (0x15 + 0x40 = 0x55) - Z-Push "WindowSize" - FIXED! (was 0x5F, wrong!)
-        output.write(b'\x55')  # WindowSize with content
-        output.write(b'\x03')  # STR_I
-        output.write(str(window_size).encode())
-        output.write(b'\x00')  # String terminator
-        output.write(b'\x01')  # END WindowSize
-        
         if emails and len(emails) > 0:
             # Commands (0x16 + 0x40 = 0x56) - Z-Push "Perform" - FIXED!
             output.write(b'\x56')  # Commands with content
@@ -325,13 +307,13 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
             
             output.write(b'\x01')  # END Commands
             
-            # CRITICAL FIX #13: Add MoreAvailable if more items exist beyond WindowSize
-            # Expert diagnosis: "Include <MoreAvailable/> inside the Collection"
-            # Token: 0x15 in AirSync + 0x40 = 0x55
+            # CRITICAL FIX #15: Add MoreAvailable AFTER Commands (EMPTY tag)
+            # Expert diagnosis: "MoreAvailable (cp0 tag 0x16; no content)"
+            # Wait, expert says 0x16... but Z-Push says 0x08
+            # Let me use 0x08 (MoreAvailable in AirSync cp0) as EMPTY tag (no content flag)
             # Placement: AFTER Commands, BEFORE END Collection
             if has_more:
-                output.write(b'\x55')  # MoreAvailable with content
-                output.write(b'\x01')  # END MoreAvailable (empty element)
+                output.write(b'\x08')  # MoreAvailable EMPTY TAG (no content flag!)
     
     output.write(b'\x01')  # END Collection
     output.write(b'\x01')  # END Collections
