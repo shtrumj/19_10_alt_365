@@ -263,9 +263,12 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x57')  # Body with content
                 
                 # Type (0x18 in Email2 + 0x40 = 0x58) - FIXED from AirSyncBase 0x4A!
+                # CRITICAL FIX #8: Change from Type=1 (Plain) to Type=2 (HTML)
+                # Source: wbxml_encoder.py line 409 uses Type=2
+                # Source: activesync.py line 134 uses Type=2
                 output.write(b'\x58')  # Type with content
                 output.write(b'\x03')  # STR_I
-                output.write(b'1')  # 1=Plain text
+                output.write(b'2')  # 2=HTML (was 1=Plain text)
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Type
                 

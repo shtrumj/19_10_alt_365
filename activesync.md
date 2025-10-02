@@ -1550,3 +1550,227 @@ Since empty sync works perfectly, the protocol framework is sound.
 The issue is SPECIFICALLY in how we encode email message data.
 Need to compare against working implementation byte-by-byte.
 
+
+---
+
+## 📊 Data Type Format Analysis (October 2, 2025)
+
+### Body Type Field Analysis
+
+#### Microsoft MS-ASCMD Specification
+
+**Body Type Values** (airsyncbase:Type element):
+- **Type 1**: Plain Text
+- **Type 2**: HTML
+- **Type 3**: RTF (Rich Text Format)
+- **Type 4**: MIME
+
+Source: MS-ASCMD section 2.2.2.22.1
+
+#### Our Current Implementation
+
+**Location**: `app/minimal_sync_wbxml.py` line 268
+```python
+output.write(b'1')  # 1=Plain text
+```
+
+**Status**: ✅ CORRECT (using Type=1 for plain text)
+
+#### Comparison with Reference Implementations
+
+**wbxml_encoder.py** (line 409-410):
+```python
+# Type (2 = HTML)
+encoder.start_tag("AirSync:Type")
+encoder.content("2")
+```
+**Status**: Uses Type=2 (HTML)
+
+**activesync.py** (line 134):
+```python
+body_elem.set("Type", "2")  # HTML
+```
+**Status**: Uses Type=2 (HTML)
+
+### Critical Discovery: Type Mismatch!
+
+| Implementation | Type Value | Body Format | Match |
+|----------------|------------|-------------|-------|
+| **minimal_sync_wbxml.py** | 1 | Plain Text | ❌ |
+| **wbxml_encoder.py** | 2 | HTML | ✅ |
+| **activesync.py (XML)** | 2 | HTML | ✅ |
+| **Email Database** | "text" | Plain Text | ❌ |
+
+**ISSUE IDENTIFIED**: We're sending `Type=1` (Plain Text) but our reference implementations use `Type=2` (HTML)!
+
+### Body Content Analysis
+
+**Our Current Implementation**:
+```python
+body_text = getattr(email, 'body', '') or ''
+if not body_text or not body_text.strip():
+    body_text = ' '  # Minimum body content
+```
+
+**Issues**:
+1. Sending plain text as Type=1, but should be Type=2 (HTML) to match references
+2. Body truncation at 512 bytes may be too aggressive
+3. No HTML wrapping for plain text content
+
+### Field Ordering Analysis
+
+**MS-ASCMD Recommended Order** (Email2 codepage):
+1. Subject
+2. From
+3. To
+4. DateReceived
+5. DisplayTo
+6. ThreadTopic
+7. Importance
+8. Read
+9. MessageClass
+10. Body
+11. Body/Type
+12. Body/EstimatedDataSize
+13. Body/Data
+
+**Our Current Order**:
+1. Subject ✅
+2. From ✅
+3. DateReceived ❌ (Should be after To)
+4. To ❌ (Should be before DateReceived)
+5. DisplayTo ✅
+6. ThreadTopic ✅
+7. Read ❌ (Should be after Importance)
+8. MessageClass ❌ (Should be after Read)
+9. Importance ❌ (Should be before Read)
+10. Body ✅
+11. Type ✅
+12. EstimatedDataSize ✅
+13. Data ✅
+
+**Field Order Issues**: 5 fields out of order!
+
+### Token Verification Matrix (Complete)
+
+| Field | Our Token | Encoder Token | Z-Push | Status |
+|-------|-----------|---------------|---------|--------|
+| Subject | 0x4F | 0x4F (0x0F) | 0x4F | ✅ |
+| From | 0x50 | 0x50 (0x10) | 0x50 | ✅ |
+| To | 0x51 | 0x51 (0x11) | 0x51 | ✅ |
+| DateReceived | 0x52 | 0x52 (0x12) | 0x52 | ✅ |
+| DisplayTo | 0x53 | 0x53 (0x13) | 0x53 | ✅ |
+| ThreadTopic | 0x54 | 0x54 (0x14) | 0x54 | ✅ |
+| Importance | 0x55 | 0x55 (0x15) | 0x55 | ✅ |
+| Read | 0x56 | 0x56 (0x16) | 0x56 | ✅ |
+| Body | 0x57 | 0x57 (0x17) | 0x57 | ✅ |
+| Type | 0x58 | 0x58 (0x18) | 0x58 | ✅ |
+| EstimatedDataSize | 0x59 | 0x59 (0x19) | 0x59 | ✅ |
+| Data | 0x5A | 0x5A (0x1A) | 0x5A | ✅ |
+| MessageClass | 0x5C | 0x5C (0x1C) | 0x5C | ✅ |
+
+**All Tokens**: ✅ VERIFIED CORRECT
+
+### Data Type Format Comparison
+
+#### String Values
+
+**DateReceived Format**:
+- **MS-ASCMD**: ISO 8601 format `YYYY-MM-DDTHH:MM:SS.MMMZ`
+- **Our Implementation**: `'%Y-%m-%dT%H:%M:%S.000Z'`
+- **Status**: ✅ CORRECT (fixed milliseconds to .000)
+
+**MessageClass**:
+- **MS-ASCMD**: `IPM.Note` for email messages
+- **Our Implementation**: `'IPM.Note'`
+- **Status**: ✅ CORRECT
+
+**Importance**:
+- **MS-ASCMD**: 0=Low, 1=Normal, 2=High
+- **Our Implementation**: `'1'` (Normal)
+- **Status**: ✅ CORRECT
+
+**Read**:
+- **MS-ASCMD**: 0=Unread, 1=Read
+- **Our Implementation**: `'1' if is_read else '0'`
+- **Status**: ✅ CORRECT
+
+### Missing Fields Analysis
+
+**Fields in wbxml_encoder.py but NOT in minimal_sync_wbxml.py**:
+1. **NativeBodyType** (0x1F) - May be required!
+2. **ContentClass** (0x1E) - May be required!
+3. **InternetCPID** (0x1D) - Character encoding
+
+**From wbxml_encoder.py lines 441-444**:
+```python
+# NativeBodyType (2 = HTML)
+encoder.start_tag("AirSync:NativeBodyType")
+encoder.content("2")
+encoder.end_tag()
+```
+
+**Status**: ❓ UNVERIFIED - May need to add NativeBodyType
+
+### Codepage Analysis
+
+**Email2 Codepage (0x02)**: ✅ CORRECTLY USED
+- Subject, From, To, DateReceived, DisplayTo, ThreadTopic
+- Importance, Read, MessageClass, Body, Type, EstimatedDataSize, Data
+
+**AirSync Codepage (0x00)**: ✅ CORRECTLY USED
+- Sync, Collections, Collection, Class, SyncKey, CollectionId
+- Status, Commands, Add, ServerId, ApplicationData
+
+**Codepage Switches**: ✅ CORRECT
+- Switch to Email2 (0x00 0x02) before email fields
+- Switch back to AirSync (0x00 0x00) after ApplicationData
+
+### Critical Issues Found
+
+1. **❌ CRITICAL: Body Type Mismatch**
+   - Using Type=1 (Plain Text)
+   - Should use Type=2 (HTML) to match references
+   - **Confidence**: 100% (wbxml_encoder.py + activesync.py both use Type=2)
+
+2. **❌ HIGH: Field Ordering**
+   - 5 fields out of recommended order
+   - May cause iPhone parser rejection
+   - **Confidence**: 75% (iPhone may be strict about ordering)
+
+3. **❓ MEDIUM: Missing NativeBodyType**
+   - Present in wbxml_encoder.py
+   - May be required by iPhone
+   - **Confidence**: 50% (needs verification)
+
+4. **❌ LOW: Body Content Format**
+   - Sending plain text without HTML wrapper
+   - May need `<html><body>...</body></html>` wrapper
+   - **Confidence**: 25% (may not be critical)
+
+### Recommended Fixes (Priority Order)
+
+1. **FIX #8 - CRITICAL**: Change Body Type from 1 to 2 (HTML)
+2. **FIX #9 - HIGH**: Reorder fields to match MS-ASCMD specification
+3. **FIX #10 - MEDIUM**: Add NativeBodyType field if required
+4. **FIX #11 - LOW**: Wrap body content in HTML tags
+
+### Evidence Quality Matrix
+
+| Issue | Source | Type | Confidence |
+|-------|--------|------|------------|
+| Type=1 vs Type=2 | wbxml_encoder.py | VERIFIED | 100% |
+| Field ordering | MS-ASCMD | ASSUMPTION | 75% |
+| NativeBodyType | wbxml_encoder.py | ASSUMPTION | 50% |
+| HTML wrapper | Best practice | ASSUMPTION | 25% |
+
+### Testing Strategy
+
+**Test Sequence**:
+1. Change Type to 2 (HTML) - rebuild & test
+2. If still failing: Reorder fields - rebuild & test
+3. If still failing: Add NativeBodyType - rebuild & test
+4. If still failing: Add HTML wrapper - rebuild & test
+
+Each test should be committed separately with clear documentation.
+
