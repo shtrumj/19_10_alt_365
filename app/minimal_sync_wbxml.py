@@ -11,7 +11,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = "1", status: int = 1, window_size: int = 5, is_initial_sync: bool = False) -> bytes:
+def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = "1", status: int = 1, window_size: int = 5, is_initial_sync: bool = False, has_more: bool = False) -> bytes:
     """
     Create WBXML Sync response following Grommunio-Sync implementation
     
@@ -324,6 +324,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x01')  # END Add
             
             output.write(b'\x01')  # END Commands
+            
+            # CRITICAL FIX #13: Add MoreAvailable if more items exist beyond WindowSize
+            # Expert diagnosis: "Include <MoreAvailable/> inside the Collection"
+            # Token: 0x15 in AirSync + 0x40 = 0x55
+            # Placement: AFTER Commands, BEFORE END Collection
+            if has_more:
+                output.write(b'\x55')  # MoreAvailable with content
+                output.write(b'\x01')  # END MoreAvailable (empty element)
     
     output.write(b'\x01')  # END Collection
     output.write(b'\x01')  # END Collections

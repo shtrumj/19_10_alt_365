@@ -856,14 +856,28 @@ async def eas_dispatch(
                 new_sync_key = _bump_sync_key(state, db)
                 is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
                 if is_wbxml_request:
-                    wbxml = create_minimal_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id, window_size=window_size)
+                    # CRITICAL FIX #13: Respect WindowSize! Only send N items at a time
+                    # Expert diagnosis: "If client asked for WindowSize = N, put at most N <Add> items"
+                    emails_to_send = emails[:window_size] if window_size else emails
+                    has_more = len(emails) > window_size if window_size else False
+                    
+                    wbxml = create_minimal_sync_wbxml(
+                        sync_key=new_sync_key, 
+                        emails=emails_to_send,  # ← Limited to WindowSize!
+                        collection_id=collection_id, 
+                        window_size=window_size,
+                        has_more=has_more  # ← New parameter for MoreAvailable flag
+                    )
                     _write_json_line(
                         "activesync/activesync.log",
                         {
                             "event": "sync_emails_sent_wbxml", 
                             "sync_key": new_sync_key, 
                             "client_key": client_sync_key, 
-                            "email_count": len(emails), 
+                            "email_count_total": len(emails),  # ← Total available
+                            "email_count_sent": len(emails_to_send),  # ← Actually sent
+                            "window_size": window_size,  # ← Client requested
+                            "has_more": has_more,  # ← MoreAvailable flag
                             "collection_id": collection_id, 
                             "wbxml_length": len(wbxml), 
                             "wbxml_first20": wbxml[:20].hex(),
