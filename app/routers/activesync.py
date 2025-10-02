@@ -859,7 +859,16 @@ async def eas_dispatch(
                     wbxml = create_minimal_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id, window_size=window_size)
                     _write_json_line(
                         "activesync/activesync.log",
-                        {"event": "sync_emails_sent_wbxml", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
+                        {
+                            "event": "sync_emails_sent_wbxml", 
+                            "sync_key": new_sync_key, 
+                            "client_key": client_sync_key, 
+                            "email_count": len(emails), 
+                            "collection_id": collection_id, 
+                            "wbxml_length": len(wbxml), 
+                            "wbxml_first20": wbxml[:20].hex(),
+                            "wbxml_full_hex": wbxml.hex(),  # ← Full hex dump for expert analysis
+                        },
                     )
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
                 xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
