@@ -613,3 +613,86 @@ def parse_sync_key(synckey: str) -> tuple[str, int]:
 - No Commands for initial sync ✅
 - **Missing**: UUID-based synckey format ❌
 
+
+---
+
+## 📝 SESSION UPDATE - October 2, 2025 (Iteration 2)
+
+### ✅ UUID-Based SyncKey IMPLEMENTED
+
+**Changes Made:**
+1. ✅ Added `synckey_uuid` and `synckey_counter` columns to `ActiveSyncState`
+2. ✅ Created `synckey_utils.py` with UUID parsing/generation
+3. ✅ Updated `activesync.py` to use `{UUID}Counter` format
+4. ✅ Created `migrate_uuid_synckey.py` migration script
+5. ✅ Successfully migrated database
+6. ✅ Rebuilt Docker with UUID support
+
+**Test Results:**
+- Server NOW sends: `{1fddbfd9-f320-4b2f-b68c-bd757523bce5}1`
+- WBXML length: 113 bytes (was 37 bytes)
+- Format verified correct per Grommunio
+
+**Status:** ⚠️ **iPhone STILL rejecting!**
+
+iPhone continues sending `client_sync_key="0"` in loop, never progressing to UUID format.
+
+### 🔍 Additional Analysis Required
+
+Since UUID format is now correct BUT iPhone still rejects, the issue must be:
+
+1. **WBXML Encoding Issue**: UUID string may not be properly encoded in WBXML
+   - Need to verify UTF-8 encoding of `{` and `}` characters
+   - Check if braces need escaping
+
+2. **iPhone Expects Different Format**: 
+   - Maybe iPhone doesn't actually use Grommunio format?
+   - Check MS-ASCMD spec for official synckey format
+
+3. **Other Protocol Issue**:
+   - Something else in the response is wrong
+   - Need packet capture to compare with real Exchange/Grommunio
+
+### Next Steps
+
+1. Decode the 113-byte WBXML to verify UUID is correctly encoded
+2. Check Microsoft MS-ASCMD spec for official synckey format
+3. Consider packet capture from real Grommunio-Sync instance
+4. Test with different ActiveSync clients (not just iPhone)
+
+### Code Artifacts
+
+**database.py** (lines 247-277):
+```python
+# Grommunio-style synckey components
+synckey_uuid = Column(String(36), nullable=True)
+synckey_counter = Column(Integer, default=0)
+
+@property
+def grommunio_synckey(self) -> str:
+    if not self.synckey_uuid or self.synckey_counter == 0:
+        return "0"
+    return f"{{{self.synckey_uuid}}}{self.synckey_counter}"
+```
+
+**activesync.py** (lines 699-717):
+```python
+if client_sync_key == "0":
+    if not state.synckey_uuid:
+        state.synckey_uuid = str(uuid.uuid4())
+    state.synckey_counter = 1
+    response_sync_key = state.grommunio_synckey  # {UUID}1
+    db.commit()
+```
+
+**Log Evidence**:
+```json
+{
+  "event": "sync_initial_grommunio_uuid",
+  "response_sync_key": "{1fddbfd9-f320-4b2f-b68c-bd757523bce5}1",
+  "synckey_uuid": "1fddbfd9-f320-4b2f-b68c-bd757523bce5",
+  "synckey_counter": 1,
+  "wbxml_length": 113
+}
+```
+
