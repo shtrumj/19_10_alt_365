@@ -174,25 +174,28 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 elif hasattr(email, 'sender') and email.sender:
                     sender_email = email.sender.email if hasattr(email.sender, 'email') else str(email.sender)
                 
-                # From (0x04 in Email2 + 0x40 = 0x44)
-                output.write(b'\x44')  # From with content
-                output.write(b'\x03')  # STR_I
-                output.write(sender_email.encode('utf-8'))
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END From
+                # CRITICAL FIX: ALL Email2 tokens were WRONG!
+                # Source: wbxml_encoder.py lines 66-79 (AUTHORITATIVE)
                 
-                # Subject (0x05 in Email2 + 0x40 = 0x45)
+                # Subject (0x0F in Email2 + 0x40 = 0x4F) - FIXED from 0x45!
                 subject = 'No Subject'
                 if hasattr(email, 'subject') and email.subject:
                     subject = email.subject
-                output.write(b'\x45')  # Subject with content
+                output.write(b'\x4F')  # Subject with content
                 output.write(b'\x03')  # STR_I
                 output.write(subject.encode('utf-8'))
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Subject
                 
-                # DateReceived (0x0F in Email2 + 0x40 = 0x4F)
-                output.write(b'\x4F')  # DateReceived with content
+                # From (0x10 in Email2 + 0x40 = 0x50) - FIXED from 0x44!
+                output.write(b'\x50')  # From with content
+                output.write(b'\x03')  # STR_I
+                output.write(sender_email.encode('utf-8'))
+                output.write(b'\x00')  # String terminator
+                output.write(b'\x01')  # END From
+                
+                # DateReceived (0x12 in Email2 + 0x40 = 0x52) - FIXED from 0x4F!
+                output.write(b'\x52')  # DateReceived with content
                 output.write(b'\x03')  # STR_I
                 created_at = email.created_at if hasattr(email, 'created_at') else datetime.utcnow()
                 date_str = created_at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
@@ -200,14 +203,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END DateReceived
                 
-                # To (0x03 in Email2 + 0x40 = 0x43)
+                # To (0x11 in Email2 + 0x40 = 0x51) - FIXED from 0x43!
                 recipient_email = 'Unknown'
                 if hasattr(email, 'external_recipient') and email.external_recipient:
                     recipient_email = email.external_recipient
                 elif hasattr(email, 'recipient') and email.recipient:
                     recipient_email = email.recipient.email if hasattr(email.recipient, 'email') else str(email.recipient)
                 
-                output.write(b'\x43')  # To with content
+                output.write(b'\x51')  # To with content
                 output.write(b'\x03')  # STR_I
                 output.write(recipient_email.encode('utf-8'))
                 output.write(b'\x00')  # String terminator
@@ -222,15 +225,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Read
                 
-                # MessageClass (0x1A in Email2 + 0x40 = 0x5A)
-                output.write(b'\x5A')  # MessageClass with content
+                # MessageClass (0x1C in Email2 + 0x40 = 0x5C) - FIXED from 0x5A!
+                output.write(b'\x5C')  # MessageClass with content
                 output.write(b'\x03')  # STR_I
                 output.write(b'IPM.Note')
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END MessageClass
                 
-                # Importance (0x06 in Email2 + 0x40 = 0x46)
-                output.write(b'\x46')  # Importance with content
+                # Importance (0x15 in Email2 + 0x40 = 0x55) - FIXED from 0x46!
+                output.write(b'\x55')  # Importance with content
                 output.write(b'\x03')  # STR_I
                 output.write(b'1')  # Normal importance
                 output.write(b'\x00')  # String terminator
