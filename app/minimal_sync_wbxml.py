@@ -144,8 +144,10 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
         output.write(b'\x01')  # END WindowSize
         
         if emails and len(emails) > 0:
-            # Commands (0x12 + 0x40 = 0x52)
-            output.write(b'\x52')  # Commands with content
+            # Commands (0x12 + 0x40 = 0x52) - WAIT, 0x52 is CollectionId!
+            # Per wbxml_encoder.py line 62: Commands is 0x0B
+            # Commands (0x0B + 0x40 = 0x4B) - CORRECT token
+            output.write(b'\x4B')  # Commands with content
             
             # Add emails (respect WindowSize)
             for email in emails[:max_emails]:

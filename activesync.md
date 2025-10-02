@@ -770,3 +770,86 @@ The 37-byte Sync response might be **too minimal**. FolderSync is 170 bytes and 
 - FolderSync WBXML (170 bytes, ✅ works)
 - Sync WBXML (37 bytes, ❌ fails)
 
+
+---
+
+## 🔬 VERIFIED FACTS vs ASSUMPTIONS (October 2, 2025)
+
+### ✅ VERIFIED FACTS
+
+**What We KNOW Works:**
+1. ✅ FolderSync command succeeds 100%
+2. ✅ Authentication works (Basic Auth accepted)
+3. ✅ HTTP transport functional
+4. ✅ WBXML tokens verified against Grommunio source
+5. ✅ iPhone sends valid requests
+6. ✅ Server generates valid WBXML (no Python errors)
+7. ✅ SyncKey="1" works for FolderSync
+
+**What We KNOW Fails:**
+1. ❌ Sync command fails 100% (0% success)
+2. ❌ iPhone stuck in SyncKey="0" loop
+3. ❌ Never progresses to SyncKey="1"
+4. ❌ Tested with 37, 113, 864 byte responses - all fail
+
+### ❓ ASSUMPTIONS (Not Verified)
+
+**Assumptions About Structure:**
+- Element ordering matches Grommunio (assumed from code review)
+- All mandatory fields present (based on MS-ASCMD docs)
+- Codepage switching correct (seems right, not confirmed)
+- String encoding UTF-8 (standard but not verified)
+
+**Assumptions About Flow:**
+- Initial sync should be empty (based on Grommunio interpretation)
+- Commands block only for non-initial sync (Grommunio pattern)
+- SyncKey 0→1 transition correct (doc-based, not verified)
+
+**Assumptions About Data:**
+- Email fields complete (Subject, From, To, Body included)
+- ServerId format correct (simple integers)
+- MessageClass "IPM.Note" correct
+- Body Type=1 (plain text) sufficient
+
+### 🎯 Critical Gap: No Real Exchange Comparison
+
+**The fundamental problem**: 
+We're building based on **documentation and Grommunio source code**, but we haven't compared byte-for-byte with **real working Exchange Server WBXML**.
+
+**What we need:**
+1. Packet capture: iPhone ← → Real Exchange Server
+2. Extract exact WBXML bytes that work
+3. Compare with our implementation
+4. Fix differences iteratively
+
+**Until then**: We're making educated guesses, not fixing verified problems.
+
+### 📊 Confidence Matrix
+
+| Component | Verified? | Confidence | Evidence |
+|-----------|-----------|------------|----------|
+| FolderSync WBXML | ✅ Yes | 100% | Works in production |
+| Sync WBXML tokens | ⚠️ Partial | 95% | Verified vs Grommunio |
+| Sync element order | ❌ No | 70% | Matches docs only |
+| Sync mandatory fields | ❌ No | 60% | Based on spec reading |
+| Protocol flow | ❌ No | 50% | Assumed from Grommunio |
+
+### 🚀 Recommended Verification Steps
+
+**Phase 1: Ground Truth**
+1. Capture real Exchange Server WBXML
+2. Decode and document structure
+3. Identify ALL differences from our implementation
+
+**Phase 2: Test with Multiple Clients**
+1. Android phone
+2. Windows Outlook
+3. Isolate iPhone-specific vs general issues
+
+**Phase 3: Incremental Fixes**
+1. Fix one difference at a time
+2. Test after each fix
+3. Document what works
+
+**Current Status**: Operating on assumptions. Need empirical data!
+
