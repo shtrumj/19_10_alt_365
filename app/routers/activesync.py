@@ -695,25 +695,23 @@ async def eas_dispatch(
             },
         )
         
-        # Initial sync (SyncKey=0) - Generate Grommunio-style UUID synckey
+        # Initial sync (SyncKey=0) - Use SIMPLE INTEGER like FolderSync!
         if client_sync_key == "0":
-            # CRITICAL: Use Grommunio-style {UUID}Counter format
-            # Generate new UUID for this sync relationship
-            if not state.synckey_uuid:
-                state.synckey_uuid = str(uuid.uuid4())
+            # CRITICAL DISCOVERY: iPhone accepts simple integers for FolderSync
+            # UUID format was a misinterpretation - Exchange uses simple synckeys!
             state.synckey_counter = 1
-            response_sync_key = state.grommunio_synckey  # {UUID}1
+            response_sync_key = str(state.synckey_counter)  # Simple "1"
+            state.sync_key = response_sync_key  # Update legacy field too
             db.commit()
             
             _write_json_line("activesync/activesync.log", {
-                "event": "sync_initial_grommunio_uuid", 
+                "event": "sync_initial_simple_integer", 
                 "device_id": device_id,
                 "collection_id": collection_id,
                 "client_sync_key": "0",
                 "response_sync_key": response_sync_key,
-                "synckey_uuid": state.synckey_uuid,
                 "synckey_counter": state.synckey_counter,
-                "reason": "Initial sync with Grommunio UUID format {UUID}Counter"
+                "reason": "Initial sync with SIMPLE INTEGER (like FolderSync)"
             })
             # CRITICAL FIX: Per Grommunio-Sync, initial sync must NOT include Commands/GetChanges/WindowSize
             # lib/request/sync.php line 1224: Commands only sent when HasSyncKey() is true
@@ -787,15 +785,16 @@ async def eas_dispatch(
                 wbxml = create_minimal_sync_wbxml(sync_key="0", emails=[], collection_id=collection_id, window_size=window_size, status=3)
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = create_sync_response([], sync_key="0", collection_id=collection_id)
-        # Client confirmed initial sync with UUID synckey
+        # Client confirmed initial sync with simple integer synckey
         elif client_sync_key != "0":
+            # Parse simple integer synckey
             try:
-                client_uuid, client_counter = parse_synckey(client_sync_key)
-            except ValueError as e:
+                client_counter = int(client_sync_key)
+            except ValueError:
                 _write_json_line("activesync/activesync.log", {
                     "event": "sync_invalid_synckey_format",
                     "client_sync_key": client_sync_key,
-                    "error": str(e)
+                    "error": "Not a valid integer"
                 })
                 # Send Status=3 (invalid synckey)
                 is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
@@ -804,30 +803,14 @@ async def eas_dispatch(
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
                 return Response(status_code=400)
             
-            # Verify UUID matches
-            if client_uuid != state.synckey_uuid:
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_uuid_mismatch",
-                    "client_uuid": client_uuid,
-                    "server_uuid": state.synckey_uuid,
-                    "action": "Resetting sync"
-                })
-                # UUID mismatch - reset
-                state.synckey_uuid = None
-                state.synckey_counter = 0
-                db.commit()
-                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
-                if is_wbxml_request:
-                    wbxml = create_minimal_sync_wbxml(sync_key="0", emails=[], collection_id=collection_id, window_size=window_size, status=3)
-                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
-            
             # Client confirmed! Bump counter and send data
             state.synckey_counter = client_counter + 1
-            response_sync_key = state.grommunio_synckey
+            response_sync_key = str(state.synckey_counter)
+            state.sync_key = response_sync_key  # Update legacy field
             db.commit()
             
             _write_json_line("activesync/activesync.log", {
-                "event": "sync_client_confirmed_uuid",
+                "event": "sync_client_confirmed_simple",
                 "client_sync_key": client_sync_key,
                 "response_sync_key": response_sync_key,
                 "client_counter": client_counter,
@@ -840,7 +823,7 @@ async def eas_dispatch(
                 wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails, collection_id=collection_id, window_size=window_size)
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "sync_emails_sent_wbxml_uuid", "sync_key": response_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
+                    {"event": "sync_emails_sent_wbxml_simple", "sync_key": response_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
         # Client sync key matches server - check if we need to send emails
