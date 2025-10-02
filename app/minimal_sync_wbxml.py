@@ -71,50 +71,46 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x00')  # SWITCH_PAGE
     output.write(b'\x00')  # Codepage 0 (AirSync)
     
-    # Sync (0x05 + 0x40 = 0x45) - CORRECT per Z-Push wbxmldefs.php
+    # === CORRECTED TOKENS per wbxml_encoder.py ===
+    # Sync (0x05 + 0x40 = 0x45)
     output.write(b'\x45')  # Sync with content
     
-    # Status (0x0E + 0x40 = 0x4E) - Top level status (SYNC_STATUS per Grommunio line 828)
-    output.write(b'\x4E')  # Status with content
+    # Status (0x09 + 0x40 = 0x49) - CORRECTED!
+    output.write(b'\x49')  # Status with content
     output.write(b'\x03')  # STR_I
     output.write(str(status).encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END Status
     
-    # SyncKey (0x0B + 0x40 = 0x4B) - CORRECT per Z-Push
-    output.write(b'\x4B')  # SyncKey with content
+    # SyncKey (0x0A + 0x40 = 0x4A) - CORRECTED!
+    output.write(b'\x4A')  # SyncKey with content
     output.write(b'\x03')  # STR_I
     output.write(sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
     
-    # Collections/Folders (0x1C + 0x40 = 0x5C) - Per Grommunio wbxmldefs.php line 78
-    output.write(b'\x5C')  # Collections with content
+    # Collections (0x06 + 0x40 = 0x46) - CORRECTED!
+    output.write(b'\x46')  # Collections with content
     
-    # Collection/Folder (0x0F + 0x40 = 0x4F) - Per Grommunio wbxmldefs.php line 65
-    output.write(b'\x4F')  # Collection with content
+    # Collection (0x07 + 0x40 = 0x47) - CORRECTED!
+    output.write(b'\x47')  # Collection with content
     
-    # Per Grommunio-Sync lib/request/sync.php lines 1079-1086:
-    # FolderType (Class) is ONLY sent for AS < 12.1, NOT for AS 14.1+
-    # For AS 14.1+, order is: SyncKey → CollectionId → Status (NO Class!)
-    # Correct order per Grommunio: SyncKey FIRST, then CollectionId, then Status
-    
-    # SyncKey (0x0B + 0x40 = 0x4B) - FIRST per Grommunio line 1089
-    output.write(b'\x4B')  # SyncKey with content
+    # SyncKey (0x0A + 0x40 = 0x4A) - CORRECTED!
+    output.write(b'\x4A')  # SyncKey with content
     output.write(b'\x03')  # STR_I
     output.write(sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
     
-    # CollectionId/FolderId (0x12 + 0x40 = 0x52) - CORRECT per Grommunio line 1098 (SYNC_FOLDERID)
-    output.write(b'\x52')  # CollectionId with content
+    # CollectionId (0x08 + 0x40 = 0x48) - CORRECTED!
+    output.write(b'\x48')  # CollectionId with content
     output.write(b'\x03')  # STR_I
     output.write(collection_id.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END CollectionId
     
-    # Status (0x0E + 0x40 = 0x4E) - Per Grommunio wbxmldefs.php line 64
-    output.write(b'\x4E')  # Status with content
+    # Status (0x09 + 0x40 = 0x49) - CORRECTED!
+    output.write(b'\x49')  # Status with content
     output.write(b'\x03')  # STR_I
     output.write(str(status).encode())
     output.write(b'\x00')  # String terminator
@@ -144,26 +140,24 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
         output.write(b'\x01')  # END WindowSize
         
         if emails and len(emails) > 0:
-            # Commands (0x12 + 0x40 = 0x52) - WAIT, 0x52 is CollectionId!
-            # Per wbxml_encoder.py line 62: Commands is 0x0B
-            # Commands (0x0B + 0x40 = 0x4B) - CORRECT token
+            # Commands (0x0B + 0x40 = 0x4B) - CORRECTED!
             output.write(b'\x4B')  # Commands with content
             
             # Add emails (respect WindowSize)
             for email in emails[:max_emails]:
-                # Add (0x07 + 0x40 = 0x47) - CORRECT per Z-Push
-                output.write(b'\x47')  # Add with content
+                # Add (0x0C + 0x40 = 0x4C) - CORRECTED!
+                output.write(b'\x4C')  # Add with content
                 
-                # ServerId (0x08 + 0x40 = 0x48) - CORRECT per Z-Push
-                output.write(b'\x48')  # ServerId with content
+                # ServerId (0x0D + 0x40 = 0x4D) - CORRECTED!
+                output.write(b'\x4D')  # ServerId with content
                 output.write(b'\x03')  # STR_I
                 server_id = f"{collection_id}:{email.id}"
                 output.write(server_id.encode())
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END ServerId
                 
-                # ApplicationData (0x09 + 0x40 = 0x49) - CORRECT per Z-Push
-                output.write(b'\x49')  # ApplicationData with content
+                # ApplicationData (0x0E + 0x40 = 0x4E) - CORRECTED!
+                output.write(b'\x4E')  # ApplicationData with content
                 
                 # Switch to Email2 namespace (codepage 2)
                 output.write(b'\x00')  # SWITCH_PAGE
