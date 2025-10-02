@@ -255,62 +255,80 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 # Source: wbxml_encoder.py lines 441-444 shows it's PRESENT
                 # Source: activesync.py lines 157-159 shows it's PRESENT
                 # MS-ASCMD: Listed as optional but may be REQUIRED by iPhone!
-                # Value: 2 = HTML (matches Body Type=2)
+                # Value: 1 = Plain text (for MIME)
                 output.write(b'\x5F')  # NativeBodyType with content
                 output.write(b'\x03')  # STR_I
-                output.write(b'2')  # 2=HTML (original format)
+                output.write(b'1')  # 1=Plain text (MIME format)
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END NativeBodyType
                 
-                # CRITICAL FIX #12: Body MUST use AirSyncBase codepage 17!
-                # Expert diagnosis: "iOS is happiest with AirSyncBase:Body (codepage 17)"
-                # FIX #5 was WRONG - we changed from AirSyncBase to Email2, but iOS rejects it!
-                # REVERTING to AirSyncBase (codepage 17) as originally intended by MS-ASCMD spec
-                
-                # Switch to AirSyncBase codepage (17 = 0x11)
+                # CRITICAL FIX #18-1: SWITCH BACK TO AIRSYNC BEFORE MIME!
+                # Expert: "Around ApplicationData: after the last email property (before you write any ENDs for non-Email tags): SWITCH_PAGE AirSync"
+                # "If you close tags while still on the Email page, iOS' WBXML parser errors out and the client resets"
+                # We're done with Email codepage properties, must switch back NOW!
                 output.write(b'\x00')  # SWITCH_PAGE
-                output.write(b'\x11')  # Codepage 17 (AirSyncBase)
+                output.write(b'\x00')  # Codepage 0 (AirSync)
                 
-                # Body (0x08 in AirSyncBase + 0x40 = 0x48) - REVERTED from 0x57!
-                output.write(b'\x48')  # Body with content (AirSyncBase)
+                # CRITICAL FIX #18-2: Replace Body with Email:MIME + OPAQUE
+                # Expert: "Use OPAQUE for MIME; don't dump HTML with STR_I"
+                # "Easiest, most compatible approach: return <Email:MIME> with OPAQUE data (full RFC-822 message)"
+                # "This sidesteps the entire Body/BodyPreferences matrix and is accepted by iOS"
                 
-                # Type (0x0A in AirSyncBase + 0x40 = 0x4A) - REVERTED from 0x58!
-                # Value: 2 = HTML
-                output.write(b'\x4A')  # Type with content (AirSyncBase)
-                output.write(b'\x03')  # STR_I
-                output.write(b'2')  # 2=HTML
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END Type
+                # Switch to Email namespace for MIME tag (codepage 2)
+                output.write(b'\x00')  # SWITCH_PAGE
+                output.write(b'\x02')  # Codepage 2 (Email)
                 
+                # MIME (0x17 in Email + 0x40 = 0x57) - Email codepage!
+                # Expert: "Tag: Email:MIME (Email cp) with content"
+                # "Content: OPAQUE (0xC3) length + raw MIME bytes"
+                output.write(b'\x57')  # MIME with content (Email codepage)
+                
+                # Build RFC-822 MIME message
                 # Get body content
                 body_text = getattr(email, 'body', '') or ''
                 if not body_text or not body_text.strip():
-                    body_text = ' '  # Minimum body content
+                    body_text = 'No content'
                 
-                # Limit body to 512 bytes for iPhone
-                if len(body_text) > 512:
-                    body_text = body_text[:512]
+                # Build simple RFC-822 message
+                mime_message = f"""From: {sender_email}
+To: {recipient_email}
+Subject: {subject}
+Date: {created_at.strftime('%a, %d %b %Y %H:%M:%S +0000') if hasattr(email, 'created_at') else 'Mon, 01 Jan 2024 00:00:00 +0000'}
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+{body_text}
+""".encode('utf-8')
                 
-                body_size = str(len(body_text.encode('utf-8')))
+                # OPAQUE (0xC3) - length as mb_u_int32 + raw bytes
+                # Expert: "Emit OPAQUE (0xC3) with the length (mb_u_int32) and the raw MIME message bytes"
+                output.write(b'\xC3')  # OPAQUE token
                 
-                # EstimatedDataSize (0x0B in AirSyncBase + 0x40 = 0x4B) - REVERTED from 0x59!
-                output.write(b'\x4B')  # EstimatedDataSize with content (AirSyncBase)
-                output.write(b'\x03')  # STR_I
-                output.write(body_size.encode())
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END EstimatedDataSize
+                # Write length as mb_u_int32 (multi-byte unsigned int32)
+                # For simplicity, if length < 128, just write it as single byte
+                mime_len = len(mime_message)
+                if mime_len < 128:
+                    output.write(bytes([mime_len]))
+                else:
+                    # Multi-byte encoding (continuation bit in high bit)
+                    length_bytes = []
+                    remaining = mime_len
+                    while remaining > 0:
+                        byte = remaining & 0x7F
+                        remaining >>= 7
+                        if length_bytes:  # Not the last byte
+                            byte |= 0x80  # Set continuation bit
+                        length_bytes.insert(0, byte)
+                    output.write(bytes(length_bytes))
                 
-                # Data (0x09 in AirSyncBase + 0x40 = 0x49) - REVERTED from 0x5A!
-                output.write(b'\x49')  # Data with content (AirSyncBase)
-                output.write(b'\x03')  # STR_I
-                output.write(body_text.encode('utf-8'))
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END Data
+                # Write raw MIME bytes
+                output.write(mime_message)
                 
-                output.write(b'\x01')  # END Body
+                output.write(b'\x01')  # END MIME
                 
-                # CRITICAL FIX #12: Switch back to AirSync codepage after Body block
-                # Body container used AirSyncBase (cp 17), now return to AirSync (cp 0)
+                # CRITICAL FIX #18-1: Switch back to AirSync BEFORE closing ApplicationData!
+                # Expert: "Immediately after the last email property: SWITCH_PAGE AirSync"
                 output.write(b'\x00')  # SWITCH_PAGE
                 output.write(b'\x00')  # Codepage 0 (AirSync)
                 
