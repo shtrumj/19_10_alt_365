@@ -2502,3 +2502,141 @@ headers = _eas_headers(policy_key=policy_key)
 
 **Next**: Implement fix #11 (add policy key header) and test.
 
+
+---
+
+## 🎯 BREAKTHROUGH #2: Body Codepage Issue Identified! (October 2, 2025)
+
+### Progress Confirmed by Expert
+
+**✅ SUCCESS**: Initial sync 0→N is NOW WORKING!
+- Policy key header fixed the initial handshake
+- iPhone progressing through sync keys (62→63→64→65...)
+- Empty initial response accepted
+
+**❌ REMAINING ISSUE**: Email payload rejected
+- iPhone confirms sync key (e.g., 65→66)
+- We send 970 bytes with emails
+- iPhone IMMEDIATELY reverts to SyncKey=0
+- Pattern repeats indefinitely
+
+### Expert Diagnosis #2
+
+**Direct Quote**:
+> "iOS is happiest with AirSyncBase:Body (codepage 17) → Type / EstimatedDataSize / Data.
+> If you used Email2's Body tokens, switch to AirSyncBase for the body container."
+
+### Our Critical Error - FIX #5 Was WRONG!
+
+**What We Did (FIX #5)**:
+- Changed Body from AirSyncBase (cp 17) → Email2 (cp 2)
+- Reasoning: wbxml_encoder.py showed Body in Email2 map
+- Line 271-273: "NO codepage switch needed - stay in Email2"
+
+**Expert Says**:
+- Body MUST use AirSyncBase codepage 17!
+- Email2 tokens for Body are WRONG for iOS!
+
+### Verification
+
+**Our wbxml_encoder.py** (lines 74-77):
+```python
+"Body": 0x17,  # ← In Email2 map
+"Type": 0x18,
+"EstimatedDataSize": 0x19,
+"Data": 0x1A,
+```
+
+**But our wbxml_encoder.py** (lines 406-422):
+```python
+# Body wrapper
+encoder.start_tag("AirSync:Body")  # ← Uses AirSync namespace!
+# Type (2 = HTML)
+encoder.start_tag("AirSync:Type")  # ← AirSync, not Email2!
+```
+
+**CONFUSION**: Token map shows Email2, but actual usage shows AirSync!
+
+**Expert Clarification**: 
+- Body container should use **AirSyncBase (codepage 17)**
+- NOT Email2 (codepage 2)
+- NOT AirSync (codepage 0)
+
+### AirSyncBase Tokens
+
+**Codepage 17 (AirSyncBase)**:
+- Body: 0x08 + 0x40 = 0x48
+- Type: 0x0A + 0x40 = 0x4A
+- EstimatedDataSize: 0x0B + 0x40 = 0x4B
+- Data: 0x09 + 0x40 = 0x49
+
+**These were our ORIGINAL values before FIX #5!**
+
+### The Mistake
+
+**FIX #5 "corrected"**:
+- Body: 0x48 → 0x57 (AirSyncBase → Email2)
+- Type: 0x4A → 0x58 (AirSyncBase → Email2)
+- EstimatedDataSize: 0x4B → 0x59 (AirSyncBase → Email2)
+- Data: 0x49 → 0x5A (AirSyncBase → Email2)
+
+**But Expert Says**: This was WRONG! Should stay AirSyncBase!
+
+### CRITICAL FIX #12: Revert Body to AirSyncBase (cp 17)
+
+**Required Changes**:
+1. Switch to AirSyncBase codepage 17 BEFORE Body
+2. Use AirSyncBase tokens:
+   - Body: 0x48 (not 0x57)
+   - Type: 0x4A (not 0x58)
+   - EstimatedDataSize: 0x4B (not 0x59)
+   - Data: 0x49 (not 0x5A)
+3. Switch back to AirSync codepage 0 AFTER Body
+
+**Structure**:
+```
+Email2 (cp 2): Subject, From, To, DateReceived, DisplayTo, ThreadTopic,
+               Importance, Read, MessageClass, NativeBodyType
+↓ SWITCH to AirSyncBase (cp 17)
+AirSyncBase (cp 17): Body { Type, EstimatedDataSize, Data }
+↓ SWITCH back to AirSync (cp 0)
+AirSync (cp 0): END ApplicationData, END Add
+```
+
+### Why We Made This Mistake
+
+**Confusion Source**: wbxml_encoder.py has Body in Email2 token map (lines 74-77)
+**Reality**: Body should use AirSyncBase namespace per MS-ASCMD spec
+
+**Lesson**: Token maps can be misleading. Namespace usage is what matters!
+
+### Expert's Other Checklist Items
+
+**✅ Already Correct**:
+1. Commands container present
+2. Each Add has ServerId + ApplicationData
+3. Field ordering: Subject → From → To → DateReceived → DisplayTo → ThreadTopic → Importance → Read → MessageClass → Body
+4. DateReceived format: We use `.000` (should use actual milliseconds but minor)
+5. MessageClass: "IPM.Note" ✅
+6. Read: "0"/"1" ✅
+7. Importance: "1" ✅
+8. ServerId format: "1:35" ✅
+
+**❌ WRONG (To Fix)**:
+1. Body codepage: Using Email2, should use AirSyncBase!
+
+### Confidence
+
+**Fix #12 Success Probability**: 85%
+
+**Evidence**:
+- Expert specifically identified this issue
+- Matches iOS behavior (rejecting email payload)
+- We changed this in FIX #5 and it was wrong
+- Original AirSyncBase values were correct
+
+**Expected Result**:
+- iPhone will accept email payload
+- No more SyncKey=0 reversion after emails
+- Messages will download!
+

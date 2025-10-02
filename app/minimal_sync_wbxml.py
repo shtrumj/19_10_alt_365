@@ -268,20 +268,23 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END NativeBodyType
                 
-                # CRITICAL FIX: Body/Type/Data are in EMAIL2, NOT AirSyncBase!
-                # Source: wbxml_encoder.py lines 74-77 show Body in Email2 codepage
-                # NO codepage switch needed - stay in Email2 (codepage 2)!
+                # CRITICAL FIX #12: Body MUST use AirSyncBase codepage 17!
+                # Expert diagnosis: "iOS is happiest with AirSyncBase:Body (codepage 17)"
+                # FIX #5 was WRONG - we changed from AirSyncBase to Email2, but iOS rejects it!
+                # REVERTING to AirSyncBase (codepage 17) as originally intended by MS-ASCMD spec
                 
-                # Body (0x17 in Email2 + 0x40 = 0x57) - FIXED from AirSyncBase 0x48!
-                output.write(b'\x57')  # Body with content
+                # Switch to AirSyncBase codepage (17 = 0x11)
+                output.write(b'\x00')  # SWITCH_PAGE
+                output.write(b'\x11')  # Codepage 17 (AirSyncBase)
                 
-                # Type (0x18 in Email2 + 0x40 = 0x58) - FIXED from AirSyncBase 0x4A!
-                # CRITICAL FIX #8: Change from Type=1 (Plain) to Type=2 (HTML)
-                # Source: wbxml_encoder.py line 409 uses Type=2
-                # Source: activesync.py line 134 uses Type=2
-                output.write(b'\x58')  # Type with content
+                # Body (0x08 in AirSyncBase + 0x40 = 0x48) - REVERTED from 0x57!
+                output.write(b'\x48')  # Body with content (AirSyncBase)
+                
+                # Type (0x0A in AirSyncBase + 0x40 = 0x4A) - REVERTED from 0x58!
+                # Value: 2 = HTML
+                output.write(b'\x4A')  # Type with content (AirSyncBase)
                 output.write(b'\x03')  # STR_I
-                output.write(b'2')  # 2=HTML (was 1=Plain text)
+                output.write(b'2')  # 2=HTML
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Type
                 
@@ -296,15 +299,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 
                 body_size = str(len(body_text.encode('utf-8')))
                 
-                # EstimatedDataSize (0x19 in Email2 + 0x40 = 0x59) - FIXED from AirSyncBase 0x4B!
-                output.write(b'\x59')  # EstimatedDataSize with content
+                # EstimatedDataSize (0x0B in AirSyncBase + 0x40 = 0x4B) - REVERTED from 0x59!
+                output.write(b'\x4B')  # EstimatedDataSize with content (AirSyncBase)
                 output.write(b'\x03')  # STR_I
                 output.write(body_size.encode())
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END EstimatedDataSize
                 
-                # Data (0x1A in Email2 + 0x40 = 0x5A) - FIXED from AirSyncBase 0x49!
-                output.write(b'\x5A')  # Data with content
+                # Data (0x09 in AirSyncBase + 0x40 = 0x49) - REVERTED from 0x5A!
+                output.write(b'\x49')  # Data with content (AirSyncBase)
                 output.write(b'\x03')  # STR_I
                 output.write(body_text.encode('utf-8'))
                 output.write(b'\x00')  # String terminator
@@ -312,7 +315,8 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 
                 output.write(b'\x01')  # END Body
                 
-                # Switch back to AirSync namespace
+                # CRITICAL FIX #12: Switch back to AirSync codepage after Body block
+                # Body container used AirSyncBase (cp 17), now return to AirSync (cp 0)
                 output.write(b'\x00')  # SWITCH_PAGE
                 output.write(b'\x00')  # Codepage 0 (AirSync)
                 
