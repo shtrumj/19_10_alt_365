@@ -811,25 +811,25 @@ async def eas_dispatch(
         
         # Initial sync (SyncKey=0) - Use SIMPLE INTEGER like FolderSync!
         if client_sync_key == "0":
-            # CRITICAL FIX: Only initialize state if it's truly initial (server state is also "0")
-            # If server state is already "1", iPhone is stuck in retry loop - don't reset!
-            if state.sync_key == "0" or state.synckey_counter == 0:
-                # True initial sync - set state to "1"
-                state.synckey_counter = 1
-                response_sync_key = str(state.synckey_counter)  # Simple "1"
-                state.sync_key = response_sync_key  # Update legacy field too
-                db.commit()
-            else:
-                # Server already has state "1" but client still sending "0"
-                # This means client rejected our previous response
-                # DON'T reset - keep the "1" state and respond with it again
-                response_sync_key = state.sync_key
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_client_retry_loop_detected",
-                    "client_sync_key": "0",
-                    "server_sync_key": state.sync_key,
-                    "message": "Client still sending 0, server already has 1 - retry loop detected, NOT resetting state"
-                })
+            # CRITICAL FIX #25: ALWAYS reset to "1" when client sends "0"!
+            # Expert: "On SyncKey=0, the server must return SyncKey=1"
+            # Previous logic tried to avoid reset, but that causes iOS to see "2" and reject!
+            
+            # ALWAYS reset pagination state on initial sync
+            state.synckey_counter = 1
+            response_sync_key = "1"  # MUST be "1", not "2"!
+            state.sync_key = response_sync_key
+            state.last_synced_email_id = 0  # Reset pagination too!
+            db.commit()
+            
+            _write_json_line("activesync/activesync.log", {
+                "event": "sync_initial_reset",
+                "device_id": device_id,
+                "collection_id": collection_id,
+                "client_sync_key": "0",
+                "response_sync_key": response_sync_key,
+                "message": "Client requested initial sync - RESET to SyncKey=1"
+            })
             
             _write_json_line("activesync/activesync.log", {
                 "event": "sync_initial_simple_integer", 
