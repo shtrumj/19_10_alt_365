@@ -738,33 +738,49 @@ async def eas_dispatch(
             # Fall through to compute next batch
         
         # 2) Client didn't get last response? (retries with old key OR sends 0 when pending exists)
-        # CRITICAL: If client sends "0" but we have pending="1", they didn't get our first response!
-        elif state.pending_sync_key and (client_sync_key == state.sync_key or client_sync_key == "0"):
-            # Re-send the exact same pending batch!
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_resend_pending",
-                "client_sync_key": client_sync_key,
-                "server_sync_key": state.sync_key,
-                "pending_sync_key": state.pending_sync_key,
-                "message": "Client retry - resending pending batch idempotently (client never got it!)"
-            })
-            
-            # Fetch the specific emails from pending
-            if state.pending_item_ids:
-                pending_ids = json.loads(state.pending_item_ids)
-                email_service = EmailService(db)
-                all_emails_temp = email_service.get_user_emails(current_user.id, folder_map.get(collection_id, "inbox"), limit=200)
-                emails_to_resend = [e for e in all_emails_temp if e.id in pending_ids]
-                
-                # Re-send with same SyncKey!
-                wbxml = create_minimal_sync_wbxml(
-                    sync_key=state.pending_sync_key,
-                    emails=emails_to_resend,
-                    collection_id=collection_id,
-                    window_size=window_size,
-                    has_more=False  # Don't advance yet
+        # CRITICAL FIX #26C: Check if client is one behind pending!
+        # Example: client="6", server="7", pending="7" → client wants the pending batch!
+        elif state.pending_sync_key:
+            # Calculate if client is asking for the pending batch
+            try:
+                client_int = int(client_sync_key) if client_sync_key.isdigit() else 0
+                pending_int = int(state.pending_sync_key) if state.pending_sync_key.isdigit() else 0
+                # Client is asking for pending if: client==pending OR client==pending-1 OR client==0
+                is_asking_for_pending = (
+                    client_sync_key == state.pending_sync_key or  # Exact match
+                    client_sync_key == state.sync_key or  # Old server key
+                    client_sync_key == "0" or  # Initial sync retry
+                    (client_int > 0 and pending_int > 0 and client_int == pending_int - 1)  # One behind
                 )
-                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+            except:
+                is_asking_for_pending = True  # If in doubt, resend
+            
+            if is_asking_for_pending:
+                # Re-send the exact same pending batch!
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_resend_pending",
+                    "client_sync_key": client_sync_key,
+                    "server_sync_key": state.sync_key,
+                    "pending_sync_key": state.pending_sync_key,
+                    "message": "Client retry - resending pending batch idempotently (client never got it!)"
+                })
+                
+                # Fetch the specific emails from pending
+                if state.pending_item_ids:
+                    pending_ids = json.loads(state.pending_item_ids)
+                    email_service = EmailService(db)
+                    all_emails_temp = email_service.get_user_emails(current_user.id, folder_map.get(collection_id, "inbox"), limit=200)
+                    emails_to_resend = [e for e in all_emails_temp if e.id in pending_ids]
+                    
+                    # Re-send with same SyncKey!
+                    wbxml = create_minimal_sync_wbxml(
+                        sync_key=state.pending_sync_key,
+                        emails=emails_to_resend,
+                        collection_id=collection_id,
+                        window_size=window_size,
+                        has_more=False  # Don't advance yet
+                    )
+                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
         
         # Debug logging for sync key comparison
         _write_json_line(
