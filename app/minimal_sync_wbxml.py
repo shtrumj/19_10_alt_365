@@ -256,12 +256,21 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 if not body_text or not body_text.strip():
                     body_text = ' '  # Minimum body content
                 
-                # CRITICAL FIX #19: Detect HTML vs Plain Text
-                # Expert: "You're sending <AirSyncBase:Type>1</Type> (plain text) but the <Data> clearly contains HTML"
-                # "iOS is strict here; a Type/Data mismatch makes it reject the item and restart the sync"
-                has_html = '<' in body_text and '>' in body_text  # Simple HTML detection
-                body_type = '2' if has_html else '1'  # 2=HTML, 1=Plain text
-                native_body_type = '2' if has_html else '1'  # Match body type
+                # CRITICAL FIX #20: Simplify body - strip HTML or use simple text
+                # Expert: "Send one message like this... Body → Type=2, Data='<p>hello</p>'"
+                # Maybe iOS rejects complex HTML? Try simple text first!
+                # For now, use PLAIN TEXT only to test
+                import re
+                body_text_plain = re.sub(r'<[^>]+>', '', body_text)  # Strip HTML tags
+                if not body_text_plain.strip():
+                    body_text_plain = 'Email content'
+                body_text = body_text_plain[:512]  # STRICT limit for testing
+                
+                # CRITICAL FIX #19: Detect HTML vs Plain Text  
+                # For now, force PLAIN TEXT (Type=1) for testing
+                has_html = False  # Force plain text
+                body_type = '1'  # 1=Plain text (testing!)
+                native_body_type = '1'  # Match body type
                 
                 # CRITICAL FIX #10: Add MISSING NativeBodyType (0x1F in Email2 + 0x40 = 0x5F)
                 # Expert FIX #19: "Set Body Type correctly - if you put HTML into Data: Type=2 (HTML)"
@@ -290,9 +299,7 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Type
                 
-                # Limit body to 5120 bytes for iPhone (was 512)
-                if len(body_text) > 5120:
-                    body_text = body_text[:5120]
+                # Body is already limited to 512 bytes above
                 
                 body_size = str(len(body_text.encode('utf-8')))
                 
