@@ -249,6 +249,8 @@ class ActiveSyncState(Base):
     synckey_counter = Column(Integer, default=0)  # Counter for sync progression
     # Legacy sync_key kept for backward compatibility
     sync_key = Column(String, nullable=False, default="0")
+    # CRITICAL FIX #24: Track pagination for proper email sync
+    last_synced_email_id = Column(Integer, default=0)  # Last email ID sent to client
     foldersync_attempts = Column(Integer, default=0)
     last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)

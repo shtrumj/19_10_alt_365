@@ -732,8 +732,27 @@ async def eas_dispatch(
         }
         folder_type = folder_map.get(collection_id, "inbox")
         
+        # CRITICAL FIX #24: Query only NEW emails (proper pagination!)
+        # Expert: "iOS expects every successful Sync response to return a new SyncKey"
+        # We must track which emails have been sent and only send NEW ones!
         email_service = EmailService(db)
-        emails = email_service.get_user_emails(current_user.id, folder_type, limit=50)
+        
+        # Get last synced email ID for this device+collection
+        last_id = state.last_synced_email_id or 0
+        
+        # Query emails AFTER the last synced ID (proper pagination!)
+        all_emails = email_service.get_user_emails(current_user.id, folder_type, limit=100)
+        
+        # Filter to only unsent emails
+        emails = [e for e in all_emails if e.id > last_id]
+        
+        _write_json_line("activesync/activesync.log", {
+            "event": "sync_pagination_filter",
+            "last_synced_email_id": last_id,
+            "total_emails_in_folder": len(all_emails),
+            "new_emails_to_sync": len(emails),
+            "message": "Filtered to only NEW emails not yet synced"
+        })
         
         # Enhanced logging with detailed email information
         email_details = []
@@ -841,6 +860,15 @@ async def eas_dispatch(
                 })
                 # Send actual items on initial sync!
                 wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails_to_send, collection_id=collection_id, window_size=window_size, is_initial_sync=True, has_more=has_more)
+                
+                # CRITICAL FIX #24: Update pagination for initial sync too!
+                if emails_to_send:
+                    max_sent_id = max(e.id for e in emails_to_send)
+                    state.last_synced_email_id = max_sent_id
+                
+                # Commit state BEFORE responding
+                db.commit()
+                
                 _write_json_line(
                     "activesync/activesync.log",
                     {
@@ -924,7 +952,7 @@ async def eas_dispatch(
             state.synckey_counter = client_counter + 1
             response_sync_key = str(state.synckey_counter)
             state.sync_key = response_sync_key  # Update legacy field
-            db.commit()
+            # DON'T commit yet - wait until AFTER successful send!
             
             _write_json_line("activesync/activesync.log", {
                 "event": "sync_client_confirmed_simple",
@@ -950,6 +978,17 @@ async def eas_dispatch(
                     window_size=window_size,
                     has_more=has_more  # ← MoreAvailable flag
                 )
+                
+                # CRITICAL FIX #24: Update pagination state BEFORE responding!
+                # Expert: "Persist BEFORE responding so a retry doesn't re-issue the same key"
+                if emails_to_send:
+                    # Update last_synced_email_id to the highest ID we just sent
+                    max_sent_id = max(e.id for e in emails_to_send)
+                    state.last_synced_email_id = max_sent_id
+                
+                # NOW commit the state (SyncKey + last_synced_email_id)
+                db.commit()
+                
                 _write_json_line(
                     "activesync/activesync.log",
                     {
@@ -963,7 +1002,8 @@ async def eas_dispatch(
                         "collection_id": collection_id, 
                         "wbxml_length": len(wbxml), 
                         "wbxml_first20": wbxml[:20].hex(),
-                        "wbxml_full_hex": wbxml.hex()  # ← FULL DUMP for expert analysis
+                        "wbxml_full_hex": wbxml.hex(),  # ← FULL DUMP for expert analysis
+                        "last_synced_email_id": state.last_synced_email_id  # ← Track pagination!
                     },
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
