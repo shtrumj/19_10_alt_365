@@ -718,7 +718,12 @@ async def eas_dispatch(
         # Expert: "Only commit when the client echoes back the SyncKey you issued"
         import json
         
-        # 1) Client confirms last batch? (echoes our pending SyncKey)
+        # CRITICAL FIX #27: Expert's correction - SyncKey must ALWAYS advance!
+        # "Every Sync response must issue a new SyncKey. If you keep returning
+        #  the same SyncKey, iOS treats the state as inconsistent and restarts."
+        #
+        # NEW LOGIC:
+        # 1) Client confirms last batch? → Clear pending, advance to next batch
         if state.pending_sync_key and client_sync_key == state.pending_sync_key:
             # Client got the batch! Commit it now
             state.last_synced_email_id = state.pending_max_email_id or state.last_synced_email_id
@@ -733,9 +738,9 @@ async def eas_dispatch(
                 "event": "sync_pending_confirmed",
                 "client_sync_key": client_sync_key,
                 "committed_max_id": state.last_synced_email_id,
-                "message": "Client confirmed - committed pending batch"
+                "message": "Client confirmed - committed pending batch, will send next with NEW key"
             })
-            # Fall through to compute next batch
+            # Fall through to compute next batch WITH A FRESH KEY
         
         # 2) Client didn't get last response? (retries with old key OR sends 0 when pending exists)
         # CRITICAL FIX #26C: Check if client is one behind pending!
@@ -762,7 +767,7 @@ async def eas_dispatch(
                     "client_sync_key": client_sync_key,
                     "server_sync_key": state.sync_key,
                     "pending_sync_key": state.pending_sync_key,
-                    "message": "Client retry - resending pending batch idempotently (client never got it!)"
+                    "message": "Client retry - resending pending batch IDEMPOTENTLY with SAME key"
                 })
                 
                 # Fetch the specific emails from pending
@@ -772,13 +777,18 @@ async def eas_dispatch(
                     all_emails_temp = email_service.get_user_emails(current_user.id, folder_map.get(collection_id, "inbox"), limit=200)
                     emails_to_resend = [e for e in all_emails_temp if e.id in pending_ids]
                     
-                    # Re-send with same SyncKey!
+                    # Calculate has_more: are there items after the pending batch?
+                    max_pending_id = max(pending_ids) if pending_ids else 0
+                    remaining_emails = [e for e in all_emails_temp if e.id > max_pending_id]
+                    has_more_pending = len(remaining_emails) > 0
+                    
+                    # Re-send with SAME SyncKey (idempotent resend!)
                     wbxml = create_minimal_sync_wbxml(
-                        sync_key=state.pending_sync_key,
+                        sync_key=state.pending_sync_key,  # SAME key!
                         emails=emails_to_resend,
                         collection_id=collection_id,
                         window_size=window_size,
-                        has_more=False  # Don't advance yet
+                        has_more=has_more_pending  # Correct MoreAvailable flag
                     )
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
         
@@ -1019,11 +1029,12 @@ async def eas_dispatch(
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
                 return Response(status_code=400)
             
-            # Client confirmed! Bump counter and send data
+            # CRITICAL FIX #27: Always bump SyncKey for EVERY response!
+            # Expert: "Every Sync response must issue a new SyncKey"
             state.synckey_counter = client_counter + 1
             response_sync_key = str(state.synckey_counter)
-            state.sync_key = response_sync_key  # Update legacy field
-            # DON'T commit yet - wait until AFTER successful send!
+            state.sync_key = response_sync_key  # Update for next request
+            # NOTE: We commit this BEFORE sending, so the key is persisted!
             
             _write_json_line("activesync/activesync.log", {
                 "event": "sync_client_confirmed_simple",
@@ -1050,24 +1061,26 @@ async def eas_dispatch(
                     has_more=has_more  # ← MoreAvailable flag
                 )
                 
-                # CRITICAL FIX #26: Stage as PENDING instead of committing!
-                # Expert: "Only commit when client echoes back the SyncKey"
-                # "If iPhone never receives this response, we can re-send it idempotently"
+                # CRITICAL FIX #26 + #27: Stage as PENDING and advance SyncKey!
+                # Expert FIX #27: "SyncKey must ALWAYS advance on every response"
+                # Expert FIX #26: "Only commit last_synced_email_id when client confirms"
                 if emails_to_send:
                     max_sent_id = max(e.id for e in emails_to_send)
                     state.pending_sync_key = response_sync_key
                     state.pending_max_email_id = max_sent_id
                     state.pending_item_ids = json.dumps([e.id for e in emails_to_send])
                 
-                # Commit PENDING state (NOT last_synced_email_id!)
+                # Commit: NEW SyncKey + PENDING batch (NOT last_synced_email_id yet!)
+                # state.sync_key and state.synckey_counter were set above
                 db.commit()
                 
                 _write_json_line(
                     "activesync/activesync.log",
                     {
                         "event": "sync_emails_sent_wbxml_simple", 
-                        "sync_key": response_sync_key, 
-                        "client_key": client_sync_key, 
+                        "sync_key": response_sync_key,  # ← NEW key in response
+                        "client_key": client_sync_key,  # ← Key client sent
+                        "key_progression": f"{client_sync_key}→{response_sync_key}",  # ← Visual!
                         "email_count_total": len(emails),  # ← Total available
                         "email_count_sent": len(emails_to_send),  # ← Actually sent
                         "window_size": window_size,  # ← Client requested
@@ -1076,7 +1089,8 @@ async def eas_dispatch(
                         "wbxml_length": len(wbxml), 
                         "wbxml_first20": wbxml[:20].hex(),
                         "wbxml_full_hex": wbxml.hex(),  # ← FULL DUMP for expert analysis
-                        "last_synced_email_id": state.last_synced_email_id  # ← Track pagination!
+                        "last_synced_email_id": state.last_synced_email_id,  # ← Pagination cursor
+                        "pending_staged": bool(state.pending_sync_key)  # ← Pending active?
                     },
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
