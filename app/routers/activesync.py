@@ -954,7 +954,8 @@ async def eas_dispatch(
                         "has_more": has_more,  # ← MoreAvailable flag
                         "collection_id": collection_id, 
                         "wbxml_length": len(wbxml), 
-                        "wbxml_first20": wbxml[:20].hex()
+                        "wbxml_first20": wbxml[:20].hex(),
+                        "wbxml_full_hex": wbxml.hex()  # ← FULL DUMP for expert analysis
                     },
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
