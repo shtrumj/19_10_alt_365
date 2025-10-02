@@ -79,14 +79,10 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     # Sync (0x05 + 0x40 = 0x45) - Z-Push "Synchronize"
     output.write(b'\x45')  # Sync with content
     
-    # POLISH #17-1: Add top-level Status for maximum compatibility
-    # Expert: "Many servers include it. iOS doesn't require it, but some MDMs expect it"
-    # Status (0x0E + 0x40 = 0x4E)
-    output.write(b'\x4E')  # Status with content
-    output.write(b'\x03')  # STR_I
-    output.write(b'1')  # Success
-    output.write(b'\x00')  # String terminator
-    output.write(b'\x01')  # END Status
+    # CRITICAL FIX #29: For initial sync, NO top-level Status!
+    # Expert: "When client sends SyncKey=0, send the smallest possible valid response"
+    # "Do not include anything extra (no server Commands, no Responses, no top-level Status)"
+    # Top-level Status is ONLY for subsequent syncs with items!
     
     # Collections (0x1C + 0x40 = 0x5C) - Z-Push "Folders" - FIXED!
     output.write(b'\x5C')  # Collections with content
@@ -133,12 +129,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END Status
     
-    # CRITICAL FIX #23-2: Always send items when available, even on initial sync!
-    # Expert: "iOS is fine receiving items on the first response. Always include 
-    # <Commands><Add>…</Add></Commands> when there are items, even on the very first 
-    # Sync (key '0' → '1')"
-    # Previous logic skipped Commands on is_initial_sync, which was WRONG!
-    if emails and len(emails) > 0:
+    # CRITICAL FIX #29: For INITIAL sync (SyncKey 0→1), send MINIMAL response!
+    # Latest expert: "When client sends SyncKey=0, send the smallest possible valid response"
+    # "Do not include anything extra (no Commands, no Add, no items!)"
+    # Only send: SyncKey, CollectionId, Status in Collection
+    # Commands/items come AFTER client confirms with SyncKey=1!
+    #
+    # This REVERSES FIX #23-2 based on new expert guidance!
+    if emails and len(emails) > 0 and not is_initial_sync:
         # Commands (0x16 + 0x40 = 0x56) - Z-Push "Perform" - FIXED!
         output.write(b'\x56')  # Commands with content
         
@@ -348,4 +346,23 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x01')  # END Collections
     output.write(b'\x01')  # END Sync
     
-    return output.getvalue()
+    wbxml = output.getvalue()
+    
+    # CRITICAL FIX #29: Validation per expert!
+    # Expert: "Log len(wbxml) and wbxml[:16].hex()"
+    # "If the first 5 bytes aren't 03 01 6a 00 45, the client may ignore it"
+    first_16 = wbxml[:16].hex()
+    logger.info(f"WBXML Validation: len={len(wbxml)}, first_16={first_16}")
+    
+    # Expected for initial sync: 03 01 6a 00 45 5c 4f 4b 03 31 00 01 52 03 31
+    # 03 01 6a 00 = header
+    # 45 = Sync
+    # 5c = Collections
+    # 4f = Collection
+    # 4b 03 31 00 01 = SyncKey "1"
+    # 52 03 31 = CollectionId "1" (continues...)
+    
+    if not first_16.startswith('03016a0045'):
+        logger.error(f"WBXML header WRONG! Expected '03016a0045...', got '{first_16[:12]}'")
+    
+    return wbxml
