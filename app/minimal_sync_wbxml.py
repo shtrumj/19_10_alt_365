@@ -280,13 +280,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END NativeBodyType
                 
-                # CRITICAL FIX #19: Switch pages properly!
-                # Expert: "In WBXML you must emit a SWITCH_PAGE (token 0x00) before using tags from a different page"
-                # "From your hex I can see Email and AirSyncBase fields showing up without the corresponding page switch"
+                # CRITICAL FIX #21: Expert says use codepage 4, not 17!
+                # Expert: "AirSyncBase (cp 4) for Body/Type/EstimatedDataSize/Data"
+                # We were using cp 17 (0x11), but expert says use cp 4 (0x04)!
+                # This might be the difference between ActiveSync versions!
                 
-                # SWITCH_PAGE -> 17 (AirSyncBase) for Body
+                # SWITCH_PAGE -> 4 (AirSyncBase) for Body
                 output.write(b'\x00')  # SWITCH_PAGE
-                output.write(b'\x11')  # Codepage 17 (AirSyncBase)
+                output.write(b'\x04')  # Codepage 4 (AirSyncBase) - per expert!
                 
                 # Body (0x08 in AirSyncBase + 0x40 = 0x48)
                 output.write(b'\x48')  # Body with content (AirSyncBase)
@@ -309,6 +310,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(body_size.encode())
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END EstimatedDataSize
+                
+                # CRITICAL FIX #21: Add Truncated if body was truncated
+                # Expert: "If you exceed 500, either truncate or add ASB:Truncated"
+                # Truncated (0x0C in AirSyncBase) - empty tag (no content flag!)
+                # We always truncate to 512, so always send Truncated
+                # Actually, client requested 500, we send ≤512, so include if original was longer
+                original_body_size = len(getattr(email, 'body', '') or '')
+                if original_body_size > len(body_text):
+                    output.write(b'\x0C')  # Truncated EMPTY TAG (0x0C, no 0x40!)
                 
                 # Data (0x09 in AirSyncBase + 0x40 = 0x49)
                 output.write(b'\x49')  # Data with content (AirSyncBase)
