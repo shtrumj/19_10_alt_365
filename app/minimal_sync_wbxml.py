@@ -78,17 +78,23 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     # Sync (0x05 + 0x40 = 0x45) - Z-Push "Synchronize"
     output.write(b'\x45')  # Sync with content
     
-    # CRITICAL TEST: Remove top-level Status and SyncKey!
-    # Hypothesis: Sync command should NOT have top-level Status/SyncKey
-    # Unlike FolderSync which DOES have them
-    # MS-ASCMD spec suggests Sync only has Collections at top level
-    # Status and SyncKey belong ONLY in Collection element
+    # POLISH #17-1: Add top-level Status for maximum compatibility
+    # Expert: "Many servers include it. iOS doesn't require it, but some MDMs expect it"
+    # Status (0x0E + 0x40 = 0x4E)
+    output.write(b'\x4E')  # Status with content
+    output.write(b'\x03')  # STR_I
+    output.write(b'1')  # Success
+    output.write(b'\x00')  # String terminator
+    output.write(b'\x01')  # END Status
     
     # Collections (0x1C + 0x40 = 0x5C) - Z-Push "Folders" - FIXED!
     output.write(b'\x5C')  # Collections with content
     
     # Collection (0x0F + 0x40 = 0x4F) - Z-Push "Folder" - FIXED!
     output.write(b'\x4F')  # Collection with content
+    
+    # POLISH #17-2: Reorder to match Z-Push: Class → CollectionId → SyncKey → Status
+    # Expert: "Z-Push and most references do: Class → CollectionId → SyncKey → Status"
     
     # Class (0x10 + 0x40 = 0x50) - Z-Push "FolderType" - CRITICAL! WAS MISSING!
     # Per documentation line 32: Class should be FIRST in Collection
@@ -98,7 +104,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END Class
     
-    # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey"
+    # CollectionId (0x12 + 0x40 = 0x52) - Z-Push "FolderId" - MOVED UP!
+    output.write(b'\x52')  # CollectionId with content
+    output.write(b'\x03')  # STR_I
+    output.write(collection_id.encode())
+    output.write(b'\x00')  # String terminator
+    output.write(b'\x01')  # END CollectionId
+    
+    # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey" - MOVED AFTER CollectionId!
     # CRITICAL FIX #16-3: Initial sync MUST return new SyncKey="1", not echo "0"!
     # Expert: "when is_initial_sync=True, force the collection SyncKey to '1'"
     new_sync_key = "1" if is_initial_sync else sync_key
@@ -107,13 +120,6 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(new_sync_key.encode())
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
-    
-    # CollectionId (0x12 + 0x40 = 0x52) - Z-Push "FolderId" - FIXED!
-    output.write(b'\x52')  # CollectionId with content
-    output.write(b'\x03')  # STR_I
-    output.write(collection_id.encode())
-    output.write(b'\x00')  # String terminator
-    output.write(b'\x01')  # END CollectionId
     
     # Status (0x0E + 0x40 = 0x4E) - Z-Push "Status" - FIXED!
     output.write(b'\x4E')  # Status with content
