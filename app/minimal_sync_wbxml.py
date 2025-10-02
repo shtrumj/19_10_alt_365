@@ -93,27 +93,13 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     # Collection (0x0F + 0x40 = 0x4F) - Z-Push "Folder" - FIXED!
     output.write(b'\x4F')  # Collection with content
     
-    # POLISH #17-2: Reorder to match Z-Push: Class → CollectionId → SyncKey → Status
-    # Expert: "Z-Push and most references do: Class → CollectionId → SyncKey → Status"
+    # CRITICAL FIX #23-2B: Element order per Apple Mail expert!
+    # Expert's XML shows: <SyncKey> → <CollectionId> → <Class> → <Status>
+    # This is the EXACT order Apple Mail expects!
     
-    # Class (0x10 + 0x40 = 0x50) - Z-Push "FolderType" - CRITICAL! WAS MISSING!
-    # Per documentation line 32: Class should be FIRST in Collection
-    output.write(b'\x50')  # Class with content
-    output.write(b'\x03')  # STR_I
-    output.write(b'Email')  # Class = "Email"
-    output.write(b'\x00')  # String terminator
-    output.write(b'\x01')  # END Class
-    
-    # CollectionId (0x12 + 0x40 = 0x52) - Z-Push "FolderId" - MOVED UP!
-    output.write(b'\x52')  # CollectionId with content
-    output.write(b'\x03')  # STR_I
-    output.write(collection_id.encode())
-    output.write(b'\x00')  # String terminator
-    output.write(b'\x01')  # END CollectionId
-    
-    # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey" - MOVED AFTER CollectionId!
+    # SyncKey (0x0B + 0x40 = 0x4B) - FIRST!
     # CRITICAL FIX #16-3: Initial sync MUST return new SyncKey="1", not echo "0"!
-    # Expert: "when is_initial_sync=True, force the collection SyncKey to '1'"
+    # Expert: "Start at SyncKey=1 after 0. Apple is picky here."
     new_sync_key = "1" if is_initial_sync else sync_key
     output.write(b'\x4B')  # SyncKey with content
     output.write(b'\x03')  # STR_I
@@ -121,7 +107,24 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     output.write(b'\x00')  # String terminator
     output.write(b'\x01')  # END SyncKey
     
-    # Status (0x0E + 0x40 = 0x4E) - Z-Push "Status" - FIXED!
+    # CollectionId (0x12 + 0x40 = 0x52) - SECOND!
+    output.write(b'\x52')  # CollectionId with content
+    output.write(b'\x03')  # STR_I
+    output.write(collection_id.encode())
+    output.write(b'\x00')  # String terminator
+    output.write(b'\x01')  # END CollectionId
+    
+    # Class (0x10 + 0x40 = 0x50) - THIRD!
+    # Expert: "Include <Class>Email</Class> explicitly"
+    output.write(b'\x50')  # Class with content
+    output.write(b'\x03')  # STR_I
+    output.write(b'Email')  # Class = "Email"
+    output.write(b'\x00')  # String terminator
+    output.write(b'\x01')  # END Class
+    
+    # Status (0x0E + 0x40 = 0x4E) - FOURTH!
+    # Expert: "Do not put <Status> at the top level — put it inside each Collection"
+    # Expert: "Include <Status>1</Status> in every collection"
     output.write(b'\x4E')  # Status with content
     output.write(b'\x03')  # STR_I
     output.write(str(status).encode())

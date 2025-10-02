@@ -821,20 +821,26 @@ async def eas_dispatch(
                 "synckey_counter": state.synckey_counter,
                 "reason": "Initial sync with SIMPLE INTEGER (like FolderSync)"
             })
-            # CRITICAL FIX: Initial sync (SyncKey 0→1) must send EMPTY response!
-            # Per Grommunio-Sync and own documentation: NO Commands, NO GetChanges, NO WindowSize!
-            # Client will then send SyncKey=1 to confirm, THEN we send data.
+            # CRITICAL FIX #23-2: Send items on FIRST sync per expert!
+            # Expert: "iOS is fine receiving items on the first response"
+            # Previous logic sent empty response, which was WRONG!
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
+                # Respect WindowSize for initial sync too!
+                emails_to_send = emails[:window_size] if window_size else emails
+                has_more = len(emails) > window_size if window_size else False
+                
                 _write_json_line("activesync/activesync.log", {
-                    "event": "sync_initial_EMPTY_RESPONSE",
-                    "reason": "Initial sync must be empty per Grommunio-Sync protocol",
+                    "event": "sync_initial_WITH_ITEMS",
+                    "reason": "Expert: iOS accepts items on first response",
                     "window_size": window_size,
-                    "email_count": len(emails),
-                    "message": "Sending EMPTY initial response (no Commands/GetChanges/WindowSize)"
+                    "email_count_total": len(emails),
+                    "email_count_sent": len(emails_to_send),
+                    "has_more": has_more,
+                    "message": "Sending items immediately on SyncKey 0→1"
                 })
-                # FIXED: Pass is_initial_sync=True to send empty response!
-                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=[], collection_id=collection_id, window_size=window_size, is_initial_sync=True)
+                # Send actual items on initial sync!
+                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails_to_send, collection_id=collection_id, window_size=window_size, is_initial_sync=True, has_more=has_more)
                 _write_json_line(
                     "activesync/activesync.log",
                     {
