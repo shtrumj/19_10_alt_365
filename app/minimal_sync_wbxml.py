@@ -78,19 +78,11 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     # Sync (0x05 + 0x40 = 0x45) - Z-Push "Synchronize"
     output.write(b'\x45')  # Sync with content
     
-    # Status (0x0E + 0x40 = 0x4E) - Z-Push "Status" - FIXED!
-    output.write(b'\x4E')  # Status with content
-    output.write(b'\x03')  # STR_I
-    output.write(str(status).encode())
-    output.write(b'\x00')  # String terminator
-    output.write(b'\x01')  # END Status
-    
-    # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey" - FIXED!
-    output.write(b'\x4B')  # SyncKey with content
-    output.write(b'\x03')  # STR_I
-    output.write(sync_key.encode())
-    output.write(b'\x00')  # String terminator
-    output.write(b'\x01')  # END SyncKey
+    # CRITICAL TEST: Remove top-level Status and SyncKey!
+    # Hypothesis: Sync command should NOT have top-level Status/SyncKey
+    # Unlike FolderSync which DOES have them
+    # MS-ASCMD spec suggests Sync only has Collections at top level
+    # Status and SyncKey belong ONLY in Collection element
     
     # Collections (0x1C + 0x40 = 0x5C) - Z-Push "Folders" - FIXED!
     output.write(b'\x5C')  # Collections with content
