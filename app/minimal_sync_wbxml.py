@@ -251,20 +251,13 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END MessageClass
                 
-                # Get body content FIRST to determine Type
-                body_text = getattr(email, 'body', '') or ''
-                if not body_text or not body_text.strip():
-                    body_text = ' '  # Minimum body content
-                
-                # CRITICAL FIX #20: Simplify body - strip HTML or use simple text
-                # Expert: "Send one message like this... Body → Type=2, Data='<p>hello</p>'"
-                # Maybe iOS rejects complex HTML? Try simple text first!
-                # For now, use PLAIN TEXT only to test
-                import re
-                body_text_plain = re.sub(r'<[^>]+>', '', body_text)  # Strip HTML tags
-                if not body_text_plain.strip():
-                    body_text_plain = 'Email content'
-                body_text = body_text_plain[:512]  # STRICT limit for testing
+                # CRITICAL FIX #22: SMOKE TEST - Ultra-minimal body per expert!
+                # Expert: "Before sending the big Hebrew HTML message, try sending this tiny one"
+                # Subject: "Test", Body: HTML: <html><body>ok</body></html> (length ~20 bytes)
+                # Type=2, EstimatedDataSize=20
+                #
+                # Let's send SIMPLEST possible content to test if structure is correct
+                body_text = "Test email"  # Ultra simple, no HTML, no special chars
                 
                 # CRITICAL FIX #19: Detect HTML vs Plain Text  
                 # For now, force PLAIN TEXT (Type=1) for testing
@@ -280,14 +273,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END NativeBodyType
                 
-                # CRITICAL FIX #21: Expert says use codepage 4, not 17!
-                # Expert: "AirSyncBase (cp 4) for Body/Type/EstimatedDataSize/Data"
-                # We were using cp 17 (0x11), but expert says use cp 4 (0x04)!
-                # This might be the difference between ActiveSync versions!
+                # CRITICAL FIX #22: Try BOTH codepages - test cp 17 first!
+                # Expert said cp 4, but Z-Push and MS docs use cp 17
+                # iPhone is STILL failing with cp 4, so try cp 17 again!
+                # Maybe expert meant something else?
                 
-                # SWITCH_PAGE -> 4 (AirSyncBase) for Body
+                # SWITCH_PAGE -> 17 (AirSyncBase) for Body - BACK TO MS SPEC!
                 output.write(b'\x00')  # SWITCH_PAGE
-                output.write(b'\x04')  # Codepage 4 (AirSyncBase) - per expert!
+                output.write(b'\x11')  # Codepage 17 (AirSyncBase) - per Z-Push & MS docs!
                 
                 # Body (0x08 in AirSyncBase + 0x40 = 0x48)
                 output.write(b'\x48')  # Body with content (AirSyncBase)
