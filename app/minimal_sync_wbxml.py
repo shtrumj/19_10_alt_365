@@ -216,6 +216,22 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END To
                 
+                # CRITICAL FIX #6: Add MISSING DisplayTo (0x13 in Email2 + 0x40 = 0x53)
+                # Source: wbxml_encoder.py line 70, line 387-389 shows it's REQUIRED
+                output.write(b'\x53')  # DisplayTo with content
+                output.write(b'\x03')  # STR_I
+                output.write(recipient_email.encode('utf-8'))
+                output.write(b'\x00')  # String terminator
+                output.write(b'\x01')  # END DisplayTo
+                
+                # CRITICAL FIX #7: Add MISSING ThreadTopic (0x14 in Email2 + 0x40 = 0x54)
+                # Source: wbxml_encoder.py line 71, line 391-394 shows it's REQUIRED
+                output.write(b'\x54')  # ThreadTopic with content
+                output.write(b'\x03')  # STR_I
+                output.write(subject.encode('utf-8'))
+                output.write(b'\x00')  # String terminator
+                output.write(b'\x01')  # END ThreadTopic
+                
                 # CRITICAL FIX: Read (0x16 in Email2 + 0x40 = 0x56) - NOT 0x10!
                 # 0x50 was colliding with Class token!
                 output.write(b'\x56')  # Read with content
