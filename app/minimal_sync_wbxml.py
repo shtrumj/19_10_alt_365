@@ -98,6 +98,14 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
     # Collection (0x0F + 0x40 = 0x4F) - Z-Push "Folder" - FIXED!
     output.write(b'\x4F')  # Collection with content
     
+    # Class (0x10 + 0x40 = 0x50) - Z-Push "FolderType" - CRITICAL! WAS MISSING!
+    # Per documentation line 32: Class should be FIRST in Collection
+    output.write(b'\x50')  # Class with content
+    output.write(b'\x03')  # STR_I
+    output.write(b'Email')  # Class = "Email"
+    output.write(b'\x00')  # String terminator
+    output.write(b'\x01')  # END Class
+    
     # SyncKey (0x0B + 0x40 = 0x4B) - Z-Push "SyncKey"
     output.write(b'\x4B')  # SyncKey with content
     output.write(b'\x03')  # STR_I
