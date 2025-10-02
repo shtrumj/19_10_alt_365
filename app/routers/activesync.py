@@ -5,10 +5,14 @@ import time
 import uuid
 import io
 import traceback
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+
+# CRITICAL FIX #31B: Add logger for protocol version negotiation logging
+logger = logging.getLogger(__name__)
 
 from ..auth import get_current_user_from_basic_auth
 from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
