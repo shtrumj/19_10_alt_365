@@ -159,8 +159,9 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END ServerId
                 
-                # Data (0x1D + 0x40 = 0x5D) - Z-Push "Data" for ApplicationData
-                output.write(b'\x5D')  # Data with content
+                # CRITICAL FIX: ApplicationData (0x0E + 0x40 = 0x4E) - NOT Data (0x1D)!
+                # ApplicationData is the correct tag for email properties
+                output.write(b'\x4E')  # ApplicationData with content
                 
                 # Switch to Email2 namespace (codepage 2)
                 output.write(b'\x00')  # SWITCH_PAGE
