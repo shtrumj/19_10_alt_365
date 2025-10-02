@@ -244,10 +244,37 @@ class ActiveSyncState(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     device_id = Column(String, nullable=False)
     collection_id = Column(String, nullable=False, default="1")
-    sync_key = Column(String, nullable=False, default="1")
+    # Grommunio-style synckey components
+    synckey_uuid = Column(String(36), nullable=True)  # UUID for this sync relationship
+    synckey_counter = Column(Integer, default=0)  # Counter for sync progression
+    # Legacy sync_key kept for backward compatibility
+    sync_key = Column(String, nullable=False, default="0")
     foldersync_attempts = Column(Integer, default=0)
     last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    @property
+    def grommunio_synckey(self) -> str:
+        """Generate Grommunio-style {UUID}Counter synckey"""
+        if not self.synckey_uuid or self.synckey_counter == 0:
+            return "0"
+        return f"{{{self.synckey_uuid}}}{self.synckey_counter}"
+    
+    def set_grommunio_synckey(self, synckey: str):
+        """Parse and set Grommunio-style synckey"""
+        if synckey == "0":
+            self.synckey_uuid = None
+            self.synckey_counter = 0
+            self.sync_key = "0"
+        else:
+            import re
+            match = re.match(r'^\{([0-9A-Za-z-]+)\}([0-9]+)$', synckey)
+            if match:
+                self.synckey_uuid = match.group(1)
+                self.synckey_counter = int(match.group(2))
+                self.sync_key = str(self.synckey_counter)  # Legacy field
+            else:
+                raise ValueError(f"Invalid synckey format: {synckey}")
     __table_args__ = (
         UniqueConstraint(
             "user_id", "device_id", "collection_id", name="uq_user_device_collection"

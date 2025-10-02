@@ -20,6 +20,7 @@ from ..minimal_sync_wbxml import create_minimal_sync_wbxml
 from ..zpush_wbxml import create_zpush_style_foldersync_wbxml
 from ..iphone_wbxml import create_iphone_foldersync_wbxml
 from ..wbxml_parser import parse_wbxml_sync_request, parse_wbxml_foldersync_request
+from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
 # Rate limiting for sync requests
 _sync_rate_limits = {}
@@ -604,6 +605,11 @@ async def eas_dispatch(
         wbxml_params = parse_wbxml_sync_request(request_body_bytes)
         client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
         collection_id = wbxml_params.get("collection_id", request.query_params.get("CollectionId", "1"))
+        window_size_str = wbxml_params.get("window_size", "5")
+        try:
+            window_size = int(window_size_str)
+        except (ValueError, TypeError):
+            window_size = 5  # Default to 5 emails per sync
         
         # Handle sync key validation according to ActiveSync spec
         try:
@@ -689,33 +695,45 @@ async def eas_dispatch(
             },
         )
         
-        # Initial sync (SyncKey=0) - always return all available emails according to MS-ASCMD
-        if client_key_int == 0:
-            # For initial sync, update state to 1 and respond with SyncKey=1
-            # The iPhone expects the server to advance the sync key after initial sync
-            if state.sync_key == "0":
-                state.sync_key = "1"
-                db.commit()
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_initial_sync_key_updated", 
-                    "device_id": device_id,
-                    "collection_id": collection_id,
-                    "old_sync_key": "0",
-                    "new_sync_key": "1",
-                    "response_sync_key": "1"
-                })
-            response_sync_key = "1"  # Respond with 1 after initial sync
-            # Detect iPhone / WBXML-capable clients by content-type/body header
+        # Initial sync (SyncKey=0) - Generate Grommunio-style UUID synckey
+        if client_sync_key == "0":
+            # CRITICAL: Use Grommunio-style {UUID}Counter format
+            # Generate new UUID for this sync relationship
+            if not state.synckey_uuid:
+                state.synckey_uuid = str(uuid.uuid4())
+            state.synckey_counter = 1
+            response_sync_key = state.grommunio_synckey  # {UUID}1
+            db.commit()
+            
+            _write_json_line("activesync/activesync.log", {
+                "event": "sync_initial_grommunio_uuid", 
+                "device_id": device_id,
+                "collection_id": collection_id,
+                "client_sync_key": "0",
+                "response_sync_key": response_sync_key,
+                "synckey_uuid": state.synckey_uuid,
+                "synckey_counter": state.synckey_counter,
+                "reason": "Initial sync with Grommunio UUID format {UUID}Counter"
+            })
+            # CRITICAL FIX: Per Grommunio-Sync, initial sync must NOT include Commands/GetChanges/WindowSize
+            # lib/request/sync.php line 1224: Commands only sent when HasSyncKey() is true
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
-                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails, collection_id=collection_id)
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_initial_grommunio_pattern",
+                    "window_size": window_size,
+                    "email_count": 0,
+                    "message": "Initial sync per Grommunio-Sync: NO Commands, NO GetChanges, NO WindowSize"
+                })
+                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=[], collection_id=collection_id, window_size=window_size, is_initial_sync=True)
                 _write_json_line(
                     "activesync/activesync.log",
                     {
                         "event": "sync_initial_wbxml", 
                         "sync_key": response_sync_key, 
                         "client_key": client_sync_key, 
-                        "email_count": len(emails), 
+                        "email_count": len(emails),
+                        "window_size": window_size,
                         "collection_id": collection_id, 
                         "wbxml_length": len(wbxml), 
                         "wbxml_first20": wbxml[:20].hex(), 
@@ -745,19 +763,94 @@ async def eas_dispatch(
                     },
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+            # XML response for non-WBXML clients (with emails for initial sync)
             xml_response = create_sync_response(emails, sync_key=response_sync_key, collection_id=collection_id)
             _write_json_line(
                 "activesync/activesync.log",
-                {"event": "sync_initial", "sync_key": state.sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id},
+                {"event": "sync_initial_complete", "sync_key": state.sync_key, "client_key": client_sync_key, "response_key": response_sync_key, "email_count": len(emails)},
             )
+        # Client sends SyncKey=0 but server is ahead - sync key mismatch, need to reset
+        elif client_key_int == 0 and server_key_int > 1:
+            # Server is ahead, client wants to restart - send error to force client to reset
+            _write_json_line("activesync/activesync.log", {
+                "event": "sync_key_mismatch_reset_required",
+                "client_key": client_sync_key,
+                "server_key": state.sync_key,
+                "action": "Sending Status=3 to force client reset"
+            })
+            # Reset server to 0 to allow fresh start
+            state.sync_key = "0"
+            db.commit()
+            # Send Status=3 (Invalid sync key) to tell client to restart
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
+                wbxml = create_minimal_sync_wbxml(sync_key="0", emails=[], collection_id=collection_id, window_size=window_size, status=3)
+                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+            xml_response = create_sync_response([], sync_key="0", collection_id=collection_id)
+        # Client confirmed initial sync with UUID synckey
+        elif client_sync_key != "0":
+            try:
+                client_uuid, client_counter = parse_synckey(client_sync_key)
+            except ValueError as e:
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_invalid_synckey_format",
+                    "client_sync_key": client_sync_key,
+                    "error": str(e)
+                })
+                # Send Status=3 (invalid synckey)
+                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+                if is_wbxml_request:
+                    wbxml = create_minimal_sync_wbxml(sync_key="0", emails=[], collection_id=collection_id, window_size=window_size, status=3)
+                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                return Response(status_code=400)
+            
+            # Verify UUID matches
+            if client_uuid != state.synckey_uuid:
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_uuid_mismatch",
+                    "client_uuid": client_uuid,
+                    "server_uuid": state.synckey_uuid,
+                    "action": "Resetting sync"
+                })
+                # UUID mismatch - reset
+                state.synckey_uuid = None
+                state.synckey_counter = 0
+                db.commit()
+                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+                if is_wbxml_request:
+                    wbxml = create_minimal_sync_wbxml(sync_key="0", emails=[], collection_id=collection_id, window_size=window_size, status=3)
+                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+            
+            # Client confirmed! Bump counter and send data
+            state.synckey_counter = client_counter + 1
+            response_sync_key = state.grommunio_synckey
+            db.commit()
+            
+            _write_json_line("activesync/activesync.log", {
+                "event": "sync_client_confirmed_uuid",
+                "client_sync_key": client_sync_key,
+                "response_sync_key": response_sync_key,
+                "client_counter": client_counter,
+                "new_counter": state.synckey_counter,
+                "email_count": len(emails)
+            })
+            
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
+                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails, collection_id=collection_id, window_size=window_size)
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "sync_emails_sent_wbxml_uuid", "sync_key": response_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
+                )
+                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
         # Client sync key matches server - check if we need to send emails
-        elif client_key_int == server_key_int and client_key_int > 0:
+        elif client_key_int == server_key_int:
             # If we have emails to send, send them and bump sync key
             if len(emails) > 0:
                 new_sync_key = _bump_sync_key(state, db)
                 is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
                 if is_wbxml_request:
-                    wbxml = create_minimal_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id)
+                    wbxml = create_minimal_sync_wbxml(sync_key=new_sync_key, emails=emails, collection_id=collection_id, window_size=window_size)
                     _write_json_line(
                         "activesync/activesync.log",
                         {"event": "sync_emails_sent_wbxml", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
@@ -772,7 +865,7 @@ async def eas_dispatch(
                 # No emails to send - return no changes
                 is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
                 if is_wbxml_request:
-                    wbxml = create_minimal_sync_wbxml(sync_key=state.sync_key, emails=[], collection_id=collection_id)
+                    wbxml = create_minimal_sync_wbxml(sync_key=state.sync_key, emails=[], collection_id=collection_id, window_size=window_size)
                     _write_json_line(
                         "activesync/activesync.log",
                         {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
@@ -797,15 +890,13 @@ async def eas_dispatch(
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
                 try:
-                    # Import the function
-                    from ..minimal_sync_wbxml import create_minimal_sync_wbxml
-                    
-                    # Send ALL current emails to get client caught up
+                    # Send emails respecting WindowSize to get client caught up
                     wbxml = create_minimal_sync_wbxml(
                         sync_key=new_sync_key, 
                         emails=emails,
                         collection_id=collection_id,
-                        status=1
+                        status=1,
+                        window_size=window_size
                     )
                     
                     # Log the successful WBXML creation
