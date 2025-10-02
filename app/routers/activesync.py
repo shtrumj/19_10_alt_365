@@ -713,17 +713,20 @@ async def eas_dispatch(
                 "synckey_counter": state.synckey_counter,
                 "reason": "Initial sync with SIMPLE INTEGER (like FolderSync)"
             })
-            # BREAKTHROUGH: FolderSync sends FOLDER DATA immediately with SyncKey 0→1!
-            # Let's try sending EMAIL DATA immediately too (like FolderSync)!
+            # CRITICAL FIX: Initial sync (SyncKey 0→1) must send EMPTY response!
+            # Per Grommunio-Sync and own documentation: NO Commands, NO GetChanges, NO WindowSize!
+            # Client will then send SyncKey=1 to confirm, THEN we send data.
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
             if is_wbxml_request:
                 _write_json_line("activesync/activesync.log", {
-                    "event": "sync_initial_WITH_EMAILS",
+                    "event": "sync_initial_EMPTY_RESPONSE",
+                    "reason": "Initial sync must be empty per Grommunio-Sync protocol",
                     "window_size": window_size,
                     "email_count": len(emails),
-                    "message": "TESTING: Send emails IMMEDIATELY like FolderSync sends folders!"
+                    "message": "Sending EMPTY initial response (no Commands/GetChanges/WindowSize)"
                 })
-                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=emails, collection_id=collection_id, window_size=window_size, is_initial_sync=False)
+                # FIXED: Pass is_initial_sync=True to send empty response!
+                wbxml = create_minimal_sync_wbxml(sync_key=response_sync_key, emails=[], collection_id=collection_id, window_size=window_size, is_initial_sync=True)
                 _write_json_line(
                     "activesync/activesync.log",
                     {
