@@ -239,15 +239,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END Importance
                 
-                # Switch to AirSyncBase namespace (codepage 17) for Body
-                output.write(b'\x00')  # SWITCH_PAGE
-                output.write(b'\x11')  # Codepage 17 (AirSyncBase)
+                # CRITICAL FIX: Body/Type/Data are in EMAIL2, NOT AirSyncBase!
+                # Source: wbxml_encoder.py lines 74-77 show Body in Email2 codepage
+                # NO codepage switch needed - stay in Email2 (codepage 2)!
                 
-                # Body (0x08 in AirSyncBase + 0x40 = 0x48)
-                output.write(b'\x48')  # Body with content
+                # Body (0x17 in Email2 + 0x40 = 0x57) - FIXED from AirSyncBase 0x48!
+                output.write(b'\x57')  # Body with content
                 
-                # Type (0x0A in AirSyncBase + 0x40 = 0x4A)
-                output.write(b'\x4A')  # Type with content
+                # Type (0x18 in Email2 + 0x40 = 0x58) - FIXED from AirSyncBase 0x4A!
+                output.write(b'\x58')  # Type with content
                 output.write(b'\x03')  # STR_I
                 output.write(b'1')  # 1=Plain text
                 output.write(b'\x00')  # String terminator
@@ -264,24 +264,15 @@ def create_minimal_sync_wbxml(sync_key: str, emails: list, collection_id: str = 
                 
                 body_size = str(len(body_text.encode('utf-8')))
                 
-                # EstimatedDataSize (0x0B in AirSyncBase + 0x40 = 0x4B)
-                output.write(b'\x4B')  # EstimatedDataSize with content
+                # EstimatedDataSize (0x19 in Email2 + 0x40 = 0x59) - FIXED from AirSyncBase 0x4B!
+                output.write(b'\x59')  # EstimatedDataSize with content
                 output.write(b'\x03')  # STR_I
                 output.write(body_size.encode())
                 output.write(b'\x00')  # String terminator
                 output.write(b'\x01')  # END EstimatedDataSize
                 
-                # Truncated (0x0C in AirSyncBase + 0x40 = 0x4C)
-                output.write(b'\x4C')  # Truncated with content
-                output.write(b'\x03')  # STR_I
-                original_body = getattr(email, 'body', '') or ''
-                is_truncated = '1' if len(original_body) > 512 else '0'
-                output.write(is_truncated.encode())
-                output.write(b'\x00')  # String terminator
-                output.write(b'\x01')  # END Truncated
-                
-                # Data (0x09 in AirSyncBase + 0x40 = 0x49)
-                output.write(b'\x49')  # Data with content
+                # Data (0x1A in Email2 + 0x40 = 0x5A) - FIXED from AirSyncBase 0x49!
+                output.write(b'\x5A')  # Data with content
                 output.write(b'\x03')  # STR_I
                 output.write(body_text.encode('utf-8'))
                 output.write(b'\x00')  # String terminator
