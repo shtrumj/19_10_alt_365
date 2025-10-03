@@ -1218,11 +1218,19 @@ async def eas_dispatch(
                     return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
                 return Response(status_code=400)
             
-            # CRITICAL FIX #27: Always bump SyncKey for EVERY response!
-            # Expert: "Every Sync response must issue a new SyncKey"
-            state.synckey_counter = client_counter + 1
+            # CRITICAL FIX #61: Do NOT bump SyncKey on Fetch-only responses
+            add_count = len(emails)
+            change_count = 0  # Not tracked yet
+            delete_count = len(delete_ids) if 'delete_ids' in locals() and delete_ids else 0
+            has_collection_changes = (add_count + change_count + delete_count) > 0
+
+            if has_collection_changes:
+                state.synckey_counter = client_counter + 1
+            else:
+                state.synckey_counter = client_counter  # Keep same key if only <Responses><Fetch>
+
             response_sync_key = str(state.synckey_counter)
-            state.sync_key = response_sync_key  # Update for next request
+            state.sync_key = response_sync_key  # Persist the chosen key
             # NOTE: We commit this BEFORE sending, so the key is persisted!
             
             _write_json_line("activesync/activesync.log", {
@@ -1231,7 +1239,9 @@ async def eas_dispatch(
                 "response_sync_key": response_sync_key,
                 "client_counter": client_counter,
                 "new_counter": state.synckey_counter,
-                "email_count": len(emails)
+                "email_count": len(emails),
+                "fetch_count": len(fetched_emails) if fetched_emails else 0,
+                "has_collection_changes": has_collection_changes
             })
             
             is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
@@ -1310,10 +1320,9 @@ async def eas_dispatch(
                     except Exception:
                         pass
                 
-                # CRITICAL FIX #26 + #27: Stage as PENDING and advance SyncKey!
-                # Expert FIX #27: "SyncKey must ALWAYS advance on every response"
+                # CRITICAL FIX #26 + #61: Stage as PENDING only when we actually send <Add> items
                 # Expert FIX #26: "Only commit last_synced_email_id when client confirms"
-                if emails_to_send:
+                if emails_to_send and has_collection_changes:
                     max_sent_id = max(e.id for e in emails_to_send)
                     state.pending_sync_key = response_sync_key
                     state.pending_max_email_id = max_sent_id
@@ -1339,7 +1348,8 @@ async def eas_dispatch(
                         "wbxml_first20": wbxml[:20].hex(),
                         "wbxml_full_hex": wbxml.hex(),  # ← FULL DUMP for expert analysis
                         "last_synced_email_id": state.last_synced_email_id,  # ← Pagination cursor
-                        "pending_staged": bool(state.pending_sync_key)  # ← Pending active?
+                        "pending_staged": bool(state.pending_sync_key),  # ← Pending active?
+                        "fetch_only": (not has_collection_changes and bool(fetched_emails))
                     },
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
