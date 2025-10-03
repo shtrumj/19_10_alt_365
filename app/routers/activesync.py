@@ -1147,7 +1147,7 @@ async def eas_dispatch(
                         "client_key": client_sync_key, 
                         "email_count": len(emails),
                         "window_size": window_size,
-                        "collection_id": collection_id, 
+                    "collection_id": collection_id,
                         "wbxml_length": len(wbxml), 
                         "wbxml_first20": wbxml[:20].hex(), 
                         "wbxml_analysis": {
@@ -1224,7 +1224,9 @@ async def eas_dispatch(
             add_count = len(preview_adds)
             change_count = 0  # Not tracked yet
             delete_count = len(delete_ids) if 'delete_ids' in locals() and delete_ids else 0
-            has_collection_changes = (add_count + change_count + delete_count) > 0
+            # Consider paging flag (MoreAvailable) as a collection change for key bumping semantics
+            has_more_flag = bool(window_size) and (len(emails) > window_size)
+            has_collection_changes = ((add_count + change_count + delete_count) > 0) or has_more_flag
 
             if has_collection_changes:
                 state.synckey_counter = client_counter + 1
@@ -1254,7 +1256,7 @@ async def eas_dispatch(
                 "client_counter": client_counter,
                 "new_counter": state.synckey_counter,
                 "email_count": add_count,
-                "fetch_count": len(fetched_emails) if fetched_emails else 0,
+                "fetch_count": len(fetch_ids) if fetch_ids else 0,
                 "has_collection_changes": has_collection_changes
             })
             
@@ -1390,8 +1392,8 @@ async def eas_dispatch(
                         class_name="Email",
                     )
                     wbxml = wbxml_batch.payload
-                    _write_json_line(
-                        "activesync/activesync.log",
+            _write_json_line(
+                "activesync/activesync.log",
                         {
                             "event": "sync_emails_sent_wbxml", 
                             "sync_key": new_sync_key, 
@@ -1414,8 +1416,8 @@ async def eas_dispatch(
                 )
             else:
                 # No emails to send - return no changes
-                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
-                if is_wbxml_request:
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=state.sync_key,
                         emails=[],
@@ -1460,8 +1462,8 @@ async def eas_dispatch(
                     )
                 except Exception as e:
                     # Log the error
-                    _write_json_line(
-                        "activesync/activesync.log",
+                _write_json_line(
+                    "activesync/activesync.log",
                         {
                             "event": "sync_wbxml_creation_error",
                             "error": str(e),
@@ -1489,12 +1491,12 @@ async def eas_dispatch(
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             else:
-                xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+            xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
                 
-                _write_json_line(
-                    "activesync/activesync.log",
+            _write_json_line(
+                "activesync/activesync.log",
                     {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
-                )
+            )
         # Client sync key is ahead of server - this shouldn't happen, return MS-ASCMD compliant error
         else:
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -1553,8 +1555,8 @@ async def eas_dispatch(
                 except Exception:
                     pass
             
-            _write_json_line(
-                "activesync/activesync.log",
+        _write_json_line(
+            "activesync/activesync.log",
                 {
                     "event": "ping_start",
                     "heartbeat_interval": heartbeat_interval,
@@ -1636,7 +1638,7 @@ async def eas_dispatch(
                 }
             )
             
-            return Response(
+        return Response(
                 content=w.bytes(),
                 media_type="application/vnd.ms-sync.wbxml",
                 headers=headers,
@@ -1662,7 +1664,7 @@ async def eas_dispatch(
                 content=w.bytes(),
                 media_type="application/vnd.ms-sync.wbxml",
                 headers=headers,
-            )
+        )
     if cmd == "sendmail":
         # Accept request (actual SMTP send could be wired later)
         _write_json_line("activesync/activesync.log", {"event": "sendmail"})
