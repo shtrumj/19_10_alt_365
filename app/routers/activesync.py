@@ -1392,8 +1392,8 @@ async def eas_dispatch(
                         class_name="Email",
                     )
                     wbxml = wbxml_batch.payload
-            _write_json_line(
-                "activesync/activesync.log",
+                    _write_json_line(
+                        "activesync/activesync.log",
                         {
                             "event": "sync_emails_sent_wbxml", 
                             "sync_key": new_sync_key, 
@@ -1409,11 +1409,6 @@ async def eas_dispatch(
                         },
                     )
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
-                xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {"event": "sync_emails_sent", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id},
-                )
             else:
                 # No emails to send - return no changes
                 is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
