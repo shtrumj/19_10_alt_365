@@ -409,6 +409,24 @@ class EmailHandler:
                 self.db.commit()
                 self.db.refresh(email_record)
 
+                # CRITICAL: Trigger ActiveSync push notification immediately
+                # This notifies any connected iPhone/device via Ping command
+                try:
+                    from .push_notifications import notify_new_email
+                    import asyncio
+                    
+                    # Notify ActiveSync devices about new email
+                    asyncio.create_task(notify_new_email(recipient_user.id, folder_id="1"))
+                    
+                    logger.info(
+                        f"📱 Triggered ActiveSync push notification for user {recipient_user.id}"
+                    )
+                except Exception as notify_error:
+                    # Don't fail email delivery if notification fails
+                    logger.warning(
+                        f"Failed to trigger ActiveSync notification: {notify_error}"
+                    )
+
                 # Send WebSocket notification to recipient
                 from .email_parser import get_email_preview
                 from .websocket_manager import manager

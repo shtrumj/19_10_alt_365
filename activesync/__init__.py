@@ -16,6 +16,7 @@ from .wbxml_builder import (
     create_sync_response_wbxml_with_fetch,
     create_invalid_synckey_response_wbxml, 
     write_fetch_responses,
+    write_delete_responses,
     SyncBatch
 )
 from .state_machine import SyncStateStore
@@ -29,6 +30,7 @@ __all__ = [
     'create_sync_response_wbxml_with_fetch',
     'create_invalid_synckey_response_wbxml',
     'write_fetch_responses',
+    'write_delete_responses',
     'SyncBatch',
     'SyncStateStore',
     'sync_prepare_batch',

@@ -60,6 +60,10 @@ def _row_to_email_dict(row: Any) -> Dict[str, Any]:
     }
 
 
+# CRITICAL: Single global state machine instance (persists across requests)
+from .state_machine import SyncStateStore
+_GLOBAL_STORE = SyncStateStore()
+
 def sync_prepare_batch(
     *,
     user_email: str,
@@ -70,11 +74,7 @@ def sync_prepare_batch(
     window_size: int = 25,
 ) -> 'SyncBatch':
     """Legacy compatibility wrapper."""
-    from .state_machine import SyncStateStore
     from .wbxml_builder import SyncBatch
-    
-    # One in-memory store (replace with a DB-backed implementation if needed)
-    STORE = SyncStateStore()
     
     emails = [_row_to_email_dict(r) for r in db_emails]
 
@@ -82,7 +82,7 @@ def sync_prepare_batch(
     if os.getenv("EAS_ENVELOPE_ONLY", "0") in ("1", "true", "True"):
         emails = []
 
-    return STORE.prepare_batch(
+    return _GLOBAL_STORE.prepare_batch(
         user_email=user_email,
         device_id=device_id,
         collection_id=collection_id,

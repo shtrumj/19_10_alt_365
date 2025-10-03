@@ -21,6 +21,7 @@ STR_I       = 0x03
 
 # Code pages
 CP_AIRSYNC     = 0
+CP_PING        = 1  # Ping codepage for push notifications
 CP_EMAIL       = 2
 CP_AIRSYNCBASE = 17
 
@@ -83,6 +84,10 @@ class WBXMLWriter:
             self.write_byte(SWITCH_PAGE)
             self.write_byte(cp & 0xFF)
             self.cur_page = cp
+
+    # Alias to match older call sites
+    def cp(self, cp: int):
+        self.page(cp)
 
     def start(self, tok: int, with_content: bool = True):
         self.write_byte((tok | 0x40) if with_content else tok)
@@ -167,6 +172,27 @@ def write_fetch_responses(
         w.cp(CP_AIRSYNC)
         w.end()  # </ApplicationData>
         w.end()  # </Fetch>
+    w.end()  # </Responses>
+
+
+def write_delete_responses(
+    *,
+    w: WBXMLWriter,
+    deletes: List[Dict[str, Any]],
+) -> None:
+    """Emit <Responses><Delete> acknowledgements."""
+    if not deletes:
+        return
+    w.cp(CP_AIRSYNC)
+    w.start(AS_Responses)
+    for item in deletes:
+        sid = str(item.get("server_id") or "")
+        status = str(item.get("status") or "1")
+        # <Delete>
+        w.start(AS_Delete)
+        w.start(AS_Status); w.write_str(status); w.end()
+        w.start(AS_ServerId); w.write_str(sid); w.end()
+        w.end()  # </Delete>
     w.end()  # </Responses>
 
 
@@ -393,8 +419,16 @@ def create_sync_response_wbxml(
     window_size: int = 25,
     more_available: bool = False,
     class_name: str = "Email",
+    body_type_preference: int = 2,
+    truncation_size: Optional[int] = None,
 ) -> SyncBatch:
-    """Legacy compatibility wrapper."""
+    """
+    Legacy compatibility wrapper with Z-Push body preference support.
+    
+    Args:
+        body_type_preference: 1=PlainText, 2=HTML (default), 3=RTF, 4=MIME
+        truncation_size: Max body size in bytes (None = no truncation)
+    """
     return build_sync_response(
         new_sync_key=sync_key,
         class_name=class_name,
@@ -503,7 +537,7 @@ def create_sync_response_wbxml_with_fetch(
     payload = w.bytes()
     return SyncBatch(
         response_sync_key=sync_key,
-        wbxml=payload,
+        payload=payload,
         sent_count=count,
         total_available=len(emails),
         more_available=more_available,

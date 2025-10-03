@@ -22,8 +22,14 @@ from ..email_service import EmailService
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from activesync import sync_prepare_batch
-from activesync import create_sync_response_wbxml, create_invalid_synckey_response_wbxml, SyncBatch, SyncStateStore
+# Z-Push-compliant WBXML builder imports
+from activesync.wbxml_builder import (
+    create_sync_response_wbxml,
+    create_sync_response_wbxml_with_fetch,
+    SyncBatch,
+)
+from activesync.state_machine import SyncStateStore
+from activesync.adapter import sync_prepare_batch
 from ..wbxml_parser import (
     parse_wbxml_sync_request,
     parse_wbxml_foldersync_request,
@@ -35,6 +41,9 @@ from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_s
 _sync_rate_limits = {}
 
 router = APIRouter(prefix="/activesync", tags=["activesync"])
+
+# Simple in-memory pending cache: (user, device, collection, client_key) -> wbxml bytes
+_pending_batches_cache = {}
 
 
 class ActiveSyncResponse:
@@ -468,7 +477,7 @@ async def eas_dispatch(
             # Step 1 response: PolicyKey=0 + full policy settings
             xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <Provision xmlns="Provision:">
-    <Status>1</Status>
+            <Status>1</Status>
     <Policies>
         <Policy>
             <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
@@ -782,6 +791,57 @@ async def eas_dispatch(
             client_key_int = 0
             server_key_int = 0
         
+        # CRITICAL FIX: Handle SyncKey=0 BEFORE any email queries!
+        # When client sends SyncKey=0, it means "I have nothing, start fresh"
+        # We MUST reset last_synced_email_id BEFORE filtering emails!
+        if client_sync_key == "0":
+            state.synckey_counter = 1
+            state.sync_key = "1"
+            state.last_synced_email_id = 0  # RESET PAGINATION!
+            state.pending_sync_key = None
+            state.pending_max_email_id = None
+            state.pending_item_ids = None
+            db.commit()
+            
+            _write_json_line("activesync/activesync.log", {
+                "event": "sync_initial_reset_EARLY",
+                "device_id": device_id,
+                "collection_id": collection_id,
+                "message": "CRITICAL: Reset last_synced_email_id BEFORE email query"
+            })
+        
+        # CRITICAL: Detect InvalidSyncKey - client and server are out of sync
+        # Per expert: "When client sends stale key (e.g. 4) but server is at 190,
+        # return Status=3 (InvalidSyncKey) with SyncKey=0 to force client reset"
+        # Allow tolerance of ±2 for pending batches, but reject if gap is huge
+        if client_sync_key != "0" and abs(client_key_int - server_key_int) > 3:
+            _write_json_line("activesync/activesync.log", {
+                "event": "sync_invalid_synckey_detected",
+                "client_sync_key": client_sync_key,
+                "server_sync_key": state.sync_key,
+                "gap": abs(client_key_int - server_key_int),
+                "message": "Client sent stale SyncKey - forcing reset with Status=3"
+            })
+            # Return InvalidSyncKey response
+            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            if is_wbxml_request:
+                wbxml_batch = create_invalid_synckey_response_wbxml(collection_id=collection_id)
+                return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+            else:
+                # XML fallback
+                xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
+<Sync xmlns="AirSync">
+    <Collections>
+        <Collection>
+            <Class>Email</Class>
+            <SyncKey>0</SyncKey>
+            <CollectionId>{collection_id}</CollectionId>
+            <Status>3</Status>
+        </Collection>
+    </Collections>
+</Sync>"""
+                return Response(content=xml_response, media_type="application/xml", headers=headers)
+        
         # CRITICAL FIX #26: Two-phase commit - check for pending batch first!
         # Expert: "Only commit when the client echoes back the SyncKey you issued"
         import json
@@ -980,36 +1040,11 @@ async def eas_dispatch(
             },
         )
         
-        # Initial sync (SyncKey=0) - Use SIMPLE INTEGER like FolderSync!
+        # Initial sync (SyncKey=0) - already handled above at line 799-813!
         if client_sync_key == "0":
-            # CRITICAL FIX #25: ALWAYS reset to "1" when client sends "0"!
-            # Expert: "On SyncKey=0, the server must return SyncKey=1"
-            # Previous logic tried to avoid reset, but that causes iOS to see "2" and reject!
-            
-            # ALWAYS reset pagination state on initial sync
-            state.synckey_counter = 1
-            response_sync_key = "1"  # MUST be "1", not "2"!
-            state.sync_key = response_sync_key
-            state.last_synced_email_id = 0  # Reset pagination too!
-            db.commit()
-
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_initial_reset",
-                "device_id": device_id,
-                "collection_id": collection_id,
-                "client_sync_key": "0",
-                "response_sync_key": response_sync_key,
-                "message": "Client requested initial sync - RESET to SyncKey=1"
-            })
-
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_initial_simple_integer",
-                "device_id": device_id,
-                "collection_id": collection_id,
-                "client_sync_key": "0",
-                "response_sync_key": response_sync_key,
-                "synckey_counter": state.synckey_counter,
-            })
+            # State was already reset BEFORE email query (line 799-813)
+            # This ensures last_synced_email_id=0 BEFORE we filter emails
+            response_sync_key = "1"
             # CRITICAL FIX #23-2: Send items on FIRST sync per expert!
             # Expert: "iOS is fine receiving items on the first response"
             # Previous logic sent empty response, which was WRONG!
@@ -1028,13 +1063,44 @@ async def eas_dispatch(
                     "has_more": has_more,
                     "message": "Sending items immediately on SyncKey 0→1"
                 })
-                # Build Z-Push-compliant envelope-only response for initial 0→1
+                # CRITICAL: ACTUALLY SEND THE EMAILS! (was passing empty list)
+                # Convert SQLAlchemy Email objects to dicts for WBXML builder
+                # Z-Push approach: ALWAYS send HTML as Type=2 if content looks like HTML
+                email_dicts = []
+                for email in emails_to_send:
+                    body_content = email.body or email.preview or ''
+                    body_html_content = None
+                    
+                    # Z-Push logic: If body contains HTML, send it as Type=2 (HTML)
+                    # iOS prefers HTML and will render it properly
+                    if body_content and ('<html' in body_content.lower() or body_content.strip().startswith('<')):
+                        # This is HTML content - send it as body_html for Type=2
+                        body_html_content = body_content
+                        # Also provide plain text fallback by stripping HTML tags
+                        import re
+                        plain_fallback = re.sub(r'<[^>]+>', '', body_content)
+                        plain_fallback = plain_fallback.replace('&nbsp;', ' ').replace('&amp;', '&')
+                        plain_fallback = plain_fallback.replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"')
+                        body_content = plain_fallback.strip()
+                    
+                    email_dicts.append({
+                        'id': email.id,
+                        'server_id': f"{collection_id}:{email.id}",
+                        'subject': email.subject or '(no subject)',
+                        'from': email.external_sender or (email.sender.email if email.sender else ''),
+                        'to': email.external_recipient or (email.recipient.email if email.recipient else ''),
+                        'created_at': email.created_at,
+                        'is_read': email.is_read,
+                        'body': body_content,  # Plain text fallback
+                        'body_html': body_html_content,  # HTML body (Type=2)
+                    })
+                
                 wbxml_batch = create_sync_response_wbxml(
                     sync_key=response_sync_key,
-                    emails=[],
+                    emails=email_dicts,
                     collection_id=collection_id,
-                    window_size=0,
-                    more_available=False,
+                    window_size=window_size,
+                    more_available=has_more,
                     class_name="Email",
                 )
                 wbxml = wbxml_batch.payload
@@ -1371,15 +1437,15 @@ async def eas_dispatch(
                             "wbxml_first50": wbxml[:50].hex(),
                             "sync_gap": sync_gap
                         }
-                    )
-                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                )
+                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             else:
                 xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
-            
-            _write_json_line(
-                "activesync/activesync.log",
-                {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
-            )
+                
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
+                )
         # Client sync key is ahead of server - this shouldn't happen, return MS-ASCMD compliant error
         else:
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -1404,9 +1470,150 @@ async def eas_dispatch(
             headers=headers,
         )
     if cmd == "ping":
-        # Minimal Ping response with heartbeat interval acceptance
-        _write_json_line("activesync/activesync.log", {"event": "ping"})
-        return Response(status_code=200, headers=headers)
+        # Z-Push-compliant Ping implementation with event-driven push notifications
+        # MS-ASCMD 2.2.2.13: Ping command maintains long-running connection
+        import time
+        import asyncio
+        from ..push_notifications import push_manager
+        
+        try:
+            body = await request.body()
+            
+            # Parse Ping request to get heartbeat interval and folders to monitor
+            # Default values per MS-ASCMD spec
+            heartbeat_interval = 540  # 9 minutes (common iOS default)
+            folders_to_monitor = ["1"]  # Default to inbox
+            
+            # Simple WBXML parsing for Ping (codepage 0, Ping namespace)
+            # Token 0x03 = HeartbeatInterval (PING), Token 0x04 = Folders (PING)
+            if body and len(body) > 10:
+                try:
+                    # Look for HeartbeatInterval value (STR_I = 0x03)
+                    idx = body.find(b'\x03')
+                    if idx != -1 and idx + 1 < len(body):
+                        # Read the string value until null terminator
+                        end_idx = body.find(b'\x00', idx + 1)
+                        if end_idx != -1:
+                            heartbeat_str = body[idx + 1:end_idx].decode('utf-8', errors='ignore')
+                            try:
+                                heartbeat_interval = int(heartbeat_str)
+                                # Clamp to reasonable range (5 min to 30 min)
+                                heartbeat_interval = max(300, min(heartbeat_interval, 1800))
+                            except ValueError:
+                                pass
+                except Exception:
+                    pass
+            
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "ping_start",
+                    "heartbeat_interval": heartbeat_interval,
+                    "folders": folders_to_monitor,
+                    "user_id": current_user.id,
+                    "active_connections": push_manager.get_user_connections_count(current_user.id),
+                }
+            )
+            
+            # Subscribe to push notifications for this user
+            notification_event = await push_manager.subscribe(current_user.id, folders_to_monitor)
+            
+            start_time = time.time()
+            changes_detected = False
+            
+            try:
+                # Z-Push approach: Wait for either a notification or timeout
+                # This is event-driven - we're notified immediately when new content arrives
+                await asyncio.wait_for(
+                    notification_event.wait(),
+                    timeout=heartbeat_interval
+                )
+                # If we get here, changes were detected!
+                changes_detected = True
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "ping_changes_detected",
+                        "trigger": "push_notification",
+                        "elapsed_seconds": int(time.time() - start_time),
+                    }
+                )
+            except asyncio.TimeoutError:
+                # Heartbeat expired with no changes
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "ping_timeout",
+                        "elapsed_seconds": int(time.time() - start_time),
+                    }
+                )
+            finally:
+                # Always unsubscribe when done
+                await push_manager.unsubscribe(notification_event)
+            
+            # Build WBXML Ping response
+            # Per MS-ASCMD: Status 2 = changes, Status 1 = no changes (timeout)
+            from activesync.wbxml_builder import WBXMLWriter, CP_PING
+            
+            w = WBXMLWriter()
+            w.header()
+            w.page(1)  # Ping codepage
+            w.start(0x05)  # Ping tag
+            
+            if changes_detected:
+                w.start(0x08)  # Status tag
+                w.write_str("2")  # Status 2 = Changes detected
+                w.end()
+                
+                # Folders with changes
+                w.start(0x04)  # Folders tag
+                w.start(0x02)  # Folder tag
+                w.write_str("1")  # CollectionId (inbox)
+                w.end()
+                w.end()
+            else:
+                w.start(0x08)  # Status tag
+                w.write_str("1")  # Status 1 = No changes (heartbeat expired)
+                w.end()
+            
+            w.end()  # Close Ping
+            
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "ping_complete",
+                    "changes_detected": changes_detected,
+                    "elapsed_seconds": int(time.time() - start_time),
+                }
+            )
+            
+            return Response(
+                content=w.bytes(),
+                media_type="application/vnd.ms-sync.wbxml",
+                headers=headers,
+            )
+            
+        except Exception as e:
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "ping_error", "error": str(e), "traceback": traceback.format_exc()}
+            )
+            # Return Status 1 (no changes) on error to avoid client loop
+            from activesync.wbxml_builder import WBXMLWriter
+            w = WBXMLWriter()
+            w.header()
+            w.page(1)  # Ping codepage
+            w.start(0x05)  # Ping
+            w.start(0x08)  # Status
+            w.write_str("1")  # No changes
+            w.end()
+            w.end()
+            
+            return Response(
+                content=w.bytes(),
+                media_type="application/vnd.ms-sync.wbxml",
+                headers=headers,
+            )
     if cmd == "sendmail":
         # Accept request (actual SMTP send could be wired later)
         _write_json_line("activesync/activesync.log", {"event": "sendmail"})
