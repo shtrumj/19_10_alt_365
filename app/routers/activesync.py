@@ -1219,7 +1219,9 @@ async def eas_dispatch(
                 return Response(status_code=400)
             
             # CRITICAL FIX #61: Do NOT bump SyncKey on Fetch-only responses
-            add_count = len(emails)
+            # Use the actual adds we intend to send (respecting WindowSize)
+            preview_adds = emails[:window_size] if window_size else emails
+            add_count = len(preview_adds)
             change_count = 0  # Not tracked yet
             delete_count = len(delete_ids) if 'delete_ids' in locals() and delete_ids else 0
             has_collection_changes = (add_count + change_count + delete_count) > 0
@@ -1251,7 +1253,7 @@ async def eas_dispatch(
                 "response_sync_key": response_sync_key,
                 "client_counter": client_counter,
                 "new_counter": state.synckey_counter,
-                "email_count": len(emails),
+                "email_count": add_count,
                 "fetch_count": len(fetched_emails) if fetched_emails else 0,
                 "has_collection_changes": has_collection_changes
             })
