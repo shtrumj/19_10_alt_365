@@ -115,6 +115,78 @@ def parse_wbxml_foldersync_request(wbxml_bytes: bytes) -> dict:
     """
     if not wbxml_bytes or len(wbxml_bytes) < 6:
         return {"sync_key": "0"}
+
+
+def parse_wbxml_sync_fetch_and_delete(wbxml_bytes: bytes) -> dict:
+    """
+    Very small WBXML scanner to extract AirSync Fetch and Delete ServerIds from a Sync request.
+    Returns: { 'fetch_ids': [server_id,...], 'delete_ids': [server_id,...] }
+    Notes: This is a best-effort parser; it looks for AirSync codepage and
+    detects tokens: Fetch (0x0A|content -> 0x4A), Delete (0x09|content -> 0x49),
+    and ServerId (0x0D|content -> 0x4D), then reads STR_I text.
+    """
+    fetch_ids = []
+    delete_ids = []
+    if not wbxml_bytes:
+        return {"fetch_ids": fetch_ids, "delete_ids": delete_ids}
+    SWITCH_PAGE = 0x00
+    END = 0x01
+    STR_I = 0x03
+    CP_AIRSYNC = 0
+    AS_Fetch = 0x0A
+    AS_Delete = 0x09
+    AS_ServerId = 0x0D
+
+    cp = None
+    i = 0
+    in_fetch = False
+    in_delete = False
+
+    def read_cstr(buf, pos):
+        j = pos
+        while j < len(buf) and buf[j] != 0x00:
+            j += 1
+        s = buf[pos:j].decode('utf-8', errors='ignore')
+        return s, j + 1
+
+    while i < len(wbxml_bytes):
+        b = wbxml_bytes[i]
+        i += 1
+        if b == SWITCH_PAGE:
+            if i >= len(wbxml_bytes):
+                break
+            cp = wbxml_bytes[i]
+            i += 1
+            continue
+        if b == END:
+            # closing a tag; reset context if leaving fetch/delete
+            if in_fetch:
+                in_fetch = False
+            if in_delete:
+                in_delete = False
+            continue
+        tok = b & 0x3F  # strip content bit
+        has_content = (b & 0x40) != 0
+        if cp == CP_AIRSYNC:
+            if tok == AS_Fetch and has_content:
+                in_fetch = True; in_delete = False
+                continue
+            if tok == AS_Delete and has_content:
+                in_delete = True; in_fetch = False
+                continue
+            if tok == AS_ServerId and has_content:
+                # Next significant token should be STR_I then the string
+                while i < len(wbxml_bytes) and wbxml_bytes[i] != STR_I:
+                    i += 1
+                if i < len(wbxml_bytes) and wbxml_bytes[i] == STR_I:
+                    i += 1
+                    sid, i = read_cstr(wbxml_bytes, i)
+                    if in_fetch and sid:
+                        fetch_ids.append(sid)
+                    elif in_delete and sid:
+                        delete_ids.append(sid)
+                continue
+    return {"fetch_ids": fetch_ids, "delete_ids": delete_ids}
     
     # Check for WBXML header (0x03 0x01)
     if not wbxml_bytes.startswith(b'\x03\x01'):

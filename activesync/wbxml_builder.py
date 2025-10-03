@@ -5,7 +5,6 @@ wbxml_builder.py — Microsoft EAS 14.1-compliant WBXML builders.
 
 Highlights
 - AirSync (CP 0), Email (CP 2), AirSyncBase (CP 17) tokens.
-- Adds top-level <Status>1</Status> inside <Sync>.
 - AirSyncBase <Body>: Type -> EstimatedDataSize -> Truncated -> Data.
 - DateReceived always ends with 'Z' (UTC).
 """
@@ -47,11 +46,13 @@ AS_Collections     = 0x1C
 AS_ApplicationData = 0x1D
 
 # Email (CP 2)
-EM_DateReceived = 0x0F
-EM_Subject      = 0x14
-EM_Read         = 0x15
-EM_To           = 0x16
-EM_From         = 0x18
+EM_DateReceived   = 0x0F
+EM_MessageClass   = 0x13
+EM_Subject        = 0x14
+EM_Read           = 0x15
+EM_To             = 0x16
+EM_From           = 0x18
+EM_InternetCPID   = 0x39  # UTF-8 = 65001
 
 # AirSyncBase (CP 17)
 ASB_Type              = 0x06
@@ -93,7 +94,7 @@ class WBXMLWriter:
 
 def _ensure_utc_z(dt_or_str: Any) -> str:
     if isinstance(dt_or_str, datetime):
-        return dt_or_str.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+        return dt_or_str.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="milliseconds") + "Z"
     if isinstance(dt_or_str, str):
         s = dt_or_str
         if not s.endswith("Z"):
@@ -101,10 +102,10 @@ def _ensure_utc_z(dt_or_str: Any) -> str:
             if "T" in s:
                 # strip fractional if any to keep things tidy
                 main = s.split(".")[0]
-                return main + "Z"
+                return main + ".000Z"
             return s + "Z"
         return s
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000") + "Z"
 
 
 @dataclass
@@ -155,75 +156,85 @@ def build_sync_response(
     # <Sync>
     w.page(CP_AIRSYNC)
     w.start(AS_Sync)
-    # Top-level Status (not strictly required by all clients, but iOS is happiest with it)
-    w.start(AS_Status); w.write_str("1"); w.end()
 
     # <Collections><Collection>
     w.start(AS_Collections)
     w.start(AS_Collection)
 
-    # Required children
+    # Required children (Z-Push-like order): SyncKey -> CollectionId -> Class -> Status
     w.start(AS_SyncKey);      w.write_str(new_sync_key);         w.end()
     w.start(AS_CollectionId); w.write_str(str(collection_id));   w.end()
-    w.start(AS_Status);       w.write_str("1");                  w.end()
     w.start(AS_Class);        w.write_str(class_name);           w.end()
-
-    if more_available:
-        w.start(AS_MoreAvailable, with_content=False)
-
-    # Commands
-    w.start(AS_Commands)
+    w.start(AS_Status);       w.write_str("1");                  w.end()
 
     count = 0
-    for idx, em in enumerate(items):
-        if count >= window_size:
-            break
+    if items:
+        # Commands
+        w.start(AS_Commands)
 
-        server_id = em.get("server_id") or f"{collection_id}:{em.get('id', idx+1)}"
-        subj = em.get("subject") or "(no subject)"
-        from_ = em.get("from") or em.get("sender") or ""
-        to_   = em.get("to") or em.get("recipient") or ""
-        read  = "1" if bool(em.get("is_read")) else "0"
-        when  = _ensure_utc_z(em.get("created_at"))
+        for idx, em in enumerate(items):
+            if count >= window_size:
+                break
 
-        body_text = em.get("body") or em.get("preview") or ""
-        body_bytes = body_text.encode("utf-8")
-        size = str(len(body_bytes))
+            server_id = em.get("server_id") or f"{collection_id}:{em.get('id', idx+1)}"
+            subj = em.get("subject") or "(no subject)"
+            from_ = em.get("from") or em.get("sender") or ""
+            to_   = em.get("to") or em.get("recipient") or ""
+            read  = "1" if bool(em.get("is_read")) else "0"
+            when  = _ensure_utc_z(em.get("created_at"))
 
-        # <Add>
-        w.page(CP_AIRSYNC); w.start(AS_Add)
+            # Prefer HTML body if available; otherwise plain text
+            body_html = em.get("body_html")
+            body_text = em.get("body") or em.get("preview") or ""
+            chosen_body = str(body_html) if body_html else str(body_text)
+            body_bytes = chosen_body.encode("utf-8")
+            size = str(len(body_bytes))
 
-        # <ServerId>
-        w.start(AS_ServerId); w.write_str(server_id); w.end()
+            # <Add>
+            w.page(CP_AIRSYNC); w.start(AS_Add)
 
-        # <ApplicationData>
-        w.start(AS_ApplicationData)
+            # <ServerId>
+            w.start(AS_ServerId); w.write_str(server_id); w.end()
 
-        # Email props
-        w.page(CP_EMAIL)
-        w.start(EM_Subject);      w.write_str(subj);  w.end()
-        w.start(EM_From);         w.write_str(from_); w.end()
-        w.start(EM_To);           w.write_str(to_);   w.end()
-        w.start(EM_DateReceived); w.write_str(when);  w.end()
-        w.start(EM_Read);         w.write_str(read);  w.end()
+            # <ApplicationData>
+            w.start(AS_ApplicationData)
 
-        # AirSyncBase <Body>
-        w.page(CP_AIRSYNCBASE)
-        w.start(ASB_Body)
-        # ORDER MATTERS: Type -> EstimatedDataSize -> Truncated -> Data
-        w.start(ASB_Type);              w.write_str("1");    w.end()  # 1 = PlainText
-        w.start(ASB_EstimatedDataSize); w.write_str(size);   w.end()
-        w.start(ASB_Truncated);         w.write_str("0");    w.end()
-        w.start(ASB_Data);              w.write_str(body_text); w.end()
-        w.end()  # </Body>
+            # Email props
+            w.page(CP_EMAIL)
+            w.start(EM_Subject);      w.write_str(subj);  w.end()
+            w.start(EM_From);         w.write_str(from_); w.end()
+            w.start(EM_To);           w.write_str(to_);   w.end()
+            w.start(EM_DateReceived); w.write_str(when);  w.end()
+            # Include MessageClass like Z-Push
+            w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
+            # InternetCPID to signal UTF-8
+            w.start(EM_InternetCPID); w.write_str("65001"); w.end()
+            w.start(EM_Read);         w.write_str(read);  w.end()
 
-        # close ApplicationData, Add
-        w.page(CP_AIRSYNC); w.end()     # </ApplicationData>
-        w.end()                         # </Add>
+            # AirSyncBase <Body> (always include)
+            w.page(CP_AIRSYNCBASE)
+            w.start(ASB_Body)
+            # ORDER MATTERS: Type -> EstimatedDataSize -> Truncated -> Data
+            w.start(ASB_Type);              w.write_str("2" if body_html else "1");    w.end()  # 2=HTML,1=PlainText
+            w.start(ASB_EstimatedDataSize); w.write_str(size if chosen_body else "0");   w.end()
+            w.start(ASB_Truncated);         w.write_str("0");    w.end()
+            w.start(ASB_Data);              w.write_str(chosen_body if chosen_body else ""); w.end()
+            w.end()  # </Body>
+            # Native body type helps clients choose renderer
+            # (some clients expect this under AirSyncBase)
+            # Not all schema versions define NativeBodyType; if unsupported, clients ignore it.
 
-        count += 1
+            # close ApplicationData, Add
+            w.page(CP_AIRSYNC); w.end()     # </ApplicationData>
+            w.end()                         # </Add>
 
-    w.end()  # </Commands>
+            count += 1
+
+        w.end()  # </Commands>
+
+    # MoreAvailable after Commands
+    if more_available:
+        w.start(AS_MoreAvailable, with_content=False)
     w.end()  # </Collection>
     w.end()  # </Collections>
     w.end()  # </Sync>

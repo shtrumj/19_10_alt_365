@@ -7,6 +7,7 @@ adapter.py — glue from your storage rows to builder-friendly dicts.
 from __future__ import annotations
 from typing import List, Dict, Any
 from datetime import datetime
+import os
 
 def select_inbox_slice(all_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -35,11 +36,27 @@ def _row_to_email_dict(row: Any) -> Dict[str, Any]:
         "id": g.get("id"),
         "server_id": g.get("server_id") or g.get("id"),
         "subject": g.get("subject") or "No Subject",
-        "from": g.get("sender") or g.get("from") or g.get("external_sender"),
-        "to": g.get("recipient") or g.get("to") or g.get("external_recipient"),
+        # Prefer external sender first, then related user email, then raw string
+        "from": (
+            g.get("external_sender")
+            or (getattr(g.get("sender"), "email", None) if g.get("sender") else None)
+            or g.get("from")
+            or g.get("sender")
+            or ""
+        ),
+        # Prefer external recipient first, then related user email, then raw string
+        "to": (
+            g.get("external_recipient")
+            or (getattr(g.get("recipient"), "email", None) if g.get("recipient") else None)
+            or g.get("to")
+            or g.get("recipient")
+            or ""
+        ),
         "is_read": bool(g.get("is_read")),
         "created_at": g.get("created_at") if isinstance(g.get("created_at"), datetime) else g.get("created_at"),
         "body": g.get("body") or g.get("preview") or g.get("snippet") or "",
+        # Prefer HTML body when available (various possible model field names)
+        "body_html": g.get("body_html") or g.get("html_body") or g.get("html") or "",
     }
 
 
@@ -60,6 +77,10 @@ def sync_prepare_batch(
     STORE = SyncStateStore()
     
     emails = [_row_to_email_dict(r) for r in db_emails]
+
+    # Envelope-only test mode: force no Commands to verify key advancement
+    if os.getenv("EAS_ENVELOPE_ONLY", "0") in ("1", "true", "True"):
+        emails = []
 
     return STORE.prepare_batch(
         user_email=user_email,
