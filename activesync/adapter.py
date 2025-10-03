@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Thin adapter between your FastAPI layer and the state machine/builder.
-
-- Converts your DB Email rows -> builder-friendly dicts.
-- Holds one in-process SyncStateStore (swap with persistent storage if desired).
+adapter.py — glue from your storage rows to builder-friendly dicts.
 """
 
 from __future__ import annotations
-
 from typing import List, Dict, Any
 from datetime import datetime
-from .state_machine import SyncStateStore
-from .wbxml_builder import SyncBatch
 
-# One in-memory store (replace with a DB-backed implementation if needed)
-STORE = SyncStateStore()
+def select_inbox_slice(all_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Ensure each row has the fields the builder expects:
+      id, subject, sender/from, recipient/to, created_at, is_read, preview/body (optional)
+    """
+    out: List[Dict[str, Any]] = []
+    for r in all_rows:
+        out.append({
+            "id": r.get("id"),
+            "subject": r.get("subject") or "(no subject)",
+            "from": r.get("sender") or r.get("from") or "",
+            "to": r.get("recipient") or r.get("to") or "",
+            "created_at": r.get("created_at"),
+            "is_read": bool(r.get("is_read")),
+            "body": r.get("body") or r.get("preview") or "",
+        })
+    return out
 
 
+# Legacy compatibility
 def _row_to_email_dict(row: Any) -> Dict[str, Any]:
     # Accept both dict-like and attribute-like rows
     g = (row if isinstance(row, dict) else row.__dict__)
@@ -42,7 +51,14 @@ def sync_prepare_batch(
     client_sync_key: str,
     db_emails: List[Any],
     window_size: int = 25,
-) -> SyncBatch:
+) -> 'SyncBatch':
+    """Legacy compatibility wrapper."""
+    from .state_machine import SyncStateStore
+    from .wbxml_builder import SyncBatch
+    
+    # One in-memory store (replace with a DB-backed implementation if needed)
+    STORE = SyncStateStore()
+    
     emails = [_row_to_email_dict(r) for r in db_emails]
 
     return STORE.prepare_batch(
