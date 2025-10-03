@@ -1486,12 +1486,12 @@ async def eas_dispatch(
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             else:
-            xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+                xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
                 
-            _write_json_line(
-                "activesync/activesync.log",
+                _write_json_line(
+                    "activesync/activesync.log",
                     {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
-            )
+                )
         # Client sync key is ahead of server - this shouldn't happen, return MS-ASCMD compliant error
         else:
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
