@@ -1231,6 +1231,18 @@ async def eas_dispatch(
 
             response_sync_key = str(state.synckey_counter)
             state.sync_key = response_sync_key  # Persist the chosen key
+
+            # Sanity trace: explicit log when fetch-only (no collection changes)
+            if not has_collection_changes and fetched_emails:
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_fetch_only_no_key_bump",
+                        "client_sync_key": client_sync_key,
+                        "response_sync_key": response_sync_key,
+                        "fetch_count": len(fetched_emails),
+                    },
+                )
             # NOTE: We commit this BEFORE sending, so the key is persisted!
             
             _write_json_line("activesync/activesync.log", {
