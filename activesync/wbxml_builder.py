@@ -147,47 +147,61 @@ def write_fetch_responses(
     body_type_preference: int = 2,
     truncation_size: Optional[int] = None,
 ) -> None:
-    """Emit <Responses><Fetch>...</Fetch></Responses> with bodies for fetched items."""
+    """Emit canonical <Responses><Fetch> blocks (Z-Push order) with proper body and no CollectionId."""
     if not fetched:
         return
     w.cp(CP_AIRSYNC)
     w.start(AS_Responses)
     for em in fetched:
         server_id = str(em.get("server_id") or em.get("id") or "")
+        if not server_id:
+            continue
+        # <Fetch>
         w.start(AS_Fetch)
-        # Status 1
-        w.start(AS_Status); w.write_str("1"); w.end()
+        # ORDER: ServerId -> Status -> Class -> ApplicationData
         w.start(AS_ServerId); w.write_str(server_id); w.end()
-        w.start(AS_Class); w.write_str("Email"); w.end()
-        # ApplicationData
+        w.start(AS_Status);   w.write_str("1");     w.end()
+        w.start(AS_Class);    w.write_str("Email"); w.end()
+        # <ApplicationData>
         w.start(AS_ApplicationData)
-        # Minimal email envelope
+        # Optional envelope
         w.cp(CP_EMAIL)
-        w.start(EM_Subject);      w.write_str(str(em.get("subject") or "(no subject)")); w.end()
-        w.start(EM_From);         w.write_str(str(em.get("from") or em.get("sender") or "")); w.end()
-        w.start(EM_To);           w.write_str(str(em.get("to") or em.get("recipient") or "")); w.end()
+        subj = str(em.get("subject") or "")
+        frm  = str(em.get("from") or em.get("sender") or "")
+        to   = str(em.get("to") or em.get("recipient") or "")
         when = _ensure_utc_z(em.get("created_at"))
-        w.start(EM_DateReceived); w.write_str(when); w.end()
+        if subj:
+            w.start(EM_Subject);      w.write_str(subj); w.end()
+        if frm:
+            w.start(EM_From);         w.write_str(frm);  w.end()
+        if to:
+            w.start(EM_To);           w.write_str(to);   w.end()
+        if when:
+            w.start(EM_DateReceived); w.write_str(when); w.end()
         w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
-        w.start(EM_InternetCPID); w.write_str("65001"); w.end()
-        # AirSyncBase Body — honor client BodyPreference and truncation
+        w.start(EM_InternetCPID); w.write_str("65001");    w.end()
+        # Body
         content, native_type = _select_body_content(em, body_type_preference)
-        body_bytes = content.encode("utf-8")
+        body_bytes = content.encode("utf-8", errors="ignore")
         out_bytes = body_bytes
         truncated_flag = "0"
-        if truncation_size is not None and len(body_bytes) > int(truncation_size):
-            out_bytes = body_bytes[:int(truncation_size)]
-            truncated_flag = "1"
+        if truncation_size is not None:
+            try:
+                tsz = int(truncation_size)
+                if tsz > 0 and len(body_bytes) > tsz:
+                    out_bytes = body_bytes[:tsz]
+                    truncated_flag = "1"
+            except Exception:
+                pass
         w.cp(CP_AIRSYNCBASE)
         w.start(ASB_Body)
-        w.start(ASB_Type); w.write_str("2" if native_type == 2 else "1"); w.end()
-        w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes))); w.end()
-        w.start(ASB_Truncated); w.write_str(truncated_flag); w.end()
-        w.start(ASB_Data); w.write_str(out_bytes.decode("utf-8", errors="ignore")); w.end()
+        w.start(ASB_Type);              w.write_str("2" if native_type == 2 else "1"); w.end()
+        w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes)));             w.end()
+        w.start(ASB_Truncated);         w.write_str(truncated_flag);                   w.end()
+        w.start(ASB_Data);              w.write_str(out_bytes.decode("utf-8", errors="ignore")); w.end()
         w.end()  # </Body>
-        w.cp(CP_AIRSYNCBASE)
         w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
-        # Close
+        # Close ApplicationData and Fetch
         w.cp(CP_AIRSYNC)
         w.end()  # </ApplicationData>
         w.end()  # </Fetch>

@@ -1319,6 +1319,8 @@ async def eas_dispatch(
                     window_size=window_size,
                     more_available=has_more,
                     class_name="Email",
+                    body_type_preference=2,
+                    truncation_size=8192,
                 )
                 wbxml = wbxml_batch.payload
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
