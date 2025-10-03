@@ -18,14 +18,9 @@ from ..auth import get_current_user_from_basic_auth
 from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
 from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
-from ..wbxml_encoder import create_foldersync_wbxml, create_sync_wbxml
-from ..minimal_wbxml import create_minimal_foldersync_wbxml
-# REMOVED: from ..minimal_sync_wbxml import create_minimal_sync_wbxml
-from ..zpush_wbxml import create_zpush_style_foldersync_wbxml
-from ..iphone_wbxml import create_iphone_foldersync_wbxml
-
-# CRITICAL FIX #42-44: Import expert's Z-Push-compliant WBXML builder!
-from ..sync_wbxml_adapter import create_sync_response_with_expert_builder
+# ActiveSync WBXML builders (clean imports)
+from ..activesync import sync_prepare_batch, convert_db_email_to_dict
+from ..activesync import create_sync_response_wbxml, SyncBatch, SyncStateStore
 from ..wbxml_parser import parse_wbxml_sync_request, parse_wbxml_foldersync_request
 from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 

@@ -1,8 +1,0 @@
-{
-  "options": true,
-  "foldersync": true,
-  "sync_initial": true,
-  "email_count": 18,
-  "sync_incremental": true,
-  "getitemestimate": true
-}

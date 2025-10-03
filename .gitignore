@@ -20,18 +20,20 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
-# Virtual Environment
 venv/
-env/
 ENV/
-env.bak/
-venv.bak/
+env/
+.venv
 
 # Database
 *.db
 *.sqlite
 *.sqlite3
+app.db
+email_system.db
+email_system_backup_*.db
+container_email_system.db
+data/email_system.db
 
 # Logs
 logs/
@@ -43,31 +45,66 @@ logs/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
 
-# Test files
-test_*.py
-*test*.py
-debug_*.py
-check_*.py
-fix_*.py
-migrate_*.py
-monitor_*.py
-
-# Backup files
-*.backup
-*.bak
-*_backup_*
-
-# Environment variables
-# .env  # Commented out to allow .env to be tracked
+# Environment
+.env
 .env.local
 .env.production
+*.env
+
+# SSL/Certificates
+ssl/
+*.key
+*.crt
+*.pem
+*.der
+certbot/conf/
+certbot/www/
+
+# Docker
+*.pid
+*.sock
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.old
+temp/
+tmp/
+
+# Test results
+*.json
+!docker-compose.yml
+ms_ascmd_test_results.json
+activesync_test_results.json
+outlook_diagnostic_report.json
+
+# Registry files
+*.reg
+
+# Cookies
+cookies.txt
+
+# Outlook troubleshooting
+outlook_troubleshooting_report_*.txt
+outlook_2021_*.xml
+
+# Analysis/Debug scripts (keep in repo but outputs excluded)
+# analyze_*.py files are kept
+# compare_*.py files are kept
+# But their output/results excluded above
+
+# Documentation (keep, but exclude old versions)
+*_OLD.md
+*_BACKUP.md
+
+# Scripts output
+headers.txt
+response.html
+test_email.html
+
+# Z-Push references
+z_push_res.md
+

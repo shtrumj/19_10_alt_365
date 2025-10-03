@@ -1,18 +1,25 @@
 # ActiveSync WBXML Investigation
 
-## Current Status
+## 🎉 **CURRENT STATUS: SUCCESS! (Oct 3, 2025 01:15 AM)**
 
-### ✅ FIXED Issues
-1. **FIX #28**: Removed invalid SWITCH_PAGE to codepage 0
+### ✅ **MESSAGES ARE DOWNLOADING TO IPHONE!** 📧
+
+The expert's Z-Push-compliant state machine has **SOLVED THE LOOP**!
+
+### ✅ ALL CRITICAL FIXES APPLIED
+1. **FIX #45**: Expert's State Machine Integration (Oct 3, 2025)
+   - `minimal_sync_wbxml_expert.py` - Spec-correct WBXML builder
+   - `sync_state.py` - Idempotent state machine
+   - `sync_adapter.py` - Integration layer
+   - **Fixes server state flipping to "0"**
+   - **Fixes non-idempotent resends**
+
+2. **FIX #28**: Removed invalid SWITCH_PAGE to codepage 0
    - WBXML now starts with valid `03 01 6a 00 45 4e` (header + Sync tag)
-   - No more `00 00 00` bug!
 
-2. **FIX #27**: SyncKey always advances on every response
-3. **FIX #26**: Two-phase commit with idempotent resends
-4. **FIX #23-1**: AirSyncBase codepage corrected to 14 (0x0E)
-
-### ❌ CURRENT PROBLEM
-**iPhone still loops at SyncKey=0** even with valid WBXML header!
+3. **FIX #27**: SyncKey always advances on every response
+4. **FIX #26**: Two-phase commit with idempotent resends
+5. **FIX #23-1**: AirSyncBase codepage corrected to 14 (0x0E)
 
 ## Investigation: Z-Push Body Handling
 
@@ -145,3 +152,121 @@ output.write(b'\x01')  # END
 ```bash
 tail -f logs/activesync/activesync.log | grep -E '"event":|"sync_key":'
 ```
+
+---
+
+## 🎯 **FINAL SOLUTION (Oct 3, 2025 01:15 AM)**
+
+### The Problem
+iPhone was stuck in an infinite loop at SyncKey=0 because:
+1. **Server state was flipping to "0"** mid-flow (server_sync_key: 12 → 0 → 12 → 0)
+2. **Non-idempotent resends** - server generated NEW batch every retry instead of resending SAME batch
+3. **WBXML structure issues** - Minor token and ordering problems
+
+### The Solution: Expert's Z-Push State Machine
+
+**Three new files integrated:**
+
+#### 1. `minimal_sync_wbxml_expert.py` (292 lines)
+- **Spec-correct WBXML builder**
+- AirSync CP0 (Sync/Collections/Collection/Commands/Add/ServerId/ApplicationData)
+- Email CP2 (Subject/From/To/DateReceived/Read)
+- AirSyncBase CP17 (Body/Type/EstimatedDataSize/Truncated/Data)
+- **Critical ordering**: Type → EstimatedDataSize → Truncated → Data
+
+#### 2. `sync_state.py` (146 lines)
+- **Idempotent state machine** (Z-Push equivalent)
+- State tracking: `cur_key` (last ACKed), `next_key` (to issue), `pending` (batch), `cursor` (pagination)
+- **Idempotent resends**: If `client_sync_key == ctx.cur_key` AND `ctx.pending` exists → resend SAME batch
+- **ACK detection**: If `client_sync_key == ctx.next_key` → advance keys, clear pending
+- **Never spurious reset**: Server keys only advance forward, never flip to "0"
+
+#### 3. `sync_adapter.py` (149 lines)
+- **Integration layer** between our SQLAlchemy models and expert's builder
+- Converts `Email` DB objects to simple dicts
+- Wraps expert's `SyncStateStore` for clean API
+- Provides `sync_prepare_batch()` function for `activesync.py`
+
+### State Machine Flow (Fixed!)
+
+```
+Client Request          Server State                      Server Response
+-------------          ------------                      ---------------
+SyncKey=0       →  cur_key="0", next_key="1"        →  SyncKey="1" (batch1)
+                   pending=batch1, cursor=5
+
+SyncKey=0 (retry)→  cur_key="0", next_key="1"       →  SyncKey="1" (SAME batch1)
+                   pending=batch1 (idempotent!)
+
+SyncKey=1 (ACK!)→  cur_key="1", next_key="2"        →  SyncKey="2" (batch2)
+                   pending=batch2, cursor=10
+
+SyncKey=2 (ACK!)→  cur_key="2", next_key="3"        →  SyncKey="3" (batch3)
+                   pending=batch3, cursor=15
+```
+
+### Key Rules Implemented
+
+1. **Idempotent Resend Rule**
+   ```python
+   if ctx.pending and client_sync_key == ctx.cur_key:
+       return ctx.pending  # SAME batch, SAME wbxml bytes
+   ```
+
+2. **ACK Detection Rule**
+   ```python
+   if client_sync_key == ctx.next_key:
+       ctx.cur_key = ctx.next_key  # Advance
+       ctx.next_key = advance_key(ctx.next_key)
+       ctx.pending = None  # Clear, ACKed!
+   ```
+
+3. **Never Reset Spuriously**
+   ```python
+   # DO NOT reset cur_key/next_key unless explicit initial sync (SyncKey=0)
+   # Unexpected keys? Reset cursor, NOT keys!
+   ```
+
+### Testing Verification
+
+✅ **Confirmed Working:**
+- iPhone connects with SyncKey=0
+- Server responds with SyncKey=1 (minimal initial sync)
+- iPhone ACKs with SyncKey=1
+- Server responds with SyncKey=2 + email items
+- **iPhone displays message!** 📧
+
+### Z-Push-Style Admin Utility
+
+Created `reset_activesync_state.py` (equivalent to `z-push-admin -a remove`):
+```bash
+# List states
+python reset_activesync_state.py --list
+
+# Reset specific device
+python reset_activesync_state.py --user yonatan@shtrum.com --device <device_id>
+
+# Reset all devices for user
+python reset_activesync_state.py --user yonatan@shtrum.com --all-devices
+```
+
+### References
+
+- **Expert diagnosis**: "Server state flips to server_sync_key: '0' even though you've just minted '12'"
+- **Z-Push equivalent**: `lib/request/sync.php` lines ~1224 (Commands block logic)
+- **Microsoft specs**: MS-ASWBXML 2.1.2 (codepages), MS-ASCMD 2.2.2 (Sync command)
+- **Grommunio-Sync**: ActiveSync implementation reference
+
+### Deployment
+
+1. ✅ Docker rebuilt with `--no-cache`
+2. ✅ ActiveSync state reset (Z-Push-style)
+3. ✅ System restarted and healthy
+4. ✅ iPhone re-added account
+5. ✅ **MESSAGES DOWNLOADING!**
+
+---
+
+**STATUS**: ✅ **WORKING** - iPhone successfully syncing emails!  
+**DATE**: October 3, 2025, 01:15 AM  
+**COMMITS**: Ready to commit all changes

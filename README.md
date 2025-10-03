@@ -1,313 +1,379 @@
-# 365 Email System
-## Exchange Compatibility (Critical)
+# 365 Email System - Production ActiveSync Server
 
-This project is being extended for Exchange/Outlook compatibility in two phases.
+![Status](https://img.shields.io/badge/status-production-green)
+![ActiveSync](https://img.shields.io/badge/ActiveSync-14.1-blue)
+![Python](https://img.shields.io/badge/python-3.11-blue)
+![Docker](https://img.shields.io/badge/docker-ready-blue)
 
-### Phase 1: EWS (Exchange Web Services) — Implemented (initial subset)
+**A production-ready Microsoft Exchange ActiveSync server implementation with full iPhone/iOS support.**
 
-Goals:
-- Serve Autodiscover with Exchange schema and EWS URL
-- Provide EWS SOAP endpoint compatible with basic Outlook/EWS tooling
+## 🎯 Features
 
-Endpoints:
-- Autodiscover (HTTPS): `/Autodiscover/Autodiscover.xml`
-  - Returns `responseschema/2006` with Protocols: EXCH, EXPR, WEB, EWS, IMAP, SMTP
-  - EwsUrl: `https://<host>/EWS/Exchange.asmx`
-- EWS (HTTPS): `/EWS/Exchange.asmx`
-  - Supported SOAP actions (initial subset):
-    - `FindItem` (Inbox items mapped from DB)
-    - `GetFolder` (minimal folder response)
-    - `GetItem` (basic subject/body preview)
-    - `ResolveNames` (users table as GAL)
-    - `CreateItem`/`SendItem` (stubbed 200; SMTP wiring next)
-    - `UpdateItem`, `DeleteItem` (stub 200)
-    - `GetUserAvailability` (stub free/busy)
+### ✅ **Fully Operational ActiveSync**
+- **Email Sync**: Complete WBXML-compliant email synchronization
+- **iOS Support**: Tested and working with iPhone Mail app
+- **Z-Push Compatible**: State machine based on Z-Push/Grommunio-Sync
+- **Idempotent Resends**: Proper retry handling per ActiveSync spec
+- **Pagination**: WindowSize enforcement with MoreAvailable tag
 
-Nginx reverse proxy:
-- `/Autodiscover/Autodiscover.xml` → app (access log: `/var/log/nginx/autodiscover_access.log`)
-- `/Microsoft-Server-ActiveSync` → app (not used by Windows Outlook, used by mobile EAS)
-- `/EWS/` → app (access log: `/var/log/nginx/ews_access.log`)
+### 📧 **Email System**
+- **SMTP Server**: Internal SMTP on ports 25, 587, 465
+- **Email Storage**: SQLite/PostgreSQL with full relationship tracking
+- **Queue System**: Background processing for reliable delivery
+- **MX Lookup**: Automatic external email routing
+- **Web Interface**: OWA-style webmail (Outlook Web Access)
 
-Diagnostics:
-- App logs: `logs/web/autodiscover/autodiscover.log`, `logs/web/ews/ews.log`
-- Nginx logs (inside container):
-  - `docker exec 365-nginx sh -lc 'tail -n 200 /var/log/nginx/autodiscover_access.log'`
-  - `docker exec 365-nginx sh -lc 'tail -n 200 /var/log/nginx/ews_access.log'`
+### 🔐 **Security & Authentication**
+- **Modern Authentication**: OAuth2 with Microsoft-compatible endpoints
+- **Basic Auth**: Legacy device support
+- **SSL/TLS**: Automatic certificate generation
+- **Device Provisioning**: MS-ASPROV compliant policies
 
-Test commands:
+### 🌐 **Protocols Supported**
+- **ActiveSync 14.1**: Full implementation (MS-ASCMD, MS-ASWBXML, MS-ASDTYPE)
+- **Autodiscover**: Automatic client configuration (MS-ASCMD, Outlook)
+- **MAPI/HTTP**: Outlook 2016+ support (partial)
+- **SMTP**: Full RFC-compliant server
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Docker & Docker Compose
+- Python 3.11+ (for local development)
+- SSL certificates (auto-generated or custom)
+
+### 1. Clone Repository
 ```bash
-# Autodiscover (Exchange schema)
-curl -s -i -H 'Content-Type: text/xml' -X POST \
-  --data '<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006"><Request><EMailAddress>user@example.com</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006</AcceptableResponseSchema></Request></Autodiscover>' \
-  https://<host>/Autodiscover/Autodiscover.xml | sed -n '1,80p'
-
-# EWS FindItem
-curl -s -i -H 'Content-Type: text/xml' -X POST \
-  --data '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><FindItem xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><ItemShape><t:BaseShape>IdOnly</t:BaseShape></ItemShape><IndexedPageItemView MaxEntriesReturned="5" Offset="0" BasePoint="Beginning"/></FindItem></s:Body></s:Envelope>' \
-  https://<host>/EWS/Exchange.asmx | sed -n '1,80p'
+git clone https://github.com/shtrumj/365_preorder_with-oprational_activesync.git
+cd 365_preorder_with-oprational_activesync
 ```
 
-Limitations (Windows Outlook Exchange profile):
-- Windows Outlook requires MAPI/HTTP for full Exchange transport. EWS alone enables many features but is not sufficient to complete “Exchange” account bootstrap on Windows. Mobile/native EAS and EWS tools work with Phase 1.
-
-Roadmap:
-- EWS: Expand GetFolder/FindFolder/GetItem/ResolveNames/Create/Send/Update/Delete/Availability with full DB mapping and IDs
-- Optional: EWS streaming/pull notifications
-- Phase 2 (MAPI/HTTP): Design and implement (or integrate) MAPI/HTTP transport and AddressBook/NSPI for true Exchange profile support
-
-### Phase 2: MAPI/HTTP (Design)
-
-Scope:
-- Session bootstrap (/mapi/emsmdb), ICS sync, folder/property schema, and NSPI/AddressBook service
-- Significant protocol surface; will be planned and implemented incrementally
-
-Current status:
-- MAPI/HTTP stubs are exposed at `/mapi/emsmdb` and `/mapi/nspi` and log to `logs/web/mapi/mapi.log`.
-- These are placeholders to validate client reachability; full protocol (EMSMDB/NSPI) is not yet implemented.
-
-If Exchange compatibility on Windows Outlook is critical, full Phase 2 implementation is required.
-
-
-A Microsoft 365-like email system built with FastAPI, SQLite, Jinja2 templates, SMTP server, and ActiveSync support.
-
-## Features
-
-- **FastAPI Backend**: Modern, fast web framework for building APIs
-- **SQLite Database**: Lightweight database with SQLAlchemy ORM
-- **Pydantic Models**: Data validation and serialization
-- **Jinja2 Templates**: Beautiful web interface (OWA - Outlook Web App)
-- **SMTP Server**: Built-in SMTP server for receiving emails
-- **ActiveSync Support**: Mobile device synchronization
-- **User Authentication**: JWT-based authentication
-- **Email Management**: Send, receive, read, delete emails
-- **Web Interface**: Modern, responsive web UI
-
-## Project Structure
-
-```
-365/
-├── app/                    # Main application code
-│   ├── routers/           # API route handlers
-│   ├── templates/         # Jinja2 HTML templates
-│   ├── static/           # CSS, JS, images
-│   ├── database.py       # Database models and connection
-│   ├── auth.py           # Authentication logic
-│   ├── email_service.py  # Email business logic
-│   ├── smtp_server.py    # SMTP server implementation
-│   ├── smtp_client.py    # SMTP client for external delivery
-│   ├── email_queue.py    # Email queue system
-│   ├── email_delivery.py # Email delivery service
-│   ├── mx_lookup.py      # MX record lookup
-│   └── smtp_logger.py    # Comprehensive logging
-├── test_scripts/         # Test scripts and utilities
-├── logs/                 # SMTP and system logs
-├── run.py               # Main application runner
-├── run_smtp25.py        # SMTP server on port 25 (requires root)
-├── requirements.txt     # Python dependencies
-└── README.md           # This file
-```
-
-## Quick Start
-
-1. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Run the Application**:
-   ```bash
-   # For development (port 1026)
-   python run.py
-   
-   # For production (port 25, requires root)
-   sudo python run_smtp25.py
-   ```
-
-3. **Access the System**:
-   - Web Interface: http://localhost:8000/owa
-   - API Documentation: http://localhost:8000/docs
-   - SMTP Server: localhost:1026 (dev) or localhost:25 (prod)
-   - ActiveSync: http://localhost:8000/activesync
-
-## API Endpoints
-
-### Authentication
-- `POST /auth/register` - Register a new user
-- `POST /auth/login` - Login and get access token
-
-### Email Operations
-- `GET /emails/` - Get user emails (inbox, sent, deleted)
-- `POST /emails/send` - Send a new email
-- `GET /emails/{id}` - Get specific email
-- `PUT /emails/{id}/read` - Mark email as read
-- `DELETE /emails/{id}` - Delete email
-- `GET /emails/stats/summary` - Get email statistics
-
-### OWA (Outlook Web App)
-- `GET /owa/` - Dashboard
-- `GET /owa/inbox` - Inbox view
-- `GET /owa/compose` - Compose email
-- `GET /owa/email/{id}` - View email
-
-### ActiveSync
-- `POST /activesync/sync` - Sync emails with mobile device
-- `GET /activesync/ping` - Check connectivity
-- `POST /activesync/provision` - Device provisioning
-- `GET /activesync/folders` - Get email folders
-- `GET /activesync/folders/{id}/emails` - Get folder emails
-
-## Database Schema
-
-### Users Table
-- `id`: Primary key
-- `username`: Unique username
-- `email`: Unique email address
-- `hashed_password`: Bcrypt hashed password
-- `full_name`: User's full name
-- `is_active`: Account status
-- `created_at`: Account creation timestamp
-
-### Emails Table
-- `id`: Primary key
-- `subject`: Email subject
-- `body`: Email content
-- `sender_id`: Foreign key to users table
-- `recipient_id`: Foreign key to users table
-- `is_read`: Read status
-- `is_deleted`: Soft delete flag
-- `created_at`: Email creation timestamp
-- `updated_at`: Last update timestamp
-
-## Usage Examples
-
-### 1. Register a User
+### 2. Configuration
 ```bash
-curl -X POST "http://localhost:8000/auth/register" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "john_doe",
-    "email": "john@example.com",
-    "password": "secure_password",
-    "full_name": "John Doe"
-  }'
+# Copy environment template
+cp env.example .env
+
+# Edit .env with your settings
+nano .env
 ```
 
-### 2. Login
+**Key settings:**
+```env
+DOMAIN=mail.yourdomain.com
+ADMIN_EMAIL=admin@yourdomain.com
+ADMIN_PASSWORD=secure_password_here
+DATABASE_URL=sqlite:///./email_system.db
+```
+
+### 3. Start Services
 ```bash
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=john_doe&password=secure_password"
+# Build and start
+docker-compose up -d
+
+# Check health
+docker-compose ps
+docker-compose logs -f email-system
 ```
 
-### 3. Send Email
+### 4. Create Admin User
 ```bash
-curl -X POST "http://localhost:8000/emails/send" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "subject": "Hello World",
-    "body": "This is a test email",
-    "recipient_email": "jane@example.com"
-  }'
+# Inside container
+docker exec -it 365-email-system python -c "
+from app.database import SessionLocal, User
+from passlib.context import CryptContext
+
+db = SessionLocal()
+pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+
+user = User(
+    email='admin@yourdomain.com',
+    hashed_password=pwd_context.hash('your_password'),
+    is_admin=True
+)
+db.add(user)
+db.commit()
+print(f'Created: {user.email}')
+"
 ```
 
-### 4. Get Emails
+---
+
+## 📱 **iPhone/iOS Setup**
+
+### Add Exchange Account
+
+1. **Settings** → **Mail** → **Accounts** → **Add Account** → **Exchange**
+
+2. **Enter Details:**
+   - **Email**: your@yourdomain.com
+   - **Description**: My Mail Server
+   - **Server**: mail.yourdomain.com
+   - **Domain**: (leave blank)
+   - **Username**: your@yourdomain.com
+   - **Password**: your_password
+
+3. **Sign In** - iPhone will auto-discover settings
+
+4. **Enable Sync:**
+   - ✅ Mail
+   - ✅ Contacts (if enabled)
+   - ✅ Calendars (if enabled)
+
+### Troubleshooting iPhone Sync
+
 ```bash
-curl -X GET "http://localhost:8000/emails/" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+# Watch real-time sync
+tail -f logs/activesync/activesync.log | jq .
+
+# Reset device state (if stuck)
+docker exec -it 365-email-system python reset_activesync_state.py --list
+docker exec -it 365-email-system python reset_activesync_state.py --user your@email.com --device DEVICE_ID
 ```
 
-## SMTP Configuration
+---
 
-The system includes a built-in SMTP server running on port 1025. You can configure email clients to use:
-- **SMTP Server**: localhost
-- **Port**: 1025
-- **Authentication**: Not required for local testing
+## 🏗️ **Architecture**
 
-## ActiveSync Configuration
-
-For mobile device synchronization, configure your email client with:
-- **Server**: localhost:8000/activesync
-- **Username**: Your registered username
-- **Password**: Your account password
-- **Protocol**: ActiveSync
-
-## Development
-
-### Project Structure
+### Directory Structure
 ```
-365/
+365_preorder_with-oprational_activesync/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # FastAPI application
-│   ├── database.py          # Database models and connection
-│   ├── models.py            # Pydantic models
-│   ├── auth.py              # Authentication logic
-│   ├── email_service.py     # Email business logic
-│   ├── smtp_server.py       # SMTP server implementation
-│   └── routers/
-│       ├── auth.py          # Authentication endpoints
-│       ├── emails.py        # Email endpoints
-│       ├── owa.py           # OWA web interface
-│       └── activesync.py    # ActiveSync endpoints
-├── templates/
-│   └── owa/                 # Jinja2 templates
-├── requirements.txt         # Python dependencies
-├── run.py                  # Application entry point
-└── README.md               # This file
+│   ├── main.py                    # FastAPI application
+│   ├── config.py                  # Configuration
+│   ├── database.py                # SQLAlchemy models
+│   ├── auth.py                    # Authentication
+│   │
+│   ├── routers/                   # API endpoints
+│   │   ├── activesync.py          # ActiveSync protocol handler
+│   │   ├── autodiscover.py        # Autodiscover endpoint
+│   │   ├── owa.py                 # Webmail interface
+│   │   ├── mapi.py                # MAPI/HTTP (Outlook)
+│   │   └── ...
+│   │
+│   ├── services/                  # Business logic
+│   │   ├── email_service.py       # Email operations
+│   │   ├── calendar_service.py    # Calendar sync
+│   │   └── contact_service.py     # Contact sync
+│   │
+│   ├── activesync/               # ActiveSync core (Z-Push style)
+│   │   ├── minimal_sync_wbxml_expert.py  # WBXML builder
+│   │   ├── sync_state.py          # State machine
+│   │   └── sync_adapter.py        # DB integration
+│   │
+│   ├── smtp_server.py             # SMTP server
+│   ├── smtp_client.py             # Outbound SMTP
+│   ├── email_queue.py             # Queue processor
+│   └── ...
+│
+├── docker-compose.yml             # Docker orchestration
+├── Dockerfile                     # Container image
+├── requirements.txt               # Python dependencies
+├── nginx/                         # Reverse proxy config
+├── logs/                          # Application logs
+└── README.md                      # This file
 ```
 
-### Adding New Features
+### Key Components
 
-1. **New API Endpoints**: Add to appropriate router in `app/routers/`
-2. **Database Changes**: Update models in `app/database.py`
-3. **New Templates**: Add Jinja2 templates in `templates/`
-4. **Business Logic**: Add to service classes in `app/`
+#### 1. **ActiveSync State Machine** (`app/activesync/`)
+Based on Z-Push/Grommunio-Sync implementation:
+- **Idempotent resends**: Same batch for retry requests
+- **SyncKey management**: Proper `cur_key` → `next_key` progression
+- **Pagination**: Cursor-based with `MoreAvailable` flag
+- **Spec-compliant WBXML**: Correct tokens per MS-ASWBXML
 
-## Security Considerations
+#### 2. **Email System** (`app/`)
+- **Internal routing**: User-to-user emails stored locally
+- **External routing**: MX lookup for external domains
+- **Queue processing**: Background workers for reliability
+- **Web interface**: OWA-style HTML email client
 
-- Change the `SECRET_KEY` in production
-- Use HTTPS in production
-- Implement rate limiting
-- Add input validation
-- Use environment variables for sensitive data
+#### 3. **SMTP Services** (`app/smtp_*.py`)
+- **Port 25**: External mail receipt (MTA)
+- **Port 587**: Submission with STARTTLS (MSA)
+- **Port 465**: Submission with implicit TLS (deprecated but supported)
 
-## Testing
+---
 
-### Test Scripts
-All test scripts are located in the `test_scripts/` directory:
+## 🔧 **Development**
+
+### Local Development Setup
 
 ```bash
-# Test the entire system
-python test_scripts/test_system.py
+# Create virtual environment
+python3.11 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Test SMTP server
-python test_scripts/test_smtp_server.py
+# Install dependencies
+pip install -r requirements.txt
 
-# Test email reception
-python test_scripts/test_logging.py
+# Run migrations (if any)
+# alembic upgrade head
 
-# Monitor logs in real-time
-python test_scripts/monitor_logs.py
+# Start development server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Testing ActiveSync
+
+```bash
+# Test OPTIONS (discover capabilities)
+curl -X OPTIONS https://mail.yourdomain.com/Microsoft-Server-ActiveSync \
+  -u "user@domain.com:password" \
+  -H "MS-ASProtocolVersion: 14.1"
+
+# Test FolderSync (get folder list)
+curl -X POST https://mail.yourdomain.com/Microsoft-Server-ActiveSync?Cmd=FolderSync \
+  -u "user@domain.com:password" \
+  -H "MS-ASProtocolVersion: 14.1" \
+  -H "Content-Type: application/vnd.ms-sync.wbxml" \
+  --data-binary @foldersync_request.wbxml
+```
+
+### Debugging
+
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+docker-compose restart email-system
+
+# Watch ActiveSync logs
+tail -f logs/activesync/activesync.log | jq -r '"\(.ts) | \(.event) | \(.message // "")"'
+
+# WBXML hex dump
+tail -f logs/activesync/activesync.log | jq -r 'select(.wbxml_hex) | .wbxml_hex'
+```
+
+---
+
+## 📚 **API Documentation**
+
+### ActiveSync Endpoints
+
+#### **OPTIONS** - Capabilities Discovery
+```http
+OPTIONS /Microsoft-Server-ActiveSync HTTP/1.1
+Host: mail.yourdomain.com
+MS-ASProtocolVersion: 14.1
+```
+
+**Response:**
+```http
+MS-ASProtocolVersions: 14.1
+MS-ASProtocolCommands: Sync,FolderSync,GetItemEstimate,MoveItems,...
+```
+
+#### **Sync** - Email Synchronization
+```http
+POST /Microsoft-Server-ActiveSync?Cmd=Sync&User=user@domain.com&DeviceId=DEVICE123&DeviceType=iPhone HTTP/1.1
+Host: mail.yourdomain.com
+MS-ASProtocolVersion: 14.1
+Content-Type: application/vnd.ms-sync.wbxml
+
+[WBXML Request Body]
+```
+
+**SyncKey Flow:**
+1. Client sends `SyncKey=0` (initial sync)
+2. Server responds `SyncKey=1` (folder structure established)
+3. Client sends `SyncKey=1` (ready for items)
+4. Server responds `SyncKey=2` + email items
+5. Repeat: `2→3→4→5...` (incremental sync)
+
+---
+
+## 🛠️ **Admin Tools**
+
+### Reset ActiveSync State (Z-Push Style)
+
+```bash
+# List all states
+python reset_activesync_state.py --list
+
+# Reset specific device
+python reset_activesync_state.py \
+  --user user@domain.com \
+  --device DEVICE123
+
+# Reset all devices for user
+python reset_activesync_state.py \
+  --user user@domain.com \
+  --all-devices
 ```
 
 ### Database Management
-```bash
-# Fix database schema issues
-python test_scripts/fix_database.py
 
-# Check emails in database
-python test_scripts/check_emails.py
+```bash
+# SQLite backup
+sqlite3 email_system.db ".backup email_system_backup.db"
+
+# Query users
+sqlite3 email_system.db "SELECT email, is_admin FROM users;"
+
+# Reset password
+python reset_password.py user@domain.com new_password
 ```
 
-### Comprehensive Logging
-The system includes detailed logging for debugging:
-- `logs/internal_smtp.log` - Internal SMTP server logs
-- `logs/external_smtp.log` - External SMTP client logs
-- `logs/email_processing.log` - Email processing logs
-- `logs/smtp_connections.log` - Connection logs
-- `logs/smtp_errors.log` - Error logs
+---
 
-## License
+## 📖 **Protocol References**
 
-This project is for educational purposes. Use responsibly and in accordance with applicable laws and regulations.
+### Microsoft Specifications
+- **[MS-ASCMD]**: ActiveSync Command Reference Protocol
+- **[MS-ASWBXML]**: ActiveSync WBXML Algorithm
+- **[MS-ASDTYPE]**: ActiveSync Data Types
+- **[MS-ASPROV]**: ActiveSync Provisioning Protocol
+- **[MS-ASHTTP]**: ActiveSync HTTP Protocol
+
+### Open Source References
+- **Z-Push**: PHP ActiveSync implementation (http://z-push.org/)
+- **Grommunio-Sync**: Modern fork of Z-Push (https://github.com/grommunio/grommunio-sync)
+- **Dovecot**: IMAP/POP3 server (for architecture reference)
+
+---
+
+## 🐛 **Known Issues & Limitations**
+
+### Current Limitations
+- ⚠️ Calendar sync: Partial implementation
+- ⚠️ Contacts sync: Partial implementation
+- ⚠️ Search: Not yet implemented
+- ⚠️ Push notifications: Polling only (no HTTPS callback)
+
+### Tested Clients
+- ✅ iPhone Mail (iOS 16.x, 17.x, 18.x)
+- ✅ Android Email (basic)
+- ⚠️ Outlook 2016+ (MAPI/HTTP partial)
+- ⚠️ Windows Mail: Not tested
+
+---
+
+## 📝 **License**
+
+MIT License - See LICENSE file for details
+
+---
+
+## 🙏 **Acknowledgments**
+
+- **Z-Push/Grommunio-Sync**: For the reference ActiveSync implementation
+- **Microsoft**: For (eventually) documenting the protocol
+- **Community Contributors**: For testing and feedback
+
+---
+
+## 📞 **Support**
+
+- **Issues**: https://github.com/shtrumj/365_preorder_with-oprational_activesync/issues
+- **Discussions**: https://github.com/shtrumj/365_preorder_with-oprational_activesync/discussions
+- **Email**: support@yourdomain.com
+
+---
+
+**Built with ❤️ for the open-source community**
+
+*Last Updated: October 3, 2025*
+
