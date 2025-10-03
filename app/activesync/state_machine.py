@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import logging
-from .minimal_sync_wbxml_expert import create_sync_response_wbxml, SyncBatch
+from .wbxml_builder import create_sync_response_wbxml, SyncBatch
 
 log = logging.getLogger(__name__)
 

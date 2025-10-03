@@ -53,19 +53,28 @@ cd 365_preorder_with-oprational_activesync
 ### 2. Configuration
 ```bash
 # Copy environment template
-cp env.example .env
+cp config.example.env .env
 
 # Edit .env with your settings
 nano .env
 ```
 
-**Key settings:**
+**Required settings:**
 ```env
+# MUST CHANGE: Generate with python -c "import secrets; print(secrets.token_hex(32))"
+SECRET_KEY=your-secret-key-change-this-in-production
+
+# Your domain
 DOMAIN=mail.yourdomain.com
+HOSTNAME=mail.yourdomain.com
+
+# Optional: Only if using Cloudflare DNS for SSL
+CLOUDFLARE_API_TOKEN=your_cloudflare_token_here
+ALT_NAMES=autodiscover.yourdomain.com,owa.yourdomain.com
 ADMIN_EMAIL=admin@yourdomain.com
-ADMIN_PASSWORD=secure_password_here
-DATABASE_URL=sqlite:///./email_system.db
 ```
+
+**Note**: All environment variables in docker-compose.yml now have sensible defaults. Only override in `.env` what you need to customize.
 
 ### 3. Start Services
 ```bash

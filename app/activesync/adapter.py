@@ -8,18 +8,19 @@ This module:
 3. Provides a single clean interface for the activesync.py router
 """
 
-from typing import List, Dict, Any
-from datetime import datetime
-from sqlalchemy.orm import Session
-from .database import Email, ActiveSyncState
-from .sync_state import SyncStateStore
-from .minimal_sync_wbxml_expert import SyncBatch
+from typing import List, Dict, Any, TYPE_CHECKING
+from datetime import datetime, timezone
+from .state_machine import SyncStateStore
+from .wbxml_builder import SyncBatch
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 # Global instance (or we could use dependency injection)
 _state_store = SyncStateStore()
 
 
-def convert_db_email_to_dict(email: Email) -> Dict[str, Any]:
+def convert_db_email_to_dict(email) -> Dict[str, Any]:
     """
     Convert our SQLAlchemy Email model to a simple dict for the expert's builder.
     """
@@ -52,12 +53,12 @@ def convert_db_email_to_dict(email: Email) -> Dict[str, Any]:
 
 def sync_prepare_batch(
     *,
-    db: Session,
+    db,  # Session type hint removed to avoid circular import
     user_email: str,
     device_id: str,
     collection_id: str,
     client_sync_key: str,
-    db_emails: List[Email],
+    db_emails: List,  # List of Email objects
     window_size: int = 25
 ) -> SyncBatch:
     """
@@ -95,43 +96,7 @@ def sync_reset_state(user: str, device_id: str, collection_id: str):
     
     Call this when you want to force a fresh sync (e.g., after manual state reset in DB).
     """
-    from .sync_state import _Key
+    from .state_machine import _Key
     key = _Key(user, device_id, collection_id)
     if key.k() in _state_store._state:
         del _state_store._state[key.k()]
-
-
-# BACKWARD COMPATIBILITY: Keep the old function name for existing code
-def create_sync_response_with_expert_builder(
-    collection_id: str,
-    sync_key: str,
-    db_emails: List[Email],
-    window_size: int,
-    is_initial_sync: bool = False
-) -> bytes:
-    """
-    Legacy adapter function for backward compatibility.
-    
-    NOTE: This doesn't use the expert's state machine!
-    For new code, use sync_prepare_batch() instead.
-    """
-    from .minimal_sync_wbxml_expert import create_sync_response_wbxml
-    
-    # Convert DB models to dicts
-    email_dicts = [convert_db_email_to_dict(email) for email in db_emails]
-    
-    # For initial sync, send empty
-    if is_initial_sync:
-        email_dicts = []
-    
-    # Build WBXML directly (no state machine)
-    batch = create_sync_response_wbxml(
-        sync_key=sync_key,
-        emails=email_dicts,
-        collection_id=collection_id,
-        window_size=window_size,
-        more_available=len(db_emails) > window_size,
-        class_name="Email"
-    )
-    
-    return batch.wbxml

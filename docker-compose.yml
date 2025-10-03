@@ -1,18 +1,17 @@
-version: "3.8"
-
 services:
-  # 365 Email System
+  # 365 Email System - Production-Ready ActiveSync Server
   email-system:
     build: .
     container_name: 365-email-system
     restart: unless-stopped
     user: "0:0" # Run as root for port 25 access
     environment:
+      # Core Configuration (override in .env file)
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
-      - DATABASE_URL=sqlite:////app/data/email_system.db
-      - LOGS_DIR=/app/logs
-      - HOSTNAME=owa.shtrum.com
-      - DOMAIN=owa.shtrum.com
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/email_system.db}
+      - LOGS_DIR=${LOGS_DIR:-/app/logs}
+      - HOSTNAME=${HOSTNAME:-owa.shtrum.com}
+      - DOMAIN=${DOMAIN:-owa.shtrum.com}
     ports:
       - "25:25" # Expose SMTP port 25
       - "8001:8001" # Expose FastAPI application
@@ -52,7 +51,7 @@ services:
     networks:
       - email-network
 
-  # Certbot for SSL certificates
+  # Certbot for SSL certificates (optional - can use custom certs)
   certbot:
     image: certbot/dns-cloudflare
     container_name: 365-certbot
@@ -62,12 +61,16 @@ services:
       - ./certbot-setup.sh:/certbot-setup.sh:ro
     entrypoint: ["/bin/sh", "/certbot-setup.sh"]
     environment:
-      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-      - DOMAIN=owa.shtrum.com
-      - ALT_NAMES=autodiscover.shtrum.com,mail.shtrum.com
-      - ADMIN_EMAIL=admin@shtrum.com
+      # SSL Certificate Configuration (override in .env file)
+      # Set CLOUDFLARE_API_TOKEN in .env if using Cloudflare DNS
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - DOMAIN=${DOMAIN:-owa.shtrum.com}
+      - ALT_NAMES=${ALT_NAMES:-autodiscover.shtrum.com,mail.shtrum.com}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@shtrum.com}
     networks:
       - email-network
+    profiles:
+      - ssl  # Only start if explicitly requested: docker-compose --profile ssl up
 
 networks:
   email-network:

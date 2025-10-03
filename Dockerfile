@@ -23,10 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Copy troubleshooting files to the app directory
-COPY outlook_2021_registry_fix.reg .
-COPY outlook_2021_local_autodiscover.xml .
-COPY OUTLOOK_2021_SETUP_GUIDE.md .
+# Copy troubleshooting files if they exist (optional)
+# These files were removed in cleanup but docker-compose might reference them
 
 # Create and set permissions for logs and ssl directories
 RUN mkdir -p logs && chmod 777 logs
