@@ -1550,8 +1550,8 @@ async def eas_dispatch(
                 except Exception:
                     pass
             
-        _write_json_line(
-            "activesync/activesync.log",
+            _write_json_line(
+                "activesync/activesync.log",
                 {
                     "event": "ping_start",
                     "heartbeat_interval": heartbeat_interval,
