@@ -18,9 +18,8 @@ from ..auth import get_current_user_from_basic_auth
 from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
 from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
-# ActiveSync WBXML builders (clean imports)
-from ..activesync import sync_prepare_batch, convert_db_email_to_dict
-from ..activesync import create_sync_response_wbxml, SyncBatch, SyncStateStore
+# ActiveSync WBXML builders (minimal implementation)
+# Note: activesync module moved to delete_candidate/ for isolation testing
 from ..wbxml_parser import parse_wbxml_sync_request, parse_wbxml_foldersync_request
 from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
