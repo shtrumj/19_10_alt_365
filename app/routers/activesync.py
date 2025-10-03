@@ -52,7 +52,7 @@ class ActiveSyncResponse:
 
     def __call__(self, *args, **kwargs):
         return Response(
-            content=self.xml_content, media_type="application/vnd.ms-sync.wbxml"
+            content=self.xml_content, media_type="application/xml"
         )
 
 
@@ -183,18 +183,12 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
         read_elem = ET.SubElement(application_data, "Read")
         read_elem.text = "1" if email.is_read else "0"
 
-        # Body (required) - according to Microsoft documentation format
+        # Body (AirSyncBase-style structure; child elements, correct order)
         body_elem = ET.SubElement(application_data, "Body")
-        body_elem.set("Type", "2")  # HTML
-        body_elem.set("EstimatedDataSize", str(len(email.body or "")))
-        
-        # Body data
-        body_data = ET.SubElement(body_elem, "Data")
-        body_data.text = email.body or ""
-        
-        # Body preview
-        body_preview = ET.SubElement(body_elem, "Preview")
-        body_preview.text = (email.body or "")[:100]  # First 100 characters
+        type_elem = ET.SubElement(body_elem, "Type"); type_elem.text = "2"  # HTML
+        size_elem = ET.SubElement(body_elem, "EstimatedDataSize"); size_elem.text = str(len(email.body or ""))
+        trunc_elem = ET.SubElement(body_elem, "Truncated"); trunc_elem.text = "0"
+        data_elem = ET.SubElement(body_elem, "Data"); data_elem.text = email.body or ""
 
         # MessageClass (required for Exchange compatibility)
         message_class = ET.SubElement(application_data, "MessageClass")
@@ -202,7 +196,7 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
 
         # InternetCPID (required)
         internet_cpid = ET.SubElement(application_data, "InternetCPID")
-        internet_cpid.text = "28591"  # UTF-8
+        internet_cpid.text = "65001"  # UTF-8
 
         # ContentClass (required)
         content_class = ET.SubElement(application_data, "ContentClass")
@@ -387,7 +381,7 @@ async def eas_dispatch(
 </Error>"""
         return Response(
             content=xml, 
-            media_type="application/vnd.ms-sync.wbxml", 
+            media_type="application/xml", 
             headers=headers,
             status_code=200
         )
@@ -529,7 +523,7 @@ async def eas_dispatch(
     </Policies>
 </Provision>"""
         
-        return Response(content=xml, media_type="application/vnd.ms-sync.wbxml", headers=_eas_headers(policy_key=policy_key))
+        return Response(content=xml, media_type="application/xml", headers=headers)
 
     # All other commands require that the device has completed the provisioning step above.
     if device.is_provisioned != 1:
@@ -596,7 +590,7 @@ async def eas_dispatch(
             
             if is_wbxml_request:
                 # Return correct minimal WBXML response with all 5 folders
-                from activesync import build_foldersync_no_changes
+                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
                     "activesync/activesync.log",
@@ -715,7 +709,7 @@ async def eas_dispatch(
         elif client_key_int == server_key_int:
             if is_wbxml_request:
                 # Return WBXML response for iPhone clients
-                from activesync import build_foldersync_no_changes
+                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
                     "activesync/activesync.log",
@@ -740,7 +734,7 @@ async def eas_dispatch(
         else:
             if is_wbxml_request:
                 # Return WBXML response for iPhone clients
-                from activesync import build_foldersync_no_changes
+                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)  # Simplified error response
                 _write_json_line(
                     "activesync/activesync.log",
@@ -986,6 +980,34 @@ async def eas_dispatch(
             "message": "Filtered to only NEW emails not yet synced"
         })
         
+        # CRITICAL FIX #59: Detect stuck state (Z-Push approach)
+        # If last_synced_email_id is at or beyond the max email ID in the folder,
+        # AND there are emails in the folder, it means the state is stuck.
+        # Solution: Reset last_synced_email_id to 0 to force resync
+        if all_emails and not emails and not fetched_emails and client_sync_key != "0":
+            # Check if we're stuck: last_id >= max_email_id in folder
+            max_email_id = max(e.id for e in all_emails) if all_emails else 0
+            if last_id >= max_email_id:
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_stuck_state_detected",
+                    "last_synced_email_id": last_id,
+                    "max_email_id_in_folder": max_email_id,
+                    "total_emails": len(all_emails),
+                    "client_sync_key": client_sync_key,
+                    "message": "STUCK STATE: last_synced_email_id >= max_email_id, forcing reset"
+                })
+                # Z-Push approach: Reset to 0 to force full resync
+                state.last_synced_email_id = 0
+                db.commit()
+                # Re-query emails after reset
+                emails = [e for e in all_emails if e.id > 0]
+                _write_json_line("activesync/activesync.log", {
+                    "event": "sync_state_reset_auto",
+                    "new_last_synced_email_id": 0,
+                    "emails_to_sync_after_reset": len(emails),
+                    "message": "Auto-reset complete, will send all emails"
+                })
+        
         # Enhanced logging with detailed email information
         email_details = []
         for email in emails:
@@ -1221,7 +1243,7 @@ async def eas_dispatch(
                 has_more = len(emails) > window_size if window_size else False
 
                 # Use builder that can include both Adds and Fetch responses
-                from activesync import create_sync_response_wbxml_with_fetch
+                from activesync.wbxml_builder import create_sync_response_wbxml_with_fetch
                 wbxml_batch = create_sync_response_wbxml_with_fetch(
                     sync_key=response_sync_key,
                     emails=[{
@@ -1277,7 +1299,7 @@ async def eas_dispatch(
                 wbxml = wbxml_batch.payload
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
                 if fetched_emails:
-                    from activesync import write_fetch_responses
+                    from activesync.wbxml_builder import write_fetch_responses
                     w = activesync_w = None
                     try:
                         # Append to existing WBXML: we need a writer capable of appending; since our
