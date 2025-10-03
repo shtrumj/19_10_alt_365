@@ -1457,8 +1457,8 @@ async def eas_dispatch(
                     )
                 except Exception as e:
                     # Log the error
-                _write_json_line(
-                    "activesync/activesync.log",
+                    _write_json_line(
+                        "activesync/activesync.log",
                         {
                             "event": "sync_wbxml_creation_error",
                             "error": str(e),
