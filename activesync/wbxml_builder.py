@@ -61,6 +61,7 @@ ASB_Body              = 0x0A
 ASB_Data              = 0x0B
 ASB_EstimatedDataSize = 0x0C
 ASB_Truncated         = 0x0D
+ASB_NativeBodyType    = 0x16
 
 
 class WBXMLWriter:
@@ -121,6 +122,24 @@ class SyncBatch:
     total_available: int
     more_available: bool
 
+
+def _select_body_content(em: Dict[str, Any], body_type_preference: int = 2) -> tuple[str, int]:
+    """
+    Choose body content according to BodyPreference:
+    - 2 => HTML preferred (if available), else plain
+    - 1 => Plain preferred (if available), else HTML
+    Returns (content, native_type), where native_type: 1=Plain, 2=HTML
+    """
+    html = str(em.get("body_html") or em.get("html") or "")
+    plain = str(em.get("body") or em.get("preview") or "")
+    if body_type_preference == 1:
+        content = plain or html
+        native = 1 if plain else 2 if html else 1
+    else:
+        content = html or plain
+        native = 2 if html else 1 if plain else 1
+    return content, native
+
 def write_fetch_responses(
     *,
     w: WBXMLWriter,
@@ -151,10 +170,8 @@ def write_fetch_responses(
         w.start(EM_DateReceived); w.write_str(when); w.end()
         w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
         w.start(EM_InternetCPID); w.write_str("65001"); w.end()
-        # AirSyncBase Body (HTML preferred)
-        html = str(em.get("body_html") or em.get("html") or "")
-        plain = str(em.get("body") or em.get("preview") or "")
-        content = html if (body_type_preference == 2 and html) else (plain or html)
+        # AirSyncBase Body — honor client BodyPreference and truncation
+        content, native_type = _select_body_content(em, body_type_preference)
         body_bytes = content.encode("utf-8")
         out_bytes = body_bytes
         truncated_flag = "0"
@@ -163,11 +180,13 @@ def write_fetch_responses(
             truncated_flag = "1"
         w.cp(CP_AIRSYNCBASE)
         w.start(ASB_Body)
-        w.start(ASB_Type); w.write_str("2" if content == html else "1"); w.end()
+        w.start(ASB_Type); w.write_str("2" if native_type == 2 else "1"); w.end()
         w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes))); w.end()
         w.start(ASB_Truncated); w.write_str(truncated_flag); w.end()
-        w.start(ASB_Data); w.write_str(out_bytes.decode("utf-8")); w.end()
+        w.start(ASB_Data); w.write_str(out_bytes.decode("utf-8", errors="ignore")); w.end()
         w.end()  # </Body>
+        w.cp(CP_AIRSYNCBASE)
+        w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
         # Close
         w.cp(CP_AIRSYNC)
         w.end()  # </ApplicationData>
@@ -263,10 +282,8 @@ def build_sync_response(
             when  = _ensure_utc_z(em.get("created_at"))
 
             # Prefer HTML body if available; otherwise plain text
-            body_html = em.get("body_html")
-            body_text = em.get("body") or em.get("preview") or ""
-            chosen_body = str(body_html) if body_html else str(body_text)
-            body_bytes = chosen_body.encode("utf-8")
+            content, native_type = _select_body_content(em, body_type_preference=2)
+            body_bytes = content.encode("utf-8")
             size = str(len(body_bytes))
 
             # <Add>
@@ -280,28 +297,28 @@ def build_sync_response(
 
             # Email props
             w.page(CP_EMAIL)
-            w.start(EM_Subject);      w.write_str(subj);  w.end()
-            w.start(EM_From);         w.write_str(from_); w.end()
-            w.start(EM_To);           w.write_str(to_);   w.end()
-            w.start(EM_DateReceived); w.write_str(when);  w.end()
+            w.start(EM_Subject);      w.write_str(str(subj));  w.end()
+            w.start(EM_From);         w.write_str(str(from_)); w.end()
+            w.start(EM_To);           w.write_str(str(to_));   w.end()
+            w.start(EM_DateReceived); w.write_str(when);       w.end()
             # Include MessageClass like Z-Push
             w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
             # InternetCPID to signal UTF-8
-            w.start(EM_InternetCPID); w.write_str("65001"); w.end()
-            w.start(EM_Read);         w.write_str(read);  w.end()
+            w.start(EM_InternetCPID); w.write_str("65001");    w.end()
+            w.start(EM_Read);         w.write_str(read);       w.end()
 
-            # AirSyncBase <Body> (always include)
+            # AirSyncBase <Body> (always include) with preference/truncation
             w.page(CP_AIRSYNCBASE)
             w.start(ASB_Body)
             # ORDER MATTERS: Type -> EstimatedDataSize -> Truncated -> Data
-            w.start(ASB_Type);              w.write_str("2" if body_html else "1");    w.end()  # 2=HTML,1=PlainText
-            w.start(ASB_EstimatedDataSize); w.write_str(size if chosen_body else "0");   w.end()
-            w.start(ASB_Truncated);         w.write_str("0");    w.end()
-            w.start(ASB_Data);              w.write_str(chosen_body if chosen_body else ""); w.end()
+            w.start(ASB_Type);              w.write_str("2" if native_type == 2 else "1"); w.end()
+            w.start(ASB_EstimatedDataSize); w.write_str(size if content else "0");         w.end()
+            w.start(ASB_Truncated);         w.write_str("0");                               w.end()
+            w.start(ASB_Data);              w.write_str(content if content else "");        w.end()
             w.end()  # </Body>
-            # Native body type helps clients choose renderer
-            # (some clients expect this under AirSyncBase)
-            # Not all schema versions define NativeBodyType; if unsupported, clients ignore it.
+            # Native body type hint (as Z-Push does)
+            w.page(CP_AIRSYNCBASE)
+            w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
 
             # close ApplicationData, Add
             w.page(CP_AIRSYNC); w.end()     # </ApplicationData>
@@ -486,10 +503,8 @@ def create_sync_response_wbxml_with_fetch(
             read = "1" if bool(em.get("is_read")) else "0"
             when = _ensure_utc_z(em.get("created_at"))
             # Body selection
-            body_html = em.get("body_html")
-            body_text = str(em.get("body") or em.get("preview") or "")
-            chosen_body = str(body_html) if body_html else body_text
-            body_bytes = chosen_body.encode("utf-8")
+            content, native_type = _select_body_content(em, body_type_preference)
+            body_bytes = content.encode("utf-8")
 
             # <Add>
             w.cp(CP_AIRSYNC); w.start(AS_Add)
@@ -504,14 +519,16 @@ def create_sync_response_wbxml_with_fetch(
             w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
             w.start(EM_InternetCPID); w.write_str("65001"); w.end()
             w.start(EM_Read);         w.write_str(read);  w.end()
-            # AirSyncBase Body (HTML preferred)
+            # AirSyncBase Body — honor client BodyPreference and truncation
             w.cp(CP_AIRSYNCBASE)
             w.start(ASB_Body)
-            w.start(ASB_Type); w.write_str("2" if body_html else "1"); w.end()
+            w.start(ASB_Type); w.write_str("2" if native_type == 2 else "1"); w.end()
             w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes))); w.end()
             w.start(ASB_Truncated); w.write_str("0"); w.end()
-            w.start(ASB_Data); w.write_str(chosen_body if chosen_body else ""); w.end()
+            w.start(ASB_Data); w.write_str(content if content else ""); w.end()
             w.end()  # </Body>
+            w.cp(CP_AIRSYNCBASE)
+            w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
             # Close appdata/add
             w.cp(CP_AIRSYNC)
             w.end(); w.end()

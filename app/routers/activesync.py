@@ -88,6 +88,8 @@ def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
     
     CRITICAL FIX #31: Echo the client's requested protocol version!
     iOS expects MS-ASProtocolVersion (singular) to match what it sent.
+    
+    NOTE: Do NOT set a global Content-Type header; each endpoint sets its own media_type
     """
     headers = {
         # MS-ASHTTP required headers
@@ -95,7 +97,6 @@ def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
         "X-MS-Server-ActiveSync": "14.1",
         "Server": "365-Email-System",
         "Allow": "OPTIONS,POST",
-        "Content-Type": "application/vnd.ms-sync.wbxml",
         # MS-ASHTTP performance headers
         "Cache-Control": "private, no-cache",
         "Pragma": "no-cache",
