@@ -1,121 +1,124 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-Spec-correct WBXML Sync response builder for Exchange ActiveSync 14.1 (iOS-friendly).
+Bare-minimum WBXML writer for EAS Sync responses.
 
-Key points:
-- AirSync code page (0) for Sync/Collections/Collection/Commands, etc.  [MS-ASWBXML 2.1.2.1.1]
-- Email code page (2) for Subject/From/To/DateReceived/Read, etc.       [MS-ASWBXML 2.1.2.1.3]
-- AirSyncBase code page (17) for Body/Type/Data/EstimatedDataSize/...    [MS-ASWBXML 2.1.2.1.18]
+- Code pages and tokens taken from MS-ASWBXML:
+  * CP0  AirSync:   Sync(0x05), Add(0x07), Delete(0x09), SyncKey(0x0B), ServerId(0x0D),
+                    Status(0x0E), Collection(0x0F), Class(0x10), CollectionId(0x12),
+                    MoreAvailable(0x14), Commands(0x16), ApplicationData(0x1D), Collections(0x1C)
+  * CP2  Email:     DateReceived(0x0F), MessageClass(0x13), Subject(0x14), Read(0x15),
+                    To(0x16), Cc(0x17), From(0x18)
+  * CP17 AirSyncBase: Body(0x0A), Type(0x06 in this CP), Data(0x0C), EstimatedDataSize(0x0D), Truncated(0x0E)
 
-Ordering inside AirSyncBase: put <Type> FIRST, then <EstimatedDataSize>, <Truncated>, and <Data>.
-This order is accepted widely and matches many server implementations (e.g., Z-Push style).
-
-This module exports:
-- create_sync_response_wbxml(sync_key, emails, *, collection_id='1', window_size=25, more_available=False)
-    -> bytes WBXML payload
-
-It also exposes a quick to_hex() helper for logging.
-
-This file intentionally has NO external dependencies; only Python stdlib is used.
+References:
+- AirSync CP0: https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-aswbxml/a4b75c96-c8e3-4dc4-867a-ef7b190313cc
+- Email   CP2: https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-aswbxml/06f4ff28-ac7b-4c56-a9e2-6eb33dc55c83
+- AirSyncBase CP17: https://learn.microsoft.com/openspecs/exchange_server_protocols/ms-aswbxml/aa548cbc-b15f-4dc1-8bda-82b35d9d41c4
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, List, Dict, Any
 from datetime import datetime, timezone
-import logging
+from typing import Any, Dict, List, Optional
 
-log = logging.getLogger(__name__)
-
-# --- WBXML control tokens (WAP-192-WBXML) ---
+# WBXML control bytes
 SWITCH_PAGE = 0x00
 END         = 0x01
 STR_I       = 0x03
 
-# --- Code pages (per MS-ASWBXML) ---
-CP_AIRSYNC     = 0      # Code Page 0
-CP_EMAIL       = 2      # Code Page 2
-CP_AIRSYNCBASE = 17     # Code Page 17
+# Header: version 1.3 (0x03), public id unknown (0x01), UTF-8 (0x6A), string table length = 0x00
+WBXML_VERSION = 0x03
+WBXML_PUBLIC_ID = 0x01
+WBXML_CHARSET_UTF8 = 0x6A
 
-# --- AirSync (CP0) tokens we use (see MS-ASWBXML 2.1.2.1.1) ---
+# Code pages
+CP_AIRSYNC     = 0    # MS-ASWBXML CP0
+CP_EMAIL       = 2    # MS-ASWBXML CP2
+CP_AIRSYNCBASE = 17   # MS-ASWBXML CP17
+
+# --- AirSync (CP0) tokens we use ---
 AS_Sync           = 0x05
-AS_Responses      = 0x06
 AS_Add            = 0x07
-AS_Change         = 0x08
 AS_Delete         = 0x09
-AS_Fetch          = 0x0A
 AS_SyncKey        = 0x0B
-AS_ClientId       = 0x0C
 AS_ServerId       = 0x0D
 AS_Status         = 0x0E
 AS_Collection     = 0x0F
 AS_Class          = 0x10
-# 0x11 is reserved in this page; collection id is 0x12:
 AS_CollectionId   = 0x12
-AS_GetChanges     = 0x13
 AS_MoreAvailable  = 0x14
-AS_WindowSize     = 0x15
 AS_Commands       = 0x16
-AS_Collections    = 0x1C
 AS_ApplicationData= 0x1D
+AS_Collections    = 0x1C
 
-# --- Email (CP2) tokens we use (see MS-ASWBXML 2.1.2.1.3) ---
+# --- Email (CP2) tokens we use ---
 EM_DateReceived   = 0x0F
-EM_DisplayTo      = 0x11
-EM_Importance     = 0x12
 EM_MessageClass   = 0x13
 EM_Subject        = 0x14
 EM_Read           = 0x15
 EM_To             = 0x16
 EM_Cc             = 0x17
 EM_From           = 0x18
-EM_DtStamp        = 0x1D
-EM_ThreadTopic    = 0x35
-EM_InternetCPID   = 0x39
 
-# --- AirSyncBase (CP17) tokens we use (see MS-ASWBXML 2.1.2.1.18) ---
+# --- AirSyncBase (CP17) tokens we use ---
 ASB_Body          = 0x0A
-ASB_Data          = 0x0B
-ASB_EstimatedDataSize = 0x0C
-ASB_Truncated     = 0x0D
 ASB_Type          = 0x06
+ASB_Data          = 0x0C
+ASB_EstimatedDataSize = 0x0D
+ASB_Truncated     = 0x0E
 
-# === Simple WBXML writer ===
 
 class WBXMLWriter:
-    """
-    Ultra-minimal WBXML writer for EAS.
-    - Starts with a header: version=0x03, publicid=0x01, charset=utf-8 (0x6A), string table length=0x00.
-    - write_str writes STR_I followed by UTF-8 bytes and zero terminator.
-    - start(tag, with_content=True) writes tag | 0x40 if with_content else tag.
-    - end() writes END.
-    - page switches code pages only when needed.
-    """
     def __init__(self):
-        self.buf = bytearray()
-        self.current_page = 0xFFFF  # force initial page switch
+        self.buf: bytearray = bytearray()
+        self.current_page: Optional[int] = None
 
     def header(self):
-        # WBXML version 1.3 (0x03), public id unknown (0x01), charset UTF-8 (0x6A), string table length 0x00
-        self.buf.extend([0x03, 0x01, 0x6A, 0x00])
+        self.write_byte(WBXML_VERSION)
+        self.write_byte(WBXML_PUBLIC_ID)
+        self.write_byte(WBXML_CHARSET_UTF8)
+        self.write_byte(0x00)  # string table length
 
+    # low-level
     def write_byte(self, b: int):
         self.buf.append(b & 0xFF)
 
-    def write_str(self, s: str):
-        self.write_byte(STR_I)
-        self.buf.extend(s.encode('utf-8'))
-        self.write_byte(0x00)
+    def write_mb_u_int(self, value: int):
+        # minimum MB-U-Int (most implementations just write the single byte)
+        if value < 0x80:
+            self.write_byte(value)
+            return
+        # generic encoder
+        stack = []
+        while value:
+            stack.append(value & 0x7F)
+            value >>= 7
+        while stack:
+            b = stack.pop()
+            if stack:
+                self.write_byte(0x80 | b)
+            else:
+                self.write_byte(b)
 
-    def page(self, cp: int):
-        if self.current_page != cp:
+    def write_str(self, s: str):
+        if s is None:
+            s = ""
+        b = s.encode("utf-8")
+        self.write_byte(STR_I)
+        self.buf.extend(b)
+        self.write_byte(0x00)  # null terminator
+
+    def cp(self, codepage: int):
+        if self.current_page != codepage:
             self.write_byte(SWITCH_PAGE)
-            self.write_byte(cp & 0xFF)
-            self.current_page = cp
+            self.write_byte(codepage)
+            self.current_page = codepage
 
     def start(self, tok: int, with_content: bool = True):
+        # bit 6 set (0x40) => tag has content
         self.write_byte((tok | 0x40) if with_content else tok)
 
     def end(self):
@@ -124,168 +127,163 @@ class WBXMLWriter:
     def bytes(self) -> bytes:
         return bytes(self.buf)
 
-def _wbxml_add_email(w: WBXMLWriter, server_id: str, email: Dict[str, Any], *, body_type: int = 1):
-    """
-    Emit one <Add> for an Email item:
-    <Add>
-      <ServerId>...</ServerId>
-      <ApplicationData>
-        <Email:Subject>...</Email:Subject>
-        <Email:From>...</Email:From>
-        <Email:To>...</Email:To>
-        <Email:DateReceived>...</Email:DateReceived>
-        <Email:Read>...</Email:Read>
-        <AirSyncBase:Body>
-          <AirSyncBase:Type>1</AirSyncBase:Type>
-          <AirSyncBase:EstimatedDataSize>...</AirSyncBase:EstimatedDataSize>
-          <AirSyncBase:Truncated>0</AirSyncBase:Truncated>
-          <AirSyncBase:Data>...</AirSyncBase:Data>
-        </AirSyncBase:Body>
-      </ApplicationData>
-    </Add>
-    """
-    # <Add>
-    w.page(CP_AIRSYNC)
-    w.start(AS_Add)
-
-    # <ServerId> (EAS server-defined unique id per collection)
-    w.start(AS_ServerId); w.write_str(server_id); w.end()
-
-    # <ApplicationData>
-    w.start(AS_ApplicationData)
-
-    # Switch to Email CP for properties
-    w.page(CP_EMAIL)
-
-    subj = email.get('subject') or '(no subject)'
-    from_ = email.get('from') or email.get('sender') or ''
-    to_   = email.get('to') or email.get('recipient') or ''
-    read  = '1' if bool(email.get('is_read')) else '0'
-    # RFC3339 or EAS date? EAS DateReceived expects UTC in ISO 8601; iOS accepts RFC3339 with 'Z'
-    created_at = email.get('created_at')
-    if isinstance(created_at, datetime):
-        created_utc = created_at.astimezone(timezone.utc).replace(tzinfo=None)
-        date_str = created_utc.isoformat(timespec='seconds') + 'Z'
-    else:
-        # assume already "YYYY-MM-DDTHH:MM:SS.sssZ" or string
-        date_str = str(created_at) if created_at else datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
-
-    # Minimal required email fields
-    w.start(EM_Subject);      w.write_str(subj);      w.end()
-    w.start(EM_From);         w.write_str(from_);     w.end()
-    w.start(EM_To);           w.write_str(to_);       w.end()
-    w.start(EM_DateReceived); w.write_str(date_str);  w.end()
-    w.start(EM_Read);         w.write_str(read);      w.end()
-
-    # Body is in AirSyncBase CP
-    w.page(CP_AIRSYNCBASE)
-    body_bytes = (email.get('body') or '').encode('utf-8')
-    body_text = (email.get('body') or '')
-    est_size = str(len(body_bytes))
-
-    w.start(ASB_Body)
-    # IMPORTANT ORDER: Type -> EstimatedDataSize -> Truncated -> Data
-    w.start(ASB_Type);              w.write_str(str(body_type)); w.end()      # 1 = PlainText
-    w.start(ASB_EstimatedDataSize); w.write_str(est_size);       w.end()
-    w.start(ASB_Truncated);         w.write_str('0');            w.end()
-    w.start(ASB_Data);              w.write_str(body_text);      w.end()
-    w.end()  # </Body>
-
-    # Back to AirSync to close ApplicationData
-    w.page(CP_AIRSYNC)
-    w.end()  # </ApplicationData>
-
-    # </Add>
-    w.end()
 
 @dataclass
 class SyncBatch:
-    """
-    Represents one Sync batch worth of items produced for a given request.
-    """
     response_sync_key: str
     wbxml: bytes
     sent_count: int
     total_available: int
     more_available: bool
 
+
+def _wbxml_add_email(w: WBXMLWriter, server_id: str, email: Dict[str, Any]) -> None:
+    """
+    <Add>
+      <ServerId>...</ServerId>
+      <ApplicationData>... CP2/CP17 fields ...</ApplicationData>
+    </Add>
+    """
+    # <Add>
+    w.cp(CP_AIRSYNC)
+    w.start(AS_Add)
+
+    # <ServerId>
+    w.start(AS_ServerId); w.write_str(server_id); w.end()
+
+    # <ApplicationData>
+    w.start(AS_ApplicationData)
+
+    # Minimal, safe Email:Subject, From, To, Read, DateReceived
+    subj = str(email.get("subject") or "No Subject")
+    frm  = str(email.get("from") or email.get("sender") or "")
+    to   = str(email.get("to") or email.get("recipient") or "")
+    read = "1" if bool(email.get("is_read")) else "0"
+
+    # DateReceived: UTC ISO8601 with trailing Z
+    created_at = email.get("created_at")
+    if isinstance(created_at, datetime):
+        dt = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+        date_str = dt.isoformat(timespec="seconds") + "Z"
+    else:
+        date_str = str(created_at) if created_at else datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+    # Email CP2 fields
+    w.cp(CP_EMAIL)
+    w.start(EM_Subject);      w.write_str(subj);     w.end()
+    w.start(EM_From);         w.write_str(frm);      w.end()
+    w.start(EM_To);           w.write_str(to);       w.end()
+    w.start(EM_Read);         w.write_str(read);     w.end()
+    w.start(EM_DateReceived); w.write_str(date_str); w.end()
+    # MessageClass is recommended; iOS likes "IPM.Note"
+    w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
+
+    # AirSyncBase Body (very small, safe text body)
+    body_text = str(email.get("preview") or email.get("body") or email.get("snippet") or "")
+    if body_text:
+        w.cp(CP_AIRSYNCBASE)
+        w.start(ASB_Body)
+        # Type=1 (PlainText)
+        w.start(ASB_Type); w.write_str("1"); w.end()
+        # Data (may be truncated implicitly)
+        w.start(ASB_Data); w.write_str(body_text); w.end()
+        # EstimatedDataSize
+        w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_text.encode("utf-8")))); w.end()
+        # Truncated=0 or 1 – keep 0 for now
+        w.start(ASB_Truncated); w.write_str("0"); w.end()
+        w.end()  # </Body>
+
+    # </ApplicationData>
+    w.cp(CP_AIRSYNC)
+    w.end()
+
+    # </Add>
+    w.end()
+
+
 def create_sync_response_wbxml(
+    *,
     sync_key: str,
     emails: List[Dict[str, Any]],
-    *,
-    collection_id: str = '1',
+    collection_id: str = "1",
     window_size: int = 25,
     more_available: bool = False,
-    class_name: str = 'Email'
+    class_name: str = "Email",
 ) -> SyncBatch:
     """
-    Build a minimal, standards-compliant Sync response with Add commands.
-
-    Arguments:
-        sync_key        - the *new* SyncKey that the server is issuing in this response (e.g., "12")
-        emails          - the slice of emails to include in this batch
-        collection_id   - EAS collection id (e.g., "1")
-        window_size     - echoed for easy logging; we will not include more than this many items
-        more_available  - if True, emit <MoreAvailable/> within the collection
-        class_name      - typically "Email"
-
-    Returns:
-        SyncBatch with WBXML bytes and metadata for logging.
+    Build a standards-compliant Sync response containing <Add> commands (or empty if no changes).
+    Order within <Collection> mirrors common servers (Class -> SyncKey -> CollectionId -> Status -> [Commands] -> [MoreAvailable]).
+    Status=1 (Success).
     """
     w = WBXMLWriter()
     w.header()
 
-    # Outer structure: <Sync><Collections><Collection>...</Collection></Collections></Sync>
-    w.page(CP_AIRSYNC)
-    w.start(AS_Sync)                   # <Sync>
-    w.start(AS_Collections)            #   <Collections>
-    w.start(AS_Collection)             #     <Collection>
+    # <Sync>
+    w.cp(CP_AIRSYNC)
+    w.start(AS_Sync)
 
-    # Required collection children
-    w.start(AS_SyncKey);      w.write_str(sync_key);            w.end()  # <SyncKey>new</SyncKey>
-    w.start(AS_CollectionId); w.write_str(str(collection_id));  w.end()
-    w.start(AS_Status);       w.write_str('1');                 w.end()  # Success per MS-ASCMD
-    w.start(AS_Class);        w.write_str(class_name);          w.end()
+    # <Collections>
+    w.start(AS_Collections)
 
+    # <Collection>
+    w.start(AS_Collection)
+
+    # Class, SyncKey, CollectionId, Status
+    w.start(AS_Class);        w.write_str(class_name);     w.end()
+    w.start(AS_SyncKey);      w.write_str(sync_key);        w.end()
+    w.start(AS_CollectionId); w.write_str(collection_id);   w.end()
+    w.start(AS_Status);       w.write_str("1");             w.end()  # Success
+
+    # Commands (optional if no items)
+    if emails:
+        w.start(AS_Commands)
+        for e in emails:
+            server_id = str(e.get("server_id") or e.get("id") or "")
+            _wbxml_add_email(w, server_id, e)
+        w.end()  # </Commands>
+
+    # MoreAvailable (if pagination)
     if more_available:
-        # Empty tag (no content bit, no END)
         w.start(AS_MoreAvailable, with_content=False)
 
-    # Commands
-    w.start(AS_Commands)
-
-    # Emit up to window_size items
-    max_items = min(len(emails), max(0, int(window_size or 0)))
-    for idx, email in enumerate(emails[:max_items], 1):
-        # ServerId format "collectionId:messageLocalId" is widely used and accepted by iOS
-        server_id = f"{collection_id}:{email.get('id', idx)}"
-        _wbxml_add_email(w, server_id, email)
-
-    w.end()  # </Commands>
-
-    # Close up
-    w.end()  # </Collection>
-    w.end()  # </Collections>
-    w.end()  # </Sync>
+    # </Collection>, </Collections>, </Sync>
+    w.end(); w.end(); w.end()
 
     payload = w.bytes()
-
-    # Basic debug help
-    first_20 = payload[:20].hex()
-    log.debug(
-        "WBXML built: sync_key=%s collection=%s window=%s items=%s more=%s first20=%s size=%d",
-        sync_key, collection_id, window_size, max_items, more_available, first_20, len(payload)
-    )
-
     return SyncBatch(
         response_sync_key=sync_key,
         wbxml=payload,
-        sent_count=max_items,
-        total_available=len(emails),
-        more_available=more_available
+        sent_count=len(emails),
+        total_available=len(emails),  # fill with slice size; your HTTP layer can log totals separately
+        more_available=more_available,
     )
 
-def to_hex(b: bytes, limit: Optional[int] = None) -> str:
-    """Convenience for logging."""
-    hx = b.hex()
-    return hx if limit is None else hx[:limit]
+
+def create_invalid_synckey_response_wbxml(*, collection_id: str = "1", class_name: str = "Email") -> SyncBatch:
+    """
+    Build a minimal response that signals Status=3 (InvalidSyncKey) and forces the client to re-init
+    the collection with SyncKey=0 (per MS-ASCMD).
+    """
+    w = WBXMLWriter()
+    w.header()
+
+    w.cp(CP_AIRSYNC)
+    w.start(AS_Sync)
+    w.start(AS_Collections)
+    w.start(AS_Collection)
+
+    w.start(AS_Class);        w.write_str(class_name);   w.end()
+    w.start(AS_SyncKey);      w.write_str("0");          w.end()
+    w.start(AS_CollectionId); w.write_str(collection_id); w.end()
+    w.start(AS_Status);       w.write_str("3");          w.end()  # InvalidSyncKey
+
+    w.end(); w.end(); w.end()
+
+    payload = w.bytes()
+    return SyncBatch(
+        response_sync_key="0",
+        wbxml=payload,
+        sent_count=0,
+        total_available=0,
+        more_available=False,
+    )

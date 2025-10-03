@@ -22,8 +22,8 @@ from ..email_service import EmailService
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from activesync import sync_prepare_batch, convert_db_email_to_dict
-from activesync import create_sync_response_wbxml, SyncBatch, SyncStateStore
+from activesync import sync_prepare_batch
+from activesync import create_sync_response_wbxml, create_invalid_synckey_response_wbxml, SyncBatch, SyncStateStore
 from ..wbxml_parser import parse_wbxml_sync_request, parse_wbxml_foldersync_request
 from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 

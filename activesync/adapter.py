@@ -1,102 +1,55 @@
 #!/usr/bin/env python3
-"""
-Adapter to integrate the expert's SyncStateStore with our FastAPI/SQLAlchemy application.
+# -*- coding: utf-8 -*-
 
-This module:
-1. Converts our DB Email models to simple dicts for the expert's WBXML builder
-2. Wraps the expert's in-memory state store so it persists to our database
-3. Provides a single clean interface for the activesync.py router
+"""
+Thin adapter between your FastAPI layer and the state machine/builder.
+
+- Converts your DB Email rows -> builder-friendly dicts.
+- Holds one in-process SyncStateStore (swap with persistent storage if desired).
 """
 
-from typing import List, Dict, Any, TYPE_CHECKING
-from datetime import datetime, timezone
+from __future__ import annotations
+
+from typing import List, Dict, Any
+from datetime import datetime
 from .state_machine import SyncStateStore
 from .wbxml_builder import SyncBatch
 
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
-
-# Global instance (or we could use dependency injection)
-_state_store = SyncStateStore()
+# One in-memory store (replace with a DB-backed implementation if needed)
+STORE = SyncStateStore()
 
 
-def convert_db_email_to_dict(email) -> Dict[str, Any]:
-    """
-    Convert our SQLAlchemy Email model to a simple dict for the expert's builder.
-    """
-    # Handle sender
-    sender = ''
-    if hasattr(email, 'sender') and email.sender:
-        sender = getattr(email.sender, 'email', '')
-    elif hasattr(email, 'external_sender') and email.external_sender:
-        sender = email.external_sender
-    
-    # Handle recipient
-    recipient = ''
-    if hasattr(email, 'recipient') and email.recipient:
-        recipient = getattr(email.recipient, 'email', '')
-    elif hasattr(email, 'external_recipient') and email.external_recipient:
-        recipient = email.external_recipient
-    
+def _row_to_email_dict(row: Any) -> Dict[str, Any]:
+    # Accept both dict-like and attribute-like rows
+    g = (row if isinstance(row, dict) else row.__dict__)
     return {
-        'id': email.id,
-        'subject': email.subject or '(no subject)',
-        'from': sender,
-        'sender': sender,
-        'to': recipient,
-        'recipient': recipient,
-        'created_at': email.created_at,
-        'is_read': getattr(email, 'is_read', False),
-        'body': email.body or ''
+        "id": g.get("id"),
+        "server_id": g.get("server_id") or g.get("id"),
+        "subject": g.get("subject") or "No Subject",
+        "from": g.get("sender") or g.get("from") or g.get("external_sender"),
+        "to": g.get("recipient") or g.get("to") or g.get("external_recipient"),
+        "is_read": bool(g.get("is_read")),
+        "created_at": g.get("created_at") if isinstance(g.get("created_at"), datetime) else g.get("created_at"),
+        "body": g.get("body") or g.get("preview") or g.get("snippet") or "",
     }
 
 
 def sync_prepare_batch(
     *,
-    db,  # Session type hint removed to avoid circular import
     user_email: str,
     device_id: str,
     collection_id: str,
     client_sync_key: str,
-    db_emails: List,  # List of Email objects
-    window_size: int = 25
+    db_emails: List[Any],
+    window_size: int = 25,
 ) -> SyncBatch:
-    """
-    Prepare a Sync batch using the expert's state machine.
-    
-    This function:
-    1. Converts DB emails to dicts
-    2. Calls the expert's prepare_batch()
-    3. Returns the SyncBatch with .wbxml bytes ready to send
-    
-    The expert's state store handles:
-    - Idempotent resends (same batch if client retries)
-    - Proper SyncKey advancement (cur_key → next_key progression)
-    - Pagination (cursor tracking)
-    """
-    # Convert DB models to simple dicts
-    email_dicts = [convert_db_email_to_dict(email) for email in db_emails]
-    
-    # Call the expert's state machine
-    batch = _state_store.prepare_batch(
-        user=user_email,
+    emails = [_row_to_email_dict(r) for r in db_emails]
+
+    return STORE.prepare_batch(
+        user_email=user_email,
         device_id=device_id,
         collection_id=collection_id,
-        client_sync_key=client_sync_key,
-        emails=email_dicts,
-        window_size=window_size
+        client_sync_key=str(client_sync_key),
+        emails=emails,
+        window_size=window_size,
     )
-    
-    return batch
-
-
-def sync_reset_state(user: str, device_id: str, collection_id: str):
-    """
-    Reset the in-memory state for a given user/device/collection.
-    
-    Call this when you want to force a fresh sync (e.g., after manual state reset in DB).
-    """
-    from .state_machine import _Key
-    key = _Key(user, device_id, collection_id)
-    if key.k() in _state_store._state:
-        del _state_store._state[key.k()]

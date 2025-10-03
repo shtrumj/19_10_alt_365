@@ -1,144 +1,177 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-Reference Sync state machine for EAS "Sync" command.
+Sync state machine with strict InvalidSyncKey handling.
 
-Fixes typical "looping" due to not persisting server SyncKey across requests and
-not resending the same batch idempotently when the client retries with the same
-client SyncKey.
-
-Usage:
-    store = SyncStateStore()
-    batch = store.prepare_batch(
-        user="yonatan@shtrum.com",
-        device_id="KO090MSD...",
-        collection_id="1",
-        client_sync_key="11",
-        emails=emails_list,
-        window_size=1,  # keep small to exercise paging
-    )
-    # send batch.wbxml as HTTP body
-
-This module keeps state in-memory. Replace the DictStorage with your DB.
+Key behaviors vs. before:
+- If client_sync_key == "0": initialize collection (no changes, server returns new SyncKey "1").
+- If client_sync_key == ctx.cur_key: resend the last pending batch if any; otherwise compute a fresh batch.
+- If client_sync_key == ctx.next_key: treat as ACK, commit next_key -> cur_key and clear pending.
+- Otherwise (stale/unknown key): return Status=3 (InvalidSyncKey) with <SyncKey>0</SyncKey> and
+  reset server-side state for this collection. (MS-ASCMD §2.2.2.20 Status=3). 
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-import logging
-from .wbxml_builder import create_sync_response_wbxml, SyncBatch
+from typing import Dict, List, Tuple, Optional, Any
 
-log = logging.getLogger(__name__)
+from .wbxml_builder import (
+    create_sync_response_wbxml,
+    create_invalid_synckey_response_wbxml,
+    SyncBatch,
+)
 
-@dataclass
-class _Key:
-    user: str
-    device_id: str
-    collection_id: str
+# A "collection" is uniquely identified by (user_email, device_id, collection_id).
+CollectionKey = Tuple[str, str, str]
 
-    def k(self) -> Tuple[str, str, str]:
-        return (self.user, self.device_id, self.collection_id)
 
 @dataclass
-class _Ctx:
-    cur_key: str = "0"             # last ACKed key from client (what client is allowed to send)
-    next_key: str = "1"            # key we will include in the *next* response we generate
-    pending: Optional[SyncBatch] = None
-    cursor: int = 0                # pagination cursor (index into emails for this demo)
+class CollectionState:
+    cur_key: str = "0"              # last ACKed key
+    next_key: Optional[str] = None  # key we issued in the last batch (awaiting ACK)
+    pending_wbxml: Optional[bytes] = None
+    cursor: int = 0                 # simple pagination cursor (highest index sent)
+    last_slice_count: int = 0       # for logging / resend sanity
+
 
 class SyncStateStore:
     def __init__(self):
-        self._state: Dict[Tuple[str, str, str], _Ctx] = {}
+        self._state: Dict[CollectionKey, CollectionState] = {}
 
-    def _get(self, key: _Key) -> _Ctx:
-        return self._state.setdefault(key.k(), _Ctx())
-
-    def _advance_key(self, k: str) -> str:
-        try:
-            return str(int(k) + 1)
-        except Exception:
-            return "1" if k != "1" else "2"
+    # ---------- public API ----------
 
     def prepare_batch(
         self,
         *,
-        user: str,
+        user_email: str,
         device_id: str,
         collection_id: str,
         client_sync_key: str,
-        emails: List[dict],
-        window_size: int = 25
+        emails: List[Dict[str, Any]],
+        window_size: int = 25,
     ) -> SyncBatch:
         """
-        Build (or re-send) a Sync batch based on the client's SyncKey.
-
-        Rules implemented (per EAS behavior and Z-Push):
-        - If client_sync_key == ctx.cur_key and ctx.pending exists: resend *same* pending batch
-          with the same response SyncKey (idempotent retry).
-        - If client_sync_key == ctx.next_key: client ACKed previous batch; advance keys/cursor and
-          generate a fresh batch with a *new* response SyncKey.
-        - If client_sync_key == ctx.cur_key and no pending: generate first batch for this round.
-        - Else: treat as stale/unknown (reset cursor, set keys so that we produce a new batch).
+        Compute the correct response to a Sync request for one collection.
+        Returns a SyncBatch whose WBXML can be written to the HTTP response.
         """
-        key = _Key(user, device_id, collection_id)
-        ctx = self._get(key)
 
-        # Idempotent resend
-        if ctx.pending and client_sync_key == ctx.cur_key:
-            log.info("sync_resend_pending: client_key=%s server_next_key=%s", client_sync_key, ctx.next_key)
-            return ctx.pending
+        key: CollectionKey = (user_email, device_id, collection_id)
+        ctx = self._state.setdefault(key, CollectionState())
 
-        # ACK received (client sends the next_key we previously issued)
-        if client_sync_key == ctx.next_key:
-            ctx.cur_key = ctx.next_key
-            ctx.next_key = self._advance_key(ctx.next_key)
-            ctx.pending = None  # previous pending is acknowledged
+        # 1) INITIALIZATION HANDSHAKE
+        if client_sync_key == "0":
+            # Reset server view for this collection and assign fresh first key "1"
+            self._reset_state(key)
+            ctx = self._state[key]
+            new_key = "1"
+            ctx.cur_key = "0"
+            ctx.next_key = new_key
+            # Initial sync per spec: return only <SyncKey>1</SyncKey> and Status=1 (no commands)
+            batch = create_sync_response_wbxml(
+                sync_key=new_key,
+                emails=[],                         # no changes on initial
+                collection_id=collection_id,
+                window_size=window_size,
+                more_available=False,
+                class_name="Email",
+            )
+            # Keep as pending until client ACKs with "1"
+            ctx.pending_wbxml = batch.wbxml
+            ctx.last_slice_count = 0
+            return batch
 
-        # If client is in expected state (either initial or after ack), produce new batch
+        # 2) EXACT MATCH TO CURRENT KEY --> (re)SEND PENDING OR COMPUTE NEW BATCH
         if client_sync_key == ctx.cur_key:
+            # If there is a pending batch (we already issued next_key) just resend it idempotently.
+            if ctx.pending_wbxml and ctx.next_key is not None:
+                # Resend the *exact same* bytes and *same* SyncKey as before
+                return SyncBatch(
+                    response_sync_key=ctx.next_key,
+                    wbxml=ctx.pending_wbxml,
+                    sent_count=ctx.last_slice_count,
+                    total_available=max(ctx.cursor, len(emails)),
+                    more_available=False,  # value doesn't matter; payload is identical
+                )
+
+            # No pending batch -> compute a fresh one from cursor forward
             start = ctx.cursor
-            end = min(start + max(1, int(window_size or 1)), len(emails))
-            slice_emails = emails[start:end]
+            end = min(len(emails), start + max(1, int(window_size)))
+            slice_ = emails[start:end]
             more = end < len(emails)
 
+            new_key_int = int(ctx.cur_key) + 1
+            new_key = str(new_key_int)
+
             batch = create_sync_response_wbxml(
-                sync_key=ctx.next_key,
-                emails=slice_emails,
+                sync_key=new_key,
+                emails=slice_,
                 collection_id=collection_id,
                 window_size=window_size,
                 more_available=more,
+                class_name="Email",
             )
 
-            # Persist state for idempotent resend until ACK arrives
-            ctx.pending = batch
-            if more:
-                ctx.cursor = end  # advance cursor only after sending
-            else:
-                # no more, reset for next full cycle
-                ctx.cursor = 0
-
-            log.info(
-                "sync_batch_generated: client_key=%s response_sync_key=%s sent=%s total=%s more=%s",
-                client_sync_key, batch.response_sync_key, batch.sent_count, batch.total_available, batch.more_available
-            )
+            # Stage as pending until ACK
+            ctx.next_key = new_key
+            ctx.pending_wbxml = batch.wbxml
+            ctx.last_slice_count = len(slice_)
+            # Do NOT advance cursor yet; we only commit when client ACKs (sends client_sync_key == next_key)
             return batch
 
-        # Unexpected key: reset cursor and serve a fresh batch from the beginning,
-        # but do NOT roll back ctx.cur_key. This behavior prevents loops due to
-        # server-side resets.
-        log.warning(
-            "sync_unexpected_key: got=%s expected_cur=%s next=%s -> resetting cursor and serving new batch",
-            client_sync_key, ctx.cur_key, ctx.next_key
-        )
-        ctx.cursor = 0
-        # Do not touch cur_key; generate a new batch keyed to current flow
-        return self.prepare_batch(
-            user=user,
-            device_id=device_id,
-            collection_id=collection_id,
-            client_sync_key=ctx.cur_key,
-            emails=emails,
-            window_size=window_size
-        )
+        # 3) CLIENT IS ACKING THE PREVIOUS BATCH (client_sync_key == ctx.next_key)
+        if ctx.next_key is not None and client_sync_key == ctx.next_key:
+            # Commit: next_key becomes current, pending cleared, and cursor advances by last slice count.
+            ctx.cur_key = ctx.next_key
+            ctx.next_key = None
+            ctx.pending_wbxml = None
+            ctx.cursor = min(len(emails), ctx.cursor + ctx.last_slice_count)
+            ctx.last_slice_count = 0
 
+            # Now prepare the next fresh batch (which may be empty)
+            start = ctx.cursor
+            end = min(len(emails), start + max(1, int(window_size)))
+            slice_ = emails[start:end]
+            more = end < len(emails)
+
+            if not slice_ and not more:
+                # No changes -> return empty response with *same* SyncKey (cur_key)
+                return create_sync_response_wbxml(
+                    sync_key=ctx.cur_key,
+                    emails=[],
+                    collection_id=collection_id,
+                    window_size=window_size,
+                    more_available=False,
+                    class_name="Email",
+                )
+
+            new_key_int = int(ctx.cur_key) + 1
+            new_key = str(new_key_int)
+
+            batch = create_sync_response_wbxml(
+                sync_key=new_key,
+                emails=slice_,
+                collection_id=collection_id,
+                window_size=window_size,
+                more_available=more,
+                class_name="Email",
+            )
+
+            ctx.next_key = new_key
+            ctx.pending_wbxml = batch.wbxml
+            ctx.last_slice_count = len(slice_)
+            return batch
+
+        # 4) ANY OTHER KEY -> MUST TELL CLIENT IT'S INVALID AND FORCE RE-INIT
+        # (This is what stops the 61/5 ping-pong you're seeing.)
+        # Spec requires the collection to go back to SyncKey 0. (MS-ASCMD, Status=3)
+        self._reset_state(key)
+        invalid = create_invalid_synckey_response_wbxml(collection_id=collection_id)
+        # Keep state at 0; the client will send SyncKey=0 next.
+        return invalid
+
+    # ---------- utilities ----------
+
+    def _reset_state(self, key: CollectionKey) -> None:
+        self._state[key] = CollectionState()
