@@ -451,7 +451,8 @@ async def eas_dispatch(
         # Build XML response based on step
         if is_acknowledgment:
             # Step 2 response: Just PolicyKey, no Data
-        xml = f"""<?xml version="1.0" encoding="utf-8"?>
+            xml = (
+                f"""<?xml version="1.0" encoding="utf-8"?>
 <Provision xmlns="Provision:">
     <Status>1</Status>
     <Policies>
@@ -462,11 +463,12 @@ async def eas_dispatch(
         </Policy>
     </Policies>
 </Provision>"""
+            )
         else:
             # Step 1 response: PolicyKey=0 + full policy settings
             xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <Provision xmlns="Provision:">
-            <Status>1</Status>
+    <Status>1</Status>
     <Policies>
         <Policy>
             <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
@@ -898,6 +900,22 @@ async def eas_dispatch(
         
         # Filter to only unsent emails
         emails = [e for e in all_emails if e.id > last_id]
+
+        # Include FETCHED items regardless of pagination
+        fetched_emails = []
+        if fetch_ids:
+            try:
+                # server_id may be formatted like "1:36"; extract numeric id portion
+                fetch_int_ids = []
+                for sid in fetch_ids:
+                    parts = str(sid).split(":")
+                    n = parts[-1]
+                    if n.isdigit():
+                        fetch_int_ids.append(int(n))
+                fetched_emails = email_service.get_emails_by_ids(current_user.id, fetch_int_ids)
+                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_lookup", "fetch_ids": fetch_ids, "resolved": [e.id for e in fetched_emails]})
+            except Exception as ex:
+                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_error", "error": str(ex)})
         
         _write_json_line("activesync/activesync.log", {
             "event": "sync_pagination_filter",
@@ -973,25 +991,24 @@ async def eas_dispatch(
             response_sync_key = "1"  # MUST be "1", not "2"!
             state.sync_key = response_sync_key
             state.last_synced_email_id = 0  # Reset pagination too!
-                db.commit()
-            
-                _write_json_line("activesync/activesync.log", {
+            db.commit()
+
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_initial_reset",
-                    "device_id": device_id,
-                    "collection_id": collection_id,
+                "device_id": device_id,
+                "collection_id": collection_id,
                 "client_sync_key": "0",
                 "response_sync_key": response_sync_key,
                 "message": "Client requested initial sync - RESET to SyncKey=1"
             })
-            
+
             _write_json_line("activesync/activesync.log", {
-                "event": "sync_initial_simple_integer", 
+                "event": "sync_initial_simple_integer",
                 "device_id": device_id,
                 "collection_id": collection_id,
                 "client_sync_key": "0",
                 "response_sync_key": response_sync_key,
                 "synckey_counter": state.synckey_counter,
-                "reason": "Initial sync with SIMPLE INTEGER (like FolderSync)"
             })
             # CRITICAL FIX #23-2: Send items on FIRST sync per expert!
             # Expert: "iOS is fine receiving items on the first response"
@@ -1136,8 +1153,9 @@ async def eas_dispatch(
                 emails_to_send = emails[:window_size] if window_size else emails
                 has_more = len(emails) > window_size if window_size else False
 
-                # Use current Z-Push-compliant WBXML builder
-                wbxml_batch = create_sync_response_wbxml(
+                # Use builder that can include both Adds and Fetch responses
+                from activesync import create_sync_response_wbxml_with_fetch
+                wbxml_batch = create_sync_response_wbxml_with_fetch(
                     sync_key=response_sync_key,
                     emails=[{
                         'id': e.id,
@@ -1161,12 +1179,47 @@ async def eas_dispatch(
                         'body': str(getattr(e, 'body', None) or getattr(e, 'preview', None) or ''),
                         'body_html': str(getattr(e, 'body_html', None) or getattr(e, 'html_body', None) or '')
                     } for e in emails_to_send],
+                    fetched=[{
+                        'id': e.id,
+                        'server_id': f"{collection_id}:{e.id}",
+                        'subject': str(getattr(e, 'subject', '') or ''),
+                        'from': str(
+                            getattr(e, 'external_sender', None)
+                            or (getattr(getattr(e, 'sender', None), 'email', None) if getattr(e, 'sender', None) else None)
+                            or getattr(e, 'from', None)
+                            or getattr(e, 'sender', None)
+                            or ''
+                        ),
+                        'to': str(
+                            getattr(e, 'external_recipient', None)
+                            or (getattr(getattr(e, 'recipient', None), 'email', None) if getattr(e, 'recipient', None) else None)
+                            or getattr(e, 'to', None)
+                            or getattr(e, 'recipient', None)
+                            or ''
+                        ),
+                        'created_at': e.created_at,
+                        'is_read': bool(getattr(e, 'is_read', False)),
+                        'body': str(getattr(e, 'body', None) or getattr(e, 'preview', None) or ''),
+                        'body_html': str(getattr(e, 'body_html', None) or getattr(e, 'html_body', None) or '')
+                    } for e in fetched_emails],
                     collection_id=collection_id,
                     window_size=window_size,
                     more_available=has_more,
                     class_name="Email",
                 )
                 wbxml = wbxml_batch.payload
+                # If there were FETCH requests, append <Responses><Fetch> with bodies
+                if fetched_emails:
+                    from activesync import write_fetch_responses
+                    w = activesync_w = None
+                    try:
+                        # Append to existing WBXML: we need a writer capable of appending; since our
+                        # builder doesn't expose partial writer, for now we rebuild a combined payload:
+                        # (Simple approach: just send the same Add body; iOS accepts body under Add as well)
+                        # TODO: Refactor builder to append Responses/Fetch in place.
+                        pass
+                    except Exception:
+                        pass
                 
                 # CRITICAL FIX #26 + #27: Stage as PENDING and advance SyncKey!
                 # Expert FIX #27: "SyncKey must ALWAYS advance on every response"
@@ -1290,24 +1343,6 @@ async def eas_dispatch(
                         more_available=False,
                         class_name="Email",
                     )
-                    wbxml = wbxml_batch.payload
-                    
-                    # Log the successful WBXML creation
-                _write_json_line(
-                    "activesync/activesync.log",
-                        {
-                            "event": "sync_client_behind_graceful_wbxml",
-                            "sync_key": new_sync_key,
-                            "client_key": client_sync_key,
-                            "server_key": state.sync_key,
-                            "email_count": len(emails),
-                            "collection_id": collection_id,
-                            "wbxml_length": len(wbxml),
-                            "wbxml_first50": wbxml[:50].hex(),
-                            "sync_gap": sync_gap
-                        }
-                )
-                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
                 except Exception as e:
                     # Log the error
                     _write_json_line(
@@ -1319,7 +1354,25 @@ async def eas_dispatch(
                         }
                     )
                     # Fall back to XML
-            xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+                    xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+                else:
+                    wbxml = wbxml_batch.payload
+                    # Log the successful WBXML creation
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "sync_client_behind_graceful_wbxml",
+                            "sync_key": new_sync_key,
+                            "client_key": client_sync_key,
+                            "server_key": state.sync_key,
+                            "email_count": len(emails),
+                            "collection_id": collection_id,
+                            "wbxml_length": len(wbxml),
+                            "wbxml_first50": wbxml[:50].hex(),
+                            "sync_gap": sync_gap
+                        }
+                    )
+                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             else:
                 xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
             

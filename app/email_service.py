@@ -160,6 +160,19 @@ class EmailService:
             Email.id == email_id,
             (Email.sender_id == user_id) | (Email.recipient_id == user_id)
         ).first()
+
+    def get_emails_by_ids(self, user_id: int, email_ids: List[int]) -> List[Email]:
+        """Get multiple emails by their IDs for the given user."""
+        if not email_ids:
+            return []
+        return (
+            self.db.query(Email)
+            .filter(
+                Email.id.in_(email_ids),
+                ((Email.sender_id == user_id) | (Email.recipient_id == user_id))
+            )
+            .all()
+        )
     
     def _send_email_notification(self, user_id: int, email: Email):
         """Send WebSocket notification for new email"""

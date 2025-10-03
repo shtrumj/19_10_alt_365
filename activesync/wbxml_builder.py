@@ -116,6 +116,59 @@ class SyncBatch:
     total_available: int
     more_available: bool
 
+def write_fetch_responses(
+    *,
+    w: WBXMLWriter,
+    fetched: List[Dict[str, Any]],
+    body_type_preference: int = 2,
+    truncation_size: Optional[int] = None,
+) -> None:
+    """Emit <Responses><Fetch>...</Fetch></Responses> with bodies for fetched items."""
+    if not fetched:
+        return
+    w.cp(CP_AIRSYNC)
+    w.start(AS_Responses)
+    for em in fetched:
+        server_id = str(em.get("server_id") or em.get("id") or "")
+        w.start(AS_Fetch)
+        # Status 1
+        w.start(AS_Status); w.write_str("1"); w.end()
+        w.start(AS_ServerId); w.write_str(server_id); w.end()
+        w.start(AS_Class); w.write_str("Email"); w.end()
+        # ApplicationData
+        w.start(AS_ApplicationData)
+        # Minimal email envelope
+        w.cp(CP_EMAIL)
+        w.start(EM_Subject);      w.write_str(str(em.get("subject") or "(no subject)")); w.end()
+        w.start(EM_From);         w.write_str(str(em.get("from") or em.get("sender") or "")); w.end()
+        w.start(EM_To);           w.write_str(str(em.get("to") or em.get("recipient") or "")); w.end()
+        when = _ensure_utc_z(em.get("created_at"))
+        w.start(EM_DateReceived); w.write_str(when); w.end()
+        w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
+        w.start(EM_InternetCPID); w.write_str("65001"); w.end()
+        # AirSyncBase Body (HTML preferred)
+        html = str(em.get("body_html") or em.get("html") or "")
+        plain = str(em.get("body") or em.get("preview") or "")
+        content = html if (body_type_preference == 2 and html) else (plain or html)
+        body_bytes = content.encode("utf-8")
+        out_bytes = body_bytes
+        truncated_flag = "0"
+        if truncation_size is not None and len(body_bytes) > int(truncation_size):
+            out_bytes = body_bytes[:int(truncation_size)]
+            truncated_flag = "1"
+        w.cp(CP_AIRSYNCBASE)
+        w.start(ASB_Body)
+        w.start(ASB_Type); w.write_str("2" if content == html else "1"); w.end()
+        w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes))); w.end()
+        w.start(ASB_Truncated); w.write_str(truncated_flag); w.end()
+        w.start(ASB_Data); w.write_str(out_bytes.decode("utf-8")); w.end()
+        w.end()  # </Body>
+        # Close
+        w.cp(CP_AIRSYNC)
+        w.end()  # </ApplicationData>
+        w.end()  # </Fetch>
+    w.end()  # </Responses>
+
 
 def build_sync_response(
     *,
@@ -351,6 +404,110 @@ def create_sync_response_wbxml(
         more_available=more_available,
     )
 
+
+def create_sync_response_wbxml_with_fetch(
+    *,
+    sync_key: str,
+    emails: List[Dict[str, Any]],
+    fetched: List[Dict[str, Any]],
+    collection_id: str = "1",
+    window_size: int = 25,
+    more_available: bool = False,
+    class_name: str = "Email",
+    body_type_preference: int = 2,
+    truncation_size: Optional[int] = None,
+) -> SyncBatch:
+    """
+    Build a Sync response containing <Collections>/<Collection> with optional <Commands>/<Add>
+    and also <Responses>/<Fetch> bodies for items explicitly fetched by the client.
+    """
+    w = WBXMLWriter()
+    w.header()
+
+    # <Sync>
+    w.cp(CP_AIRSYNC)
+    w.start(AS_Sync)
+
+    # <Collections><Collection>
+    w.start(AS_Collections)
+    w.start(AS_Collection)
+
+    # Required children (Z-Push-like order): SyncKey -> CollectionId -> Class -> Status
+    w.start(AS_SyncKey);      w.write_str(sync_key);         w.end()
+    w.start(AS_CollectionId); w.write_str(collection_id);   w.end()
+    w.start(AS_Class);        w.write_str(class_name);           w.end()
+    w.start(AS_Status);       w.write_str("1");                  w.end()
+
+    # Commands for new items
+    count = 0
+    if emails:
+        w.start(AS_Commands)
+        for idx, em in enumerate(emails):
+            if count >= window_size:
+                break
+            server_id = em.get("server_id") or f"{collection_id}:{em.get('id', idx+1)}"
+            subj = str(em.get("subject") or "(no subject)")
+            frm  = str(em.get("from") or em.get("sender") or "")
+            to   = str(em.get("to") or em.get("recipient") or "")
+            read = "1" if bool(em.get("is_read")) else "0"
+            when = _ensure_utc_z(em.get("created_at"))
+            # Body selection
+            body_html = em.get("body_html")
+            body_text = str(em.get("body") or em.get("preview") or "")
+            chosen_body = str(body_html) if body_html else body_text
+            body_bytes = chosen_body.encode("utf-8")
+
+            # <Add>
+            w.cp(CP_AIRSYNC); w.start(AS_Add)
+            w.start(AS_ServerId); w.write_str(str(server_id)); w.end()
+            w.start(AS_ApplicationData)
+            # Email props
+            w.cp(CP_EMAIL)
+            w.start(EM_Subject);      w.write_str(subj);  w.end()
+            w.start(EM_From);         w.write_str(frm);   w.end()
+            w.start(EM_To);           w.write_str(to);    w.end()
+            w.start(EM_DateReceived); w.write_str(when);  w.end()
+            w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
+            w.start(EM_InternetCPID); w.write_str("65001"); w.end()
+            w.start(EM_Read);         w.write_str(read);  w.end()
+            # AirSyncBase Body (HTML preferred)
+            w.cp(CP_AIRSYNCBASE)
+            w.start(ASB_Body)
+            w.start(ASB_Type); w.write_str("2" if body_html else "1"); w.end()
+            w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes))); w.end()
+            w.start(ASB_Truncated); w.write_str("0"); w.end()
+            w.start(ASB_Data); w.write_str(chosen_body if chosen_body else ""); w.end()
+            w.end()  # </Body>
+            # Close appdata/add
+            w.cp(CP_AIRSYNC)
+            w.end(); w.end()
+            count += 1
+        w.end()  # </Commands>
+
+    # MoreAvailable after Commands
+    if more_available:
+        w.start(AS_MoreAvailable, with_content=False)
+    w.end(); w.end()  # </Collection></Collections>
+
+    # <Responses><Fetch> for fetched items
+    write_fetch_responses(
+        w=w,
+        fetched=fetched,
+        body_type_preference=body_type_preference,
+        truncation_size=truncation_size,
+    )
+
+    # Close Sync
+    w.end()
+
+    payload = w.bytes()
+    return SyncBatch(
+        response_sync_key=sync_key,
+        wbxml=payload,
+        sent_count=count,
+        total_available=len(emails),
+        more_available=more_available,
+    )
 
 def create_invalid_synckey_response_wbxml(*, collection_id: str = "1", class_name: str = "Email") -> SyncBatch:
     """
