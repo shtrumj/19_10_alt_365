@@ -1416,8 +1416,8 @@ async def eas_dispatch(
                 )
             else:
                 # No emails to send - return no changes
-            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
-            if is_wbxml_request:
+                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+                if is_wbxml_request:
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=state.sync_key,
                         emails=[],
@@ -1427,11 +1427,11 @@ async def eas_dispatch(
                         class_name="Email",
                     )
                     wbxml = wbxml_batch.payload
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
-                )
-                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
+                    )
+                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync">
     <Status>1</Status>
