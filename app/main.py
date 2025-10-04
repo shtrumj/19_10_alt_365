@@ -31,7 +31,7 @@ from .routers import (
     websocket_simple,
 )
 # Import ActiveSync from its own module
-from activesync import router as activesync_router
+from .routers import activesync as activesync_router
 from .smtp_server import start_smtp_server, stop_smtp_server
 
 logger = logging.getLogger(__name__)

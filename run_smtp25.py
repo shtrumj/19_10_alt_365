@@ -40,7 +40,7 @@ from app.routers import (
     websocket_simple,
 )
 # Import ActiveSync from its own module
-from activesync import router as activesync_router
+from app.routers import activesync as activesync_router
 from app.smtp_server import start_smtp_server_25, stop_smtp_server_25
 
 
