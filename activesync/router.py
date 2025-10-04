@@ -14,28 +14,28 @@ from sqlalchemy.orm import Session
 # CRITICAL FIX #31B: Add logger for protocol version negotiation logging
 logger = logging.getLogger(__name__)
 
-from ..auth import get_current_user_from_basic_auth
-from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
-from ..diagnostic_logger import _write_json_line
-from ..email_service import EmailService
+from app.auth import get_current_user_from_basic_auth
+from app.database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
+from app.diagnostic_logger import _write_json_line
+from app.email_service import EmailService
 # ActiveSync WBXML builders (root-level module)
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 # Z-Push-compliant WBXML builder imports
-from activesync.wbxml_builder import (
+from .wbxml_builder import (
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
     SyncBatch,
 )
-from activesync.state_machine import SyncStateStore
-from activesync.adapter import sync_prepare_batch
-from ..wbxml_parser import (
+from .state_machine import SyncStateStore
+from .adapter import sync_prepare_batch
+from app.wbxml_parser import (
     parse_wbxml_sync_request,
     parse_wbxml_foldersync_request,
     parse_wbxml_sync_fetch_and_delete,
 )
-from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
+from app.synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
 # Rate limiting for sync requests
 _sync_rate_limits = {}
@@ -467,28 +467,28 @@ from sqlalchemy.orm import Session
 # CRITICAL FIX #31B: Add logger for protocol version negotiation logging
 logger = logging.getLogger(__name__)
 
-from ..auth import get_current_user_from_basic_auth
-from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
-from ..diagnostic_logger import _write_json_line
-from ..email_service import EmailService
+from app.auth import get_current_user_from_basic_auth
+from app.database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
+from app.diagnostic_logger import _write_json_line
+from app.email_service import EmailService
 # ActiveSync WBXML builders (root-level module)
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 # Z-Push-compliant WBXML builder imports
-from activesync.wbxml_builder import (
+from .wbxml_builder import (
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
     SyncBatch,
 )
-from activesync.state_machine import SyncStateStore
-from activesync.adapter import sync_prepare_batch
-from ..wbxml_parser import (
+from .state_machine import SyncStateStore
+from .adapter import sync_prepare_batch
+from app.wbxml_parser import (
     parse_wbxml_sync_request,
     parse_wbxml_foldersync_request,
     parse_wbxml_sync_fetch_and_delete,
 )
-from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
+from app.synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
 # Rate limiting for sync requests
 _sync_rate_limits = {}
@@ -2626,7 +2626,7 @@ def get_folder_emails(
             
             if is_wbxml_request:
                 # Return correct minimal WBXML response with all 5 folders
-                from activesync.wbxml_builder import build_foldersync_no_changes
+                from .wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
                     "activesync/activesync.log",
@@ -2745,7 +2745,7 @@ def get_folder_emails(
         elif client_key_int == server_key_int:
             if is_wbxml_request:
                 # Return WBXML response for iPhone clients
-                from activesync.wbxml_builder import build_foldersync_no_changes
+                from .wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
                     "activesync/activesync.log",
@@ -2770,7 +2770,7 @@ def get_folder_emails(
         else:
             if is_wbxml_request:
                 # Return WBXML response for iPhone clients
-                from activesync.wbxml_builder import build_foldersync_no_changes
+                from .wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)  # Simplified error response
                 _write_json_line(
                     "activesync/activesync.log",
@@ -3305,7 +3305,7 @@ def get_folder_emails(
                 has_more = len(emails) > window_size if window_size else False
 
                 # Use builder that can include both Adds and Fetch responses
-                from activesync.wbxml_builder import create_sync_response_wbxml_with_fetch
+                from .wbxml_builder import create_sync_response_wbxml_with_fetch
                 wbxml_batch = create_sync_response_wbxml_with_fetch(
                     sync_key=response_sync_key,
                     emails=[{
@@ -3363,7 +3363,7 @@ def get_folder_emails(
                 wbxml = wbxml_batch.payload
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
                 if fetched_emails:
-                    from activesync.wbxml_builder import write_fetch_responses
+                    from .wbxml_builder import write_fetch_responses
                     w = activesync_w = None
                     try:
                         # Append to existing WBXML: we need a writer capable of appending; since our
@@ -3635,7 +3635,7 @@ def get_folder_emails(
             
             # Build WBXML Ping response
             # Per MS-ASCMD: Status 2 = changes, Status 1 = no changes (timeout)
-            from activesync.wbxml_builder import WBXMLWriter, CP_PING
+            from .wbxml_builder import WBXMLWriter, CP_PING
             
             w = WBXMLWriter()
             w.header()
@@ -3681,7 +3681,7 @@ def get_folder_emails(
                 {"event": "ping_error", "error": str(e), "traceback": traceback.format_exc()}
             )
             # Return Status 1 (no changes) on error to avoid client loop
-            from activesync.wbxml_builder import WBXMLWriter
+            from .wbxml_builder import WBXMLWriter
             w = WBXMLWriter()
             w.header()
             w.page(1)  # Ping codepage
