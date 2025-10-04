@@ -10,9 +10,14 @@ Highlights
 """
 
 from __future__ import annotations
+import base64
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
+from email import policy
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import format_datetime, formatdate, make_msgid
 
 # WBXML control
 SWITCH_PAGE = 0x00
@@ -140,6 +145,112 @@ def _select_body_content(em: Dict[str, Any], body_type_preference: int = 2) -> t
         native = 2 if html else 1 if plain else 1
     return content, native
 
+
+def _truncate_bytes(data: bytes, limit: Optional[int]) -> tuple[bytes, str]:
+    if not data:
+        return data, "0"
+    if limit is None:
+        return data, "0"
+    try:
+        limit_int = int(limit)
+    except (ValueError, TypeError):
+        return data, "0"
+    if limit_int <= 0 or len(data) <= limit_int:
+        return data, "0"
+    return data[:limit_int], "1"
+
+
+def _format_email_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value or "")
+        try:
+            if text.endswith("Z"):
+                dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            else:
+                dt = datetime.fromisoformat(text)
+        except Exception:
+            dt = datetime.utcnow()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return format_datetime(dt)
+
+
+def _build_mime_message(em: Dict[str, Any], html_body: str, plain_body: str) -> bytes:
+    msg = MIMEMultipart('alternative')
+
+    subject = str(em.get('subject') or '')
+    if subject:
+        msg['Subject'] = subject
+
+    from_addr = str(em.get('from') or em.get('sender') or '')
+    to_addr = str(em.get('to') or em.get('recipient') or '')
+    if from_addr:
+        msg['From'] = from_addr
+    if to_addr:
+        msg['To'] = to_addr
+
+    created_at = em.get('created_at')
+    try:
+        msg['Date'] = _format_email_date(created_at)
+    except Exception:
+        msg['Date'] = formatdate(localtime=True)
+
+    msg['Message-ID'] = em.get('message_id') or make_msgid()
+
+    if plain_body:
+        msg.attach(MIMEText(plain_body, 'plain', 'utf-8'))
+    if html_body:
+        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+    if not msg.get_payload():
+        msg.attach(MIMEText('', 'plain', 'utf-8'))
+
+    return msg.as_bytes(policy=policy.SMTP)
+
+
+def _prepare_body_payload(
+    em: Dict[str, Any],
+    *,
+    requested_type: int = 2,
+    truncation_size: Optional[int] = None,
+) -> Dict[str, str]:
+    html = str(em.get('body_html') or em.get('html') or '')
+    plain = str(em.get('body') or em.get('preview') or '')
+    native_body_type = '2' if html else '1'
+
+    body_type = requested_type if requested_type in (1, 2, 4) else 2
+
+    if body_type == 4:
+        mime_bytes = _build_mime_message(em, html, plain)
+        estimated_size = str(len(mime_bytes))
+        payload_bytes, truncated_flag = _truncate_bytes(mime_bytes, truncation_size)
+        data_text = base64.b64encode(payload_bytes).decode('ascii') if payload_bytes else ''
+        return {
+            'type': '4',
+            'data': data_text,
+            'estimated_size': estimated_size,
+            'truncated': truncated_flag,
+            'native_type': '4' if payload_bytes else native_body_type,
+        }
+
+    preference = 1 if body_type == 1 else 2
+    content, selected_native = _select_body_content(em, body_type_preference=preference)
+    body_bytes = content.encode('utf-8') if content else b''
+    estimated_size = str(len(body_bytes))
+    payload_bytes, truncated_flag = _truncate_bytes(body_bytes, truncation_size)
+    data_text = payload_bytes.decode('utf-8', errors='ignore') if payload_bytes else ''
+
+    actual_type = '2' if (content and selected_native == 2 and data_text) else '1'
+
+    return {
+        'type': actual_type,
+        'data': data_text,
+        'estimated_size': estimated_size,
+        'truncated': truncated_flag,
+        'native_type': native_body_type,
+    }
+
 def write_fetch_responses(
     *,
     w: WBXMLWriter,
@@ -180,27 +291,20 @@ def write_fetch_responses(
             w.start(EM_DateReceived); w.write_str(when); w.end()
         w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
         w.start(EM_InternetCPID); w.write_str("65001");    w.end()
-        # Body
-        content, native_type = _select_body_content(em, body_type_preference)
-        body_bytes = content.encode("utf-8", errors="ignore")
-        out_bytes = body_bytes
-        truncated_flag = "0"
-        if truncation_size is not None:
-            try:
-                tsz = int(truncation_size)
-                if tsz > 0 and len(body_bytes) > tsz:
-                    out_bytes = body_bytes[:tsz]
-                    truncated_flag = "1"
-            except Exception:
-                pass
+        # Body (respect preference & truncation)
+        body_payload = _prepare_body_payload(
+            em,
+            requested_type=body_type_preference,
+            truncation_size=truncation_size,
+        )
         w.cp(CP_AIRSYNCBASE)
         w.start(ASB_Body)
-        w.start(ASB_Type);              w.write_str("2" if native_type == 2 else "1"); w.end()
-        w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes)));             w.end()
-        w.start(ASB_Truncated);         w.write_str(truncated_flag);                   w.end()
-        w.start(ASB_Data);              w.write_str(out_bytes.decode("utf-8", errors="ignore")); w.end()
+        w.start(ASB_Type);              w.write_str(body_payload['type']);         w.end()
+        w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
+        w.start(ASB_Truncated);         w.write_str(body_payload['truncated']);    w.end()
+        w.start(ASB_Data);              w.write_str(body_payload['data']);         w.end()
         w.end()  # </Body>
-        w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
+        w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
         # Close ApplicationData and Fetch
         w.cp(CP_AIRSYNC)
         w.end()  # </ApplicationData>
@@ -237,6 +341,8 @@ def build_sync_response(
     items: List[Dict[str, Any]],
     window_size: int,
     more_available: bool,
+    body_type_preference: int = 2,
+    truncation_size: Optional[int] = None,
 ) -> SyncBatch:
     """
     <Sync>
@@ -295,10 +401,11 @@ def build_sync_response(
             read  = "1" if bool(em.get("is_read")) else "0"
             when  = _ensure_utc_z(em.get("created_at"))
 
-            # Prefer HTML body if available; otherwise plain text
-            content, native_type = _select_body_content(em, body_type_preference=2)
-            body_bytes = content.encode("utf-8")
-            size = str(len(body_bytes))
+            body_payload = _prepare_body_payload(
+                em,
+                requested_type=body_type_preference,
+                truncation_size=truncation_size,
+            )
 
             # <Add>
             w.page(CP_AIRSYNC); w.start(AS_Add)
@@ -325,14 +432,14 @@ def build_sync_response(
             w.page(CP_AIRSYNCBASE)
             w.start(ASB_Body)
             # ORDER MATTERS: Type -> EstimatedDataSize -> Truncated -> Data
-            w.start(ASB_Type);              w.write_str("2" if native_type == 2 else "1"); w.end()
-            w.start(ASB_EstimatedDataSize); w.write_str(size if content else "0");         w.end()
-            w.start(ASB_Truncated);         w.write_str("0");                               w.end()
-            w.start(ASB_Data);              w.write_str(content if content else "");        w.end()
+            w.start(ASB_Type);              w.write_str(body_payload['type']);          w.end()
+            w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
+            w.start(ASB_Truncated);         w.write_str(body_payload['truncated']);      w.end()
+            w.start(ASB_Data);              w.write_str(body_payload['data']);           w.end()
             w.end()  # </Body>
             # Native body type hint (as Z-Push does)
             w.page(CP_AIRSYNCBASE)
-            w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
+            w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
 
             # close ApplicationData, Add
             w.page(CP_AIRSYNC); w.end()     # </ApplicationData>
@@ -467,6 +574,8 @@ def create_sync_response_wbxml(
         items=emails,
         window_size=window_size,
         more_available=more_available,
+        body_type_preference=body_type_preference,
+        truncation_size=truncation_size,
     )
 
 
@@ -516,10 +625,6 @@ def create_sync_response_wbxml_with_fetch(
             to   = str(em.get("to") or em.get("recipient") or "")
             read = "1" if bool(em.get("is_read")) else "0"
             when = _ensure_utc_z(em.get("created_at"))
-            # Body selection
-            content, native_type = _select_body_content(em, body_type_preference)
-            body_bytes = content.encode("utf-8")
-
             # <Add>
             w.cp(CP_AIRSYNC); w.start(AS_Add)
             w.start(AS_ServerId); w.write_str(str(server_id)); w.end()
@@ -536,13 +641,18 @@ def create_sync_response_wbxml_with_fetch(
             # AirSyncBase Body — honor client BodyPreference and truncation
             w.cp(CP_AIRSYNCBASE)
             w.start(ASB_Body)
-            w.start(ASB_Type); w.write_str("2" if native_type == 2 else "1"); w.end()
-            w.start(ASB_EstimatedDataSize); w.write_str(str(len(body_bytes))); w.end()
-            w.start(ASB_Truncated); w.write_str("0"); w.end()
-            w.start(ASB_Data); w.write_str(content if content else ""); w.end()
+            body_payload = _prepare_body_payload(
+                em,
+                requested_type=body_type_preference,
+                truncation_size=truncation_size,
+            )
+            w.start(ASB_Type); w.write_str(body_payload['type']); w.end()
+            w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
+            w.start(ASB_Truncated); w.write_str(body_payload['truncated']); w.end()
+            w.start(ASB_Data); w.write_str(body_payload['data']); w.end()
             w.end()  # </Body>
             w.cp(CP_AIRSYNCBASE)
-            w.start(ASB_NativeBodyType); w.write_str("2" if native_type == 2 else "1"); w.end()
+            w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
             # Close appdata/add
             w.cp(CP_AIRSYNC)
             w.end(); w.end()

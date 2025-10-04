@@ -240,3 +240,8 @@ Each response now sets its own `media_type`:
 - **CRITICAL FIX #56**: Z-Push-compliant HTML body imports and structure
 - **CRITICAL FIX #31**: Protocol version negotiation
 
+
+
+
+
+

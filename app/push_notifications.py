@@ -115,3 +115,8 @@ async def notify_new_email(user_id: int, folder_id: str = "1"):
     """
     await push_manager.notify_new_content(user_id, folder_id)
 
+
+
+
+
+

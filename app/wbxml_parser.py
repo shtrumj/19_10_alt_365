@@ -5,8 +5,9 @@ Parses WBXML request bodies to extract SyncKey and other parameters
 
 def parse_wbxml_sync_request(wbxml_bytes: bytes) -> dict:
     """
-    Parse WBXML Sync request to extract SyncKey, WindowSize, and other parameters
-    Returns a dictionary with parsed values: sync_key, collection_id, window_size
+    Parse WBXML Sync request to extract SyncKey, WindowSize, CollectionId, and
+    BodyPreferences (Type/Truncation) requested by the client.
+    Returns a dictionary with parsed values.
     """
     if not wbxml_bytes or len(wbxml_bytes) < 6:
         return {"sync_key": "0", "collection_id": "1", "window_size": "5"}
@@ -98,12 +99,18 @@ def parse_wbxml_sync_request(wbxml_bytes: bytes) -> dict:
             
             pos += 1
         
-        return {
+        result = {
             "sync_key": sync_key,
             "collection_id": collection_id,
-            "window_size": window_size
+            "window_size": window_size,
         }
-        
+
+        body_prefs = _extract_body_preferences(wbxml_bytes)
+        if body_prefs:
+            result["body_preferences"] = body_prefs
+
+        return result
+
     except Exception as e:
         # If parsing fails, return defaults
         return {"sync_key": "0", "collection_id": "1", "window_size": "5"}
@@ -115,6 +122,112 @@ def parse_wbxml_foldersync_request(wbxml_bytes: bytes) -> dict:
     """
     if not wbxml_bytes or len(wbxml_bytes) < 6:
         return {"sync_key": "0"}
+
+
+def _extract_body_preferences(wbxml_bytes: bytes) -> list:
+    """Best-effort parser for AirSyncBase BodyPreference blocks."""
+    if not wbxml_bytes:
+        return []
+
+    SWITCH_PAGE = 0x00
+    END = 0x01
+    STR_I = 0x03
+
+    CP_AIRSYNCBASE = 17
+
+    ASB_BODYPREFERENCE = 0x05
+    ASB_TYPE = 0x06
+    ASB_TRUNCATIONSIZE = 0x07
+    ASB_ALLORNONE = 0x08
+
+    prefs = []
+    current = None
+    cp = 0
+    stack = []
+    i = 0
+
+    def read_inline_string(buf: bytes, pos: int) -> tuple[str, int]:
+        if pos >= len(buf) or buf[pos] != STR_I:
+            return "", pos
+        pos += 1
+        start = pos
+        while pos < len(buf) and buf[pos] != 0x00:
+            pos += 1
+        text = buf[start:pos].decode("utf-8", errors="ignore")
+        if pos < len(buf):
+            pos += 1
+        return text, pos
+
+    while i < len(wbxml_bytes):
+        b = wbxml_bytes[i]
+        i += 1
+
+        if b == SWITCH_PAGE:
+            if i < len(wbxml_bytes):
+                cp = wbxml_bytes[i]
+                i += 1
+            continue
+
+        if b == END:
+            if stack:
+                tag = stack.pop()
+                if tag == "BodyPreference" and current is not None:
+                    # Finalize the collected preference (only if type present)
+                    if current.get("type") is not None:
+                        prefs.append(current)
+                    current = None
+            continue
+
+        token = b & 0x3F
+        has_content = (b & 0x40) != 0
+
+        if cp == CP_AIRSYNCBASE:
+            if token == ASB_BODYPREFERENCE:
+                stack.append("BodyPreference")
+                current = {
+                    "type": None,
+                    "truncation_size": None,
+                    "all_or_none": False,
+                }
+                continue
+
+            if current is not None:
+                if token == ASB_TYPE and has_content:
+                    stack.append("BodyPreference:Type")
+                    text, i = read_inline_string(wbxml_bytes, i)
+                    if text:
+                        try:
+                            current["type"] = int(text)
+                        except ValueError:
+                            pass
+                    continue
+
+                if token == ASB_TRUNCATIONSIZE and has_content:
+                    stack.append("BodyPreference:TruncationSize")
+                    text, i = read_inline_string(wbxml_bytes, i)
+                    if text:
+                        try:
+                            current["truncation_size"] = int(text)
+                        except ValueError:
+                            pass
+                    continue
+
+                if token == ASB_ALLORNONE:
+                    if has_content:
+                        stack.append("BodyPreference:AllOrNone")
+                        text, i = read_inline_string(wbxml_bytes, i)
+                        current["all_or_none"] = text.strip() == "1"
+                    else:
+                        current["all_or_none"] = True
+                    continue
+
+        if has_content:
+            # Unknown element with content: push placeholder and skip inline string if present
+            stack.append(None)
+            if i < len(wbxml_bytes) and wbxml_bytes[i] == STR_I:
+                _, i = read_inline_string(wbxml_bytes, i)
+
+    return prefs
 
 
 def parse_wbxml_sync_fetch_and_delete(wbxml_bytes: bytes) -> dict:

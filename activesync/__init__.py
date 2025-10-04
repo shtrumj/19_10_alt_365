@@ -1,14 +1,20 @@
 """
 ActiveSync Protocol Implementation
 
-Self-contained ActiveSync module for Exchange ActiveSync protocol support.
-Designed to be modular and portable for future Docker containerization.
+Z-Push/Grommunio-Sync compatible implementation with:
+- Spec-compliant WBXML encoding (MS-ASWBXML)
+- Idempotent state machine (proper retry handling)
+- Full iOS/iPhone support
 """
 
-# Import the main router from router.py (guarded - do not break on syntax errors during refactor)
-try:
-    from .router import router
-except Exception:
-    router = None
+from .wbxml_builder import create_sync_response_wbxml, SyncBatch
+from .state_machine import SyncStateStore
+from .adapter import sync_prepare_batch, convert_db_email_to_dict
 
-__all__ = ["router"]
+__all__ = [
+    'create_sync_response_wbxml',
+    'SyncBatch',
+    'SyncStateStore',
+    'sync_prepare_batch',
+    'convert_db_email_to_dict',
+]

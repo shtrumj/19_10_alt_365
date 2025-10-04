@@ -106,6 +106,9 @@ class Email(Base):
     uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     subject = Column(String, nullable=False)
     body = Column(Text)
+    body_html = Column(Text)
+    mime_content = Column(Text)
+    mime_content_type = Column(String)
     sender_id = Column(
         Integer, ForeignKey("users.id"), nullable=True
     )  # Nullable for external senders
@@ -412,6 +415,7 @@ class CalendarFolder(Base):
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
+    ensure_email_mime_columns()
 
 
 def _ensure_uuid_for_table(conn, table_name: str):
@@ -510,10 +514,10 @@ def ensure_uuid_columns_and_backfill():
             existing_cols = {row[1] for row in result}
             for col_name, col_type in extended_columns.items():
                 if col_name not in existing_cols:
-                    conn.execute(
-                        text(f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}")
-                    )
-                    conn.commit()
+            conn.execute(
+                text(f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}")
+            )
+            conn.commit()
 
             # Ensure helpful indexes
             folder_indexes = conn.execute(
@@ -603,6 +607,23 @@ def ensure_admin_column():
                 conn.execute("ALTER TABLE users ADD COLUMN admin BOOLEAN DEFAULT 0")
     except Exception:
         # Best-effort; ignore if fails (column may already exist or locked)
+        pass
+
+
+def ensure_email_mime_columns():
+    """Ensure extended body/mime columns exist on the emails table."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("PRAGMA table_info(emails)")).fetchall()
+            columns = {row[1] for row in rows}
+            if "body_html" not in columns:
+                conn.execute(text("ALTER TABLE emails ADD COLUMN body_html TEXT"))
+            if "mime_content" not in columns:
+                conn.execute(text("ALTER TABLE emails ADD COLUMN mime_content TEXT"))
+            if "mime_content_type" not in columns:
+                conn.execute(text("ALTER TABLE emails ADD COLUMN mime_content_type TEXT"))
+            conn.commit()
+    except Exception:
         pass
 
 

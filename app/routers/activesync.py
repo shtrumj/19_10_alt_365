@@ -1,11 +1,13 @@
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from xml.etree import ElementTree as ET
 import time
 import uuid
 import io
 import traceback
 import logging
+import re
+import html as html_module
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
@@ -26,6 +28,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from activesync.wbxml_builder import (
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
+    create_invalid_synckey_response_wbxml,
     SyncBatch,
 )
 from activesync.state_machine import SyncStateStore
@@ -44,6 +47,58 @@ router = APIRouter(prefix="/activesync", tags=["activesync"])
 
 # Simple in-memory pending cache: (user, device, collection, client_key) -> wbxml bytes
 _pending_batches_cache = {}
+
+_HTML_PATTERN = re.compile(r"<(html|body|table|div|span|p|br|!DOCTYPE)[^>]*>", re.IGNORECASE)
+
+
+def _split_plain_html(email) -> Tuple[str, str]:
+    raw_body = getattr(email, "body", None) or ""
+    html_body = getattr(email, "html_body", None) or ""
+
+    if not html_body and _HTML_PATTERN.search(raw_body):
+        html_body = raw_body
+
+    plain_body = getattr(email, "preview", None) or raw_body
+
+    if html_body and plain_body == raw_body:
+        text = re.sub(r"<[^>]+>", " ", html_body)
+        text = html_module.unescape(text)
+        plain_body = re.sub(r"\s+", " ", text).strip()
+
+    if not html_body:
+        html_body = ""
+    if not plain_body:
+        plain_body = ""
+
+    return plain_body, html_body
+
+
+def _email_payload(email, collection_id: str) -> dict:
+    plain_body, html_body = _split_plain_html(email)
+
+    sender_email = 'Unknown'
+    if hasattr(email, 'sender') and email.sender:
+        sender_email = getattr(email.sender, 'email', 'Unknown')
+    elif hasattr(email, 'external_sender') and email.external_sender:
+        sender_email = email.external_sender
+
+    recipient_email = 'Unknown'
+    if hasattr(email, 'recipient') and email.recipient:
+        recipient_email = getattr(email.recipient, 'email', 'Unknown')
+    elif hasattr(email, 'external_recipient') and email.external_recipient:
+        recipient_email = email.external_recipient
+
+    return {
+        'id': email.id,
+        'server_id': f"{collection_id}:{email.id}",
+        'subject': str(getattr(email, 'subject', '') or ''),
+        'from': sender_email,
+        'to': recipient_email,
+        'created_at': getattr(email, 'created_at', None),
+        'is_read': bool(getattr(email, 'is_read', False)),
+        'body': plain_body,
+        'body_html': html_body,
+    }
 
 
 class ActiveSyncResponse:
@@ -777,6 +832,41 @@ async def eas_dispatch(
             window_size = int(window_size_str)
         except (ValueError, TypeError):
             window_size = 5  # Default to 5 emails per sync
+
+        body_prefs = wbxml_params.get("body_preferences", []) or []
+        body_type_preference = 2
+        truncation_size = None
+        if body_prefs:
+            supported_types = {4, 2, 1}
+            for pref in body_prefs:
+                pref_type = pref.get("type")
+                if pref_type in supported_types:
+                    body_type_preference = pref_type
+                    truncation_size = pref.get("truncation_size")
+                    break
+        if truncation_size is not None:
+            try:
+                truncation_size = int(truncation_size)
+            except (ValueError, TypeError):
+                truncation_size = None
+
+        if body_type_preference != 4 and fetch_ids:
+            body_type_preference = 4
+
+        if body_type_preference == 4:
+            effective_truncation = truncation_size
+        else:
+            effective_truncation = truncation_size if truncation_size is not None else 8192
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "sync_body_pref_selected",
+                "body_preferences": body_prefs,
+                "selected_type": body_type_preference,
+                "truncation_size": truncation_size,
+            },
+        )
         
         # Handle sync key validation according to ActiveSync spec
         try:
@@ -916,11 +1006,13 @@ async def eas_dispatch(
                     # Re-send with SAME SyncKey (idempotent resend!) using compliant builder
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=state.pending_sync_key,
-                        emails=[{ 'id': e.id, 'subject': str(e.subject) if hasattr(e,'subject') else '', 'from': str(getattr(e,'sender',None) or getattr(e,'from',None) or ''), 'to': str(getattr(e,'recipient',None) or getattr(e,'to',None) or ''), 'created_at': e.created_at, 'is_read': bool(getattr(e,'is_read',False)), 'body': str(getattr(e,'body',None) or getattr(e,'preview',None) or '') } for e in emails_to_resend],
+                        emails=[_email_payload(e, collection_id) for e in emails_to_resend],
                         collection_id=collection_id,
                         window_size=window_size,
                         more_available=has_more_pending,
                         class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
                     )
                     return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
         
@@ -987,14 +1079,14 @@ async def eas_dispatch(
         if all_emails and not emails and not fetched_emails and client_sync_key != "0":
             # Check if we're stuck: last_id >= max_email_id in folder
             max_email_id = max(e.id for e in all_emails) if all_emails else 0
-            if last_id >= max_email_id:
+            if last_id > max_email_id:
                 _write_json_line("activesync/activesync.log", {
                     "event": "sync_stuck_state_detected",
                     "last_synced_email_id": last_id,
                     "max_email_id_in_folder": max_email_id,
                     "total_emails": len(all_emails),
                     "client_sync_key": client_sync_key,
-                    "message": "STUCK STATE: last_synced_email_id >= max_email_id, forcing reset"
+                    "message": "STUCK STATE: last_synced_email_id > max_email_id, forcing reset"
                 })
                 # Z-Push approach: Reset to 0 to force full resync
                 state.last_synced_email_id = 0
@@ -1086,38 +1178,8 @@ async def eas_dispatch(
                     "has_more": has_more,
                     "message": "Sending items immediately on SyncKey 0→1"
                 })
-                # CRITICAL: ACTUALLY SEND THE EMAILS! (was passing empty list)
-                # Convert SQLAlchemy Email objects to dicts for WBXML builder
-                # Z-Push approach: ALWAYS send HTML as Type=2 if content looks like HTML
-                email_dicts = []
-                for email in emails_to_send:
-                    body_content = email.body or email.preview or ''
-                    body_html_content = None
-                    
-                    # Z-Push logic: If body contains HTML, send it as Type=2 (HTML)
-                    # iOS prefers HTML and will render it properly
-                    if body_content and ('<html' in body_content.lower() or body_content.strip().startswith('<')):
-                        # This is HTML content - send it as body_html for Type=2
-                        body_html_content = body_content
-                        # Also provide plain text fallback by stripping HTML tags
-                        import re
-                        plain_fallback = re.sub(r'<[^>]+>', '', body_content)
-                        plain_fallback = plain_fallback.replace('&nbsp;', ' ').replace('&amp;', '&')
-                        plain_fallback = plain_fallback.replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"')
-                        body_content = plain_fallback.strip()
-                    
-                    email_dicts.append({
-                        'id': email.id,
-                        'server_id': f"{collection_id}:{email.id}",
-                        'subject': email.subject or '(no subject)',
-                        'from': email.external_sender or (email.sender.email if email.sender else ''),
-                        'to': email.external_recipient or (email.recipient.email if email.recipient else ''),
-                        'created_at': email.created_at,
-                        'is_read': email.is_read,
-                        'body': body_content,  # Plain text fallback
-                        'body_html': body_html_content,  # HTML body (Type=2)
-                    })
-                
+                email_dicts = [_email_payload(email, collection_id) for email in emails_to_send]
+
                 wbxml_batch = create_sync_response_wbxml(
                     sync_key=response_sync_key,
                     emails=email_dicts,
@@ -1125,6 +1187,8 @@ async def eas_dispatch(
                     window_size=window_size,
                     more_available=has_more,
                     class_name="Email",
+                    body_type_preference=body_type_preference,
+                    truncation_size=effective_truncation,
                 )
                 wbxml = wbxml_batch.payload
                 
@@ -1272,57 +1336,14 @@ async def eas_dispatch(
                 from activesync.wbxml_builder import create_sync_response_wbxml_with_fetch
                 wbxml_batch = create_sync_response_wbxml_with_fetch(
                     sync_key=response_sync_key,
-                    emails=[{
-                        'id': e.id,
-                        'subject': str(getattr(e, 'subject', '') or ''),
-                        'from': str(
-                            getattr(e, 'external_sender', None)
-                            or (getattr(getattr(e, 'sender', None), 'email', None) if getattr(e, 'sender', None) else None)
-                            or getattr(e, 'from', None)
-                            or getattr(e, 'sender', None)
-                            or ''
-                        ),
-                        'to': str(
-                            getattr(e, 'external_recipient', None)
-                            or (getattr(getattr(e, 'recipient', None), 'email', None) if getattr(e, 'recipient', None) else None)
-                            or getattr(e, 'to', None)
-                            or getattr(e, 'recipient', None)
-                            or ''
-                        ),
-                        'created_at': e.created_at,
-                        'is_read': bool(getattr(e, 'is_read', False)),
-                        'body': str(getattr(e, 'body', None) or getattr(e, 'preview', None) or ''),
-                        'body_html': str(getattr(e, 'body_html', None) or getattr(e, 'html_body', None) or '')
-                    } for e in emails_to_send],
-                    fetched=[{
-                        'id': e.id,
-                        'server_id': f"{collection_id}:{e.id}",
-                        'subject': str(getattr(e, 'subject', '') or ''),
-                        'from': str(
-                            getattr(e, 'external_sender', None)
-                            or (getattr(getattr(e, 'sender', None), 'email', None) if getattr(e, 'sender', None) else None)
-                            or getattr(e, 'from', None)
-                            or getattr(e, 'sender', None)
-                            or ''
-                        ),
-                        'to': str(
-                            getattr(e, 'external_recipient', None)
-                            or (getattr(getattr(e, 'recipient', None), 'email', None) if getattr(e, 'recipient', None) else None)
-                            or getattr(e, 'to', None)
-                            or getattr(e, 'recipient', None)
-                            or ''
-                        ),
-                        'created_at': e.created_at,
-                        'is_read': bool(getattr(e, 'is_read', False)),
-                        'body': str(getattr(e, 'body', None) or getattr(e, 'preview', None) or ''),
-                        'body_html': str(getattr(e, 'body_html', None) or getattr(e, 'html_body', None) or '')
-                    } for e in fetched_emails],
+                    emails=[_email_payload(e, collection_id) for e in emails_to_send],
+                    fetched=[_email_payload(e, collection_id) for e in fetched_emails],
                     collection_id=collection_id,
                     window_size=window_size,
                     more_available=has_more,
                     class_name="Email",
-                    body_type_preference=2,
-                    truncation_size=8192,
+                    body_type_preference=body_type_preference,
+                    truncation_size=effective_truncation,
                 )
                 wbxml = wbxml_batch.payload
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
@@ -1385,11 +1406,13 @@ async def eas_dispatch(
                     
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=new_sync_key,
-                        emails=[{ 'id': e.id, 'subject': str(e.subject) if hasattr(e,'subject') else '', 'from': str(getattr(e,'sender',None) or getattr(e,'from',None) or ''), 'to': str(getattr(e,'recipient',None) or getattr(e,'to',None) or ''), 'created_at': e.created_at, 'is_read': bool(getattr(e,'is_read',False)), 'body': str(getattr(e,'body',None) or getattr(e,'preview',None) or ''), 'body_html': str(getattr(e,'body_html',None) or getattr(e,'html_body',None) or '') } for e in emails_to_send],
+                        emails=[_email_payload(e, collection_id) for e in emails_to_send],
                         collection_id=collection_id,
                         window_size=window_size,
                         more_available=has_more,
                         class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
                     )
                     wbxml = wbxml_batch.payload
                     _write_json_line(
@@ -1420,6 +1443,8 @@ async def eas_dispatch(
                         window_size=window_size,
                         more_available=False,
                         class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
                     )
                     wbxml = wbxml_batch.payload
                     _write_json_line(
@@ -1449,11 +1474,13 @@ async def eas_dispatch(
                     # Send emails respecting WindowSize to get client caught up
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=new_sync_key,
-                        emails=[{ 'id': e.id, 'subject': str(e.subject) if hasattr(e,'subject') else '', 'from': str(getattr(e,'sender',None) or getattr(e,'from',None) or ''), 'to': str(getattr(e,'recipient',None) or getattr(e,'to',None) or ''), 'created_at': e.created_at, 'is_read': bool(getattr(e,'is_read',False)), 'body': str(getattr(e,'body',None) or getattr(e,'preview',None) or ''), 'body_html': str(getattr(e,'body_html',None) or getattr(e,'html_body',None) or '') } for e in emails],
+                        emails=[_email_payload(e, collection_id) for e in emails],
                         collection_id=collection_id,
                         window_size=window_size,
                         more_available=False,
                         class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
                     )
                 except Exception as e:
                     # Log the error

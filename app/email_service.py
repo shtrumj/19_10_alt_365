@@ -7,7 +7,8 @@ from .database import User, Email
 from .models import EmailCreate
 from .email_delivery import email_delivery
 from .websocket_manager import manager
-from .email_parser import get_email_preview
+from .email_parser import get_email_preview, html_to_text
+from .mime_utils import build_mime_message, plain_to_html
 from typing import List, Optional
 import logging
 
@@ -30,9 +31,25 @@ class EmailService:
             
             if recipient:
                 # Internal recipient - create email record directly
+                body_html = email_data.body_html or ""
+                body_plain = email_data.body or ""
+                if body_html and not body_plain:
+                    body_plain = html_to_text(body_html)
+                if body_plain and not body_html:
+                    body_html = plain_to_html(body_plain)
+                mime_content, mime_type = build_mime_message(
+                    email_data.subject,
+                    sender_user.email,
+                    recipient.email,
+                    body_plain,
+                    body_html if body_html else None,
+                )
                 email_record = Email(
                     subject=email_data.subject,
-                    body=email_data.body,
+                    body=body_plain,
+                    body_html=body_html,
+                    mime_content=mime_content,
+                    mime_content_type=mime_type,
                     sender_id=sender_id,
                     recipient_id=recipient.id
                 )
@@ -61,9 +78,25 @@ class EmailService:
                 )
                 
                 # Create a placeholder email record for tracking
+                body_html = email_data.body_html or ""
+                body_plain = email_data.body or ""
+                if body_html and not body_plain:
+                    body_plain = html_to_text(body_html)
+                if body_plain and not body_html:
+                    body_html = plain_to_html(body_plain)
+                mime_content, mime_type = build_mime_message(
+                    email_data.subject,
+                    sender_user.email,
+                    email_data.recipient_email,
+                    body_plain,
+                    body_html if body_html else None,
+                )
                 email_record = Email(
                     subject=email_data.subject,
-                    body=email_data.body,
+                    body=body_plain,
+                    body_html=body_html,
+                    mime_content=mime_content,
+                    mime_content_type=mime_type,
                     sender_id=sender_id,
                     recipient_id=None,  # External recipient
                     is_external=True
@@ -95,7 +128,17 @@ class EmailService:
             msg['Subject'] = email_data.subject
             
             if email_data.body:
-                msg.attach(MIMEText(email_data.body, 'plain'))
+                body_html = email_data.body_html or ""
+                body_plain = email_data.body or ""
+                if body_html and not body_plain:
+                    body_plain = html_to_text(body_html)
+                if body_plain and not body_html:
+                    body_html = plain_to_html(body_plain)
+                if body_html:
+                    msg.attach(MIMEText(body_plain or "", 'plain', 'utf-8'))
+                    msg.attach(MIMEText(body_html, 'html', 'utf-8'))
+                else:
+                    msg.attach(MIMEText(body_plain or "", 'plain', 'utf-8'))
             
             # Send via local SMTP server
             with smtplib.SMTP('localhost', 1025) as server:
@@ -189,7 +232,8 @@ class EmailService:
                 "id": email.id,
                 "subject": email.subject,
                 "sender": sender_email,
-                "preview": get_email_preview(email.body, 100),
+                preview_source = email_record.body_html or email_record.body
+                "preview": get_email_preview(preview_source or "", 100),
                 "is_read": email.is_read,
                 "created_at": email.created_at.isoformat()
             }

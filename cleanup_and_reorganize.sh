@@ -313,3 +313,8 @@ echo "  2. Test the system: docker-compose up -d"
 echo "  3. Commit: git add . && git commit -m 'Initial clean commit'"
 echo "  4. Push: git push new-origin main"
 
+
+
+
+
+
