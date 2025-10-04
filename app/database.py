@@ -514,9 +514,9 @@ def ensure_uuid_columns_and_backfill():
             existing_cols = {row[1] for row in result}
             for col_name, col_type in extended_columns.items():
                 if col_name not in existing_cols:
-            conn.execute(
-                text(f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}")
-            )
+                    conn.execute(
+                        text(f"ALTER TABLE contacts ADD COLUMN {col_name} {col_type}")
+                    )
             conn.commit()
 
             # Ensure helpful indexes
