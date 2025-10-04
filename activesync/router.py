@@ -2488,8 +2488,8 @@ def get_folder_emails(
         ],
     }
 
-    # Build XML response based on step
-    if is_acknowledgment:
+        # Build XML response based on step
+        if is_acknowledgment:
             # Step 2 response: Just PolicyKey, no Data
             xml = (
                 f"""<?xml version="1.0" encoding="utf-8"?>
@@ -3556,7 +3556,7 @@ def get_folder_emails(
         # MS-ASCMD 2.2.2.13: Ping command maintains long-running connection
         import time
         import asyncio
-        from ..push_notifications import push_manager
+        from app.push_notifications import push_manager
         
         try:
             body = await request.body()
