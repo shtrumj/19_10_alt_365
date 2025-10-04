@@ -14,7 +14,6 @@ from .email_queue import Base as QueueBase
 from .logging_config import setup_logging
 from .queue_processor import queue_processor
 from .routers import (
-    activesync,
     auth,
     calendar,
     contacts,
@@ -31,6 +30,8 @@ from .routers import (
     shares,
     websocket_simple,
 )
+# Import ActiveSync from its own module
+from activesync import router as activesync_router
 from .smtp_server import start_smtp_server, stop_smtp_server
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ app.include_router(emails.router)
 app.include_router(owa.router)
 app.include_router(calendar.router)
 app.include_router(contacts.router)
-app.include_router(activesync.router)
+app.include_router(activesync_router)
 app.include_router(queue.router)
 app.include_router(debug.router)
 app.include_router(websocket_simple.router)
