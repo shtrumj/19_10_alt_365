@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-adapter.py — glue from your storage rows to builder-friendly dicts.
+ActiveSync adapter — glue from storage rows to builder-friendly dicts.
+
+This package provides compatibility exports expected by imports like:
+    from activesync.adapter import sync_prepare_batch
 """
 
 from __future__ import annotations
@@ -9,10 +12,11 @@ from typing import List, Dict, Any
 from datetime import datetime
 import os
 
+
 def select_inbox_slice(all_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Ensure each row has the fields the builder expects:
-      id, subject, sender/from, recipient/to, created_at, is_read, preview/body (optional)
+    Normalize rows to the fields expected by the WBXML builder:
+      id, subject, from, to, created_at, is_read, body
     """
     out: List[Dict[str, Any]] = []
     for r in all_rows:
@@ -28,9 +32,8 @@ def select_inbox_slice(all_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-# Legacy compatibility
 def _row_to_email_dict(row: Any) -> Dict[str, Any]:
-    # Accept both dict-like and attribute-like rows
+    """Accept both dict-like and attribute-like ORM rows and normalize."""
     g = (row if isinstance(row, dict) else row.__dict__)
     return {
         "id": g.get("id"),
@@ -61,8 +64,9 @@ def _row_to_email_dict(row: Any) -> Dict[str, Any]:
 
 
 # CRITICAL: Single global state machine instance (persists across requests)
-from .state_machine import SyncStateStore
+from ..state_machine import SyncStateStore
 _GLOBAL_STORE = SyncStateStore()
+
 
 def sync_prepare_batch(
     *,
@@ -73,9 +77,9 @@ def sync_prepare_batch(
     db_emails: List[Any],
     window_size: int = 25,
 ) -> 'SyncBatch':
-    """Legacy compatibility wrapper."""
-    from .wbxml_builder import SyncBatch
-    
+    """Compatibility wrapper feeding the state machine with normalized emails."""
+    from ..wbxml_builder import SyncBatch
+
     emails = [_row_to_email_dict(r) for r in db_emails]
 
     # Envelope-only test mode: force no Commands to verify key advancement
@@ -90,3 +94,16 @@ def sync_prepare_batch(
         emails=emails,
         window_size=window_size,
     )
+
+
+def convert_db_email_to_dict(row: Any) -> Dict[str, Any]:
+    """Legacy alias used by older code paths."""
+    return _row_to_email_dict(row)
+
+
+__all__ = [
+    "select_inbox_slice",
+    "sync_prepare_batch",
+    "convert_db_email_to_dict",
+]
+
