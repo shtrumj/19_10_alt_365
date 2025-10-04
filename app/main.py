@@ -30,8 +30,9 @@ from .routers import (
     shares,
     websocket_simple,
 )
-# Import ActiveSync from its own module
-from .routers import activesync
+# Import ActiveSync from the new top-level module
+from activesync.router import router as activesync_router
+from activesync.router import eas_options as eas_options_handler, eas_dispatch as eas_dispatch_handler
 from .smtp_server import start_smtp_server, stop_smtp_server
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ app.include_router(emails.router)
 app.include_router(owa.router)
 app.include_router(calendar.router)
 app.include_router(contacts.router)
-app.include_router(activesync.router)
+app.include_router(activesync_router)
 app.include_router(queue.router)
 app.include_router(debug.router)
 app.include_router(websocket_simple.router)
@@ -85,6 +86,18 @@ app.include_router(shares.router, prefix="/shares")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Root-level Microsoft-Server-ActiveSync aliases for client compatibility
+app.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    eas_options_handler,
+    methods=["OPTIONS"],
+)
+app.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    eas_dispatch_handler,
+    methods=["POST"],
+)
 
 
 # Endpoints to serve troubleshooting files from the root
