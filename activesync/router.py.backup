@@ -126,6 +126,26 @@ class ActiveSyncResponse:
 def _eas_options_headers() -> dict:
     """Headers for OPTIONS discovery - iOS 26 compatible with ActiveSync 16.1."""
     return get_ios26_options_headers()
+        "Server": "365-Email-System",
+        "Allow": "OPTIONS,POST",
+        # MS-ASHTTP performance headers
+        "Cache-Control": "private, no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+        # OPTIONS advertises list of versions (plural only)
+        # CRITICAL FIX #31: Cap to 14.1 while debugging!
+        # iOS picks the HIGHEST version and expects that format!
+        "MS-ASProtocolVersions": "14.1",  # Only advertise what we can deliver!
+        # OPTIONS includes commands list
+        "MS-ASProtocolCommands": (
+            "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
+            "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
+            "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar,"
+            "ResolveRecipients,ValidateCert"
+        ),
+        # MS-ASHTTP protocol support headers
+        "MS-ASProtocolSupports": "14.0,14.1",  # Only what we support!
+    }
 
 
 def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
@@ -135,6 +155,33 @@ def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
         policy_key=policy_key,
         protocol_version=protocol_version
     )
+        "X-MS-Server-ActiveSync": "14.1",
+        "Server": "365-Email-System",
+        "Allow": "OPTIONS,POST",
+        # MS-ASHTTP performance headers
+        "Cache-Control": "private, no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+        # CRITICAL FIX #31: Echo the negotiated version (singular)
+        # This MUST match what the client sent in MS-ASProtocolVersion header!
+        "MS-ASProtocolVersion": protocol_version or "14.1",
+        # Can include list too (optional on POST responses)
+        "MS-ASProtocolVersions": "14.1",
+        "MS-ASProtocolCommands": (
+            "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
+            "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
+            "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar,"
+            "ResolveRecipients,ValidateCert"
+        ),
+        # MS-ASHTTP protocol support headers
+        "MS-ASProtocolSupports": "14.0,14.1",
+    }
+    
+    # Add X-MS-PolicyKey header if provided (iOS expects this after provisioning)
+    if policy_key:
+        headers["X-MS-PolicyKey"] = policy_key
+        
+    return headers
 
 
 def create_sync_response(emails: List, sync_key: str = "1", collection_id: str = "1"):
@@ -537,6 +584,26 @@ class ActiveSyncResponse:
 def _eas_options_headers() -> dict:
     """Headers for OPTIONS discovery - iOS 26 compatible with ActiveSync 16.1."""
     return get_ios26_options_headers()
+        "Server": "365-Email-System",
+        "Allow": "OPTIONS,POST",
+        # MS-ASHTTP performance headers
+        "Cache-Control": "private, no-cache",
+        "Pragma": "no-cache",
+        "Connection": "keep-alive",
+        # OPTIONS advertises list of versions (plural only)
+        # CRITICAL FIX #31: Cap to 14.1 while debugging!
+        # iOS picks the HIGHEST version and expects that format!
+        "MS-ASProtocolVersions": "14.1",  # Only advertise what we can deliver!
+        # OPTIONS includes commands list
+        "MS-ASProtocolCommands": (
+            "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
+            "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
+            "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar,"
+            "ResolveRecipients,ValidateCert"
+        ),
+        # MS-ASHTTP protocol support headers
+        "MS-ASProtocolSupports": "14.0,14.1",  # Only what we support!
+    }
 
 
 def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
