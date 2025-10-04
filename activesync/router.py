@@ -2488,8 +2488,8 @@ def get_folder_emails(
         ],
     }
 
-        # Build XML response based on step
-        if is_acknowledgment:
+    # Build XML response based on step
+    if is_acknowledgment:
             # Step 2 response: Just PolicyKey, no Data
             xml = (
                 f"""<?xml version="1.0" encoding="utf-8"?>
