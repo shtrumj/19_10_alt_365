@@ -530,6 +530,7 @@ def parse_mime_email(raw_email_body):
             msg = email.message_from_string(raw_email_body, policy=email.policy.default)
 
         text_content, html_content = _extract_bodies_from_message(msg)
+        mime_type = msg.get_content_type()
         attachments = _extract_attachments(msg)
 
         # Heuristic: if HTML part missing but text looks like raw HTML, promote it
@@ -589,6 +590,10 @@ def parse_mime_email(raw_email_body):
                 "content": html_content,
                 "type": "html",
                 "attachments": attachments,
+                "html": html_content,
+                "plain": text_content,
+                "mime_type": mime_type,
+                "raw_source": raw_bytes.decode("utf-8", errors="ignore"),
             }
 
         if text_content and len(text_content.strip()) > 0:
@@ -596,6 +601,10 @@ def parse_mime_email(raw_email_body):
                 "content": text_content,
                 "type": "text",
                 "attachments": attachments,
+                "html": html_content,
+                "plain": text_content,
+                "mime_type": mime_type,
+                "raw_source": raw_bytes.decode("utf-8", errors="ignore"),
             }
 
         # Last-resort: try quoted-printable decode of entire message
@@ -606,12 +615,21 @@ def parse_mime_email(raw_email_body):
                     "content": qp_decoded,
                     "type": "html",
                     "attachments": attachments,
+                    "html": qp_decoded,
+                    "plain": text_content,
+                    "mime_type": mime_type,
+                    "raw_source": raw_bytes.decode("utf-8", errors="ignore"),
                 }
             if qp_decoded.strip():
+                stripped = qp_decoded.strip()
                 return {
-                    "content": qp_decoded.strip(),
+                    "content": stripped,
                     "type": "text",
                     "attachments": attachments,
+                    "html": html_content,
+                    "plain": stripped,
+                    "mime_type": mime_type,
+                    "raw_source": raw_bytes.decode("utf-8", errors="ignore"),
                 }
         except Exception:
             pass
@@ -621,6 +639,10 @@ def parse_mime_email(raw_email_body):
             "content": "No readable content found",
             "type": "none",
             "attachments": attachments,
+            "html": html_content,
+            "plain": text_content,
+            "mime_type": mime_type,
+            "raw_source": raw_bytes.decode("utf-8", errors="ignore"),
         }
 
     except Exception as e:
@@ -629,6 +651,10 @@ def parse_mime_email(raw_email_body):
             "content": "Error parsing email content",
             "type": "error",
             "attachments": [],
+            "html": "",
+            "plain": "",
+            "mime_type": None,
+            "raw_source": raw_email_body if isinstance(raw_email_body, str) else "",
         }
 
 
@@ -777,14 +803,31 @@ def get_email_preview(email_body, max_length=100):
     """
     Get a clean preview of the email content
     """
-    # Try advanced MIME parsing first
-    mime_result = parse_mime_email(email_body)
+    if not email_body:
+        return ""
 
-    if mime_result["content"] and mime_result["content"] != "No readable content found":
-        content = mime_result["content"]
+    if isinstance(email_body, bytes):
+        try:
+            email_body = email_body.decode("utf-8", errors="ignore")
+        except Exception:
+            email_body = email_body.decode("latin-1", errors="ignore")
+
+    lowered = email_body.lower()
+
+    if any(tag in lowered for tag in ("<html", "<body", "<div", "<p", "<table", "<br")):
+        content = html_to_text(email_body)
     else:
-        # Fallback to basic parsing
-        content = parse_email_content(email_body)
+        # Try advanced MIME parsing first
+        mime_result = parse_mime_email(email_body)
+
+        if (
+            mime_result["content"]
+            and mime_result["content"] != "No readable content found"
+        ):
+            content = mime_result["content"]
+        else:
+            # Fallback to basic parsing
+            content = parse_email_content(email_body)
 
     # Truncate if too long
     if len(content) > max_length:

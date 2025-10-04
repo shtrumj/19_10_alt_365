@@ -34,6 +34,7 @@ class EmailBase(BaseModel):
     subject: str
     body: Optional[str] = None
     recipient_email: str
+    body_html: Optional[str] = None
 
 
 class EmailCreate(EmailBase):
@@ -50,6 +51,8 @@ class EmailResponse(EmailBase):
     updated_at: datetime
     sender: UserResponse
     recipient: UserResponse
+    mime_content: Optional[str] = None
+    mime_content_type: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -40,14 +40,15 @@
         <div class="email-content">
             {% if email.parsed_content %}
                 {{ email.parsed_content|safe }}
-            {% elif email.body and ('<html' in email.body or '<div' in email.body or '<table' in email.body) %}
-                {{ email.body|safe }}
+            {% elif email.body_html %}
+                {{ email.body_html|safe }}
+            {% elif email.body %}
+                <pre>{{ email.body }}</pre>
             {% else %}
                 <div class="alert alert-warning">
                     <i class="fas fa-exclamation-triangle"></i>
-                    Unable to parse email content. Showing raw content:
+                    Unable to render email content.
                 </div>
-                <pre>{{ email.body[:500] }}{% if email.body|length > 500 %}...{% endif %}</pre>
             {% endif %}
         </div>
     </div>
@@ -106,7 +107,8 @@ function deleteEmail(emailId) {
 function replyEmail() {
     const subject = 'Re: {{ email.subject }}';
     const fromEmail = '{{ email.sender.email if email.sender else email.external_sender }}';
-    const body = '\n\n--- Original Message ---\nFrom: ' + fromEmail + '\nDate: {{ email.created_at.strftime('%Y-%m-%d %H:%M:%S') }}\nSubject: {{ email.subject }}\n\n{{ email.body }}';
+    const originalBody = `{{ (email.body or '') | replace('\n', '\\n') }}`;
+    const body = '\n\n--- Original Message ---\nFrom: ' + fromEmail + '\nDate: {{ email.created_at.strftime('%Y-%m-%d %H:%M:%S') }}\nSubject: {{ email.subject }}\n\n' + originalBody;
     
     window.location.href = '/owa/compose?to=' + encodeURIComponent(fromEmail) + '&subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
 }
@@ -114,7 +116,8 @@ function replyEmail() {
 function forwardEmail() {
     const subject = 'Fwd: {{ email.subject }}';
     const fromEmail = '{{ email.sender.email if email.sender else email.external_sender }}';
-    const body = '\n\n--- Forwarded Message ---\nFrom: ' + fromEmail + '\nDate: {{ email.created_at.strftime('%Y-%m-%d %H:%M:%S') }}\nSubject: {{ email.subject }}\n\n{{ email.body }}';
+    const originalBody = `{{ (email.body or '') | replace('\n', '\\n') }}`;
+    const body = '\n\n--- Forwarded Message ---\nFrom: ' + fromEmail + '\nDate: {{ email.created_at.strftime('%Y-%m-%d %H:%M:%S') }}\nSubject: {{ email.subject }}\n\n' + originalBody;
     
     window.location.href = '/owa/compose?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
 }

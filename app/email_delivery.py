@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .mx_lookup import mx_lookup
 from .email_queue import email_queue, QueuedEmail, EmailQueueStatus
+from .mime_utils import build_mime_message, plain_to_html
 from .smtp_client import smtp_client, SMTPDeliveryResult
 from .database import get_db, User
 
@@ -160,10 +161,23 @@ class EmailDeliveryService:
                 email_queue.mark_as_failed(queued_email.message_id, error_msg)
                 return
             
+            plain_body = queued_email.body or ""
+            body_html = plain_body and plain_to_html(plain_body) or ""
+            mime_content, mime_type = build_mime_message(
+                queued_email.subject,
+                queued_email.sender_email,
+                queued_email.recipient_email,
+                plain_body,
+                body_html if body_html else None,
+            )
+
             # Create email record
             email_record = Email(
                 subject=queued_email.subject,
-                body=queued_email.body,
+                body=plain_body,
+                body_html=body_html,
+                mime_content=mime_content,
+                mime_content_type=mime_type,
                 sender_id=sender_user.id,
                 recipient_id=recipient_user.id,
                 is_read=False

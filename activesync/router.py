@@ -52,7 +52,7 @@ _HTML_PATTERN = re.compile(r"<(html|body|table|div|span|p|br|!DOCTYPE)[^>]*>", r
 
 def _split_plain_html(email) -> Tuple[str, str]:
     raw_body = getattr(email, "body", None) or ""
-    html_body = getattr(email, "html_body", None) or ""
+    html_body = getattr(email, "body_html", None) or ""
 
     if not html_body and _HTML_PATTERN.search(raw_body):
         html_body = raw_body
@@ -97,6 +97,8 @@ def _email_payload(email, collection_id: str) -> dict:
         'is_read': bool(getattr(email, 'is_read', False)),
         'body': plain_body,
         'body_html': html_body,
+        'mime_content': getattr(email, 'mime_content', None),
+        'mime_content_type': getattr(email, 'mime_content_type', None),
     }
 
 

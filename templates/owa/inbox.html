@@ -111,9 +111,13 @@ content %}
         <div class="email-cell" data-column="subject">
           <div class="email-subject">{{ email.subject }}</div>
           <div class="email-preview">
-            {% set preview = get_email_preview(email.body, 100) %} {% if preview
-            %} {{ preview }} {% else %} {{ email.body[:100] }}{% if
-            email.body|length > 100 %}...{% endif %} {% endif %}
+            {% set preview_source = email.body_html if email.body_html else email.body %}
+            {% set preview = get_email_preview(preview_source, 100) %}
+            {% if preview %}
+              {{ preview }}
+            {% elif email.body %}
+              {{ email.body[:100] }}{% if email.body|length > 100 %}...{% endif %}
+            {% endif %}
           </div>
         </div>
         <div class="email-cell" data-column="time">

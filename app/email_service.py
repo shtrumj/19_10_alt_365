@@ -228,11 +228,11 @@ class EmailService:
                 sender_email = email.external_sender
             
             # Create email data for notification
+            preview_source = email.body_html or email.body
             email_data = {
                 "id": email.id,
                 "subject": email.subject,
                 "sender": sender_email,
-                preview_source = email_record.body_html or email_record.body
                 "preview": get_email_preview(preview_source or "", 100),
                 "is_read": email.is_read,
                 "created_at": email.created_at.isoformat()

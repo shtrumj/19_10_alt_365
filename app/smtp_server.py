@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from .database import Email, SessionLocal, User
 from .email_parser import decode_payload, html_to_text, parse_mime_email
+from .mime_utils import plain_to_html
 from .smtp_logger import smtp_logger
 
 logging.basicConfig(level=logging.INFO)
@@ -257,7 +258,13 @@ class EmailHandler:
             # Use enhanced MIME parsing for better content extraction
             logger.info(f"🔍 [{connection_id}] Starting enhanced MIME parsing...")
             mime_result = parse_mime_email(data_content)
-            body = mime_result.get("content", "")
+            html_body = mime_result.get("html") or ""
+            plain_body = mime_result.get("plain") or ""
+            if html_body and not plain_body:
+                plain_body = html_to_text(html_body)
+            if plain_body and not html_body:
+                html_body = plain_to_html(plain_body)
+            body = html_body or plain_body
             # Rewrite cid: links to served attachments endpoint if present
             try:
                 attachments = mime_result.get("attachments", [])
@@ -379,6 +386,9 @@ class EmailHandler:
                         return ""
 
                 body = extract_text_body(msg)
+                plain_body = body or plain_body
+                if plain_body and not html_body:
+                    html_body = plain_to_html(plain_body)
 
             # Normalize recipient to bare address and lowercase
             normalized_recipient = (
@@ -397,9 +407,25 @@ class EmailHandler:
                 # Create email record
                 # Ensure subject not empty
                 safe_subject = subject if subject else "(no subject)"
+                if not plain_body and body:
+                    lowered = body.lower()
+                    if any(tag in lowered for tag in ("<html", "<body", "<div", "<p", "<table", "<br")):
+                        plain_body = html_to_text(body)
+                        html_body = body
+                    else:
+                        plain_body = body
+                if not html_body and plain_body:
+                    html_body = plain_to_html(plain_body)
+                if not plain_body:
+                    plain_body = body or ""
+                mime_type = mime_result.get("mime_type") or "multipart/alternative"
+                raw_source = mime_result.get("raw_source") or data_content
                 email_record = Email(
                     subject=safe_subject,
-                    body=body,
+                    body=plain_body or body,
+                    body_html=html_body,
+                    mime_content=raw_source,
+                    mime_content_type=mime_type,
                     sender_id=None,  # External sender
                     recipient_id=recipient_user.id,
                     is_external=True,
@@ -436,7 +462,7 @@ class EmailHandler:
                     "id": email_record.id,
                     "subject": email_record.subject,
                     "sender": sender,
-                    "preview": get_email_preview(email_record.body, 100),
+                    "preview": get_email_preview((email_record.body_html or email_record.body or ""), 100),
                     "is_read": email_record.is_read,
                     "created_at": email_record.created_at.isoformat(),
                 }

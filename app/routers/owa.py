@@ -14,6 +14,7 @@ from ..database import Email, User, get_db
 from ..diagnostic_logger import outlook_health
 from ..email_delivery import email_delivery
 from ..email_parser import get_email_preview, parse_email_content
+from ..mime_utils import plain_to_html
 from ..email_queue import QueuedEmail
 from ..email_service import EmailService
 from ..language import (
@@ -658,7 +659,12 @@ def owa_view_email(
     logger.debug(f"Email body preview: {email.body[:200]}...")
 
     # Use body as-is; it may already contain parsed HTML from SMTP stage
-    parsed_content = email.body or ""
+    parsed_content = email.body_html or ""
+    if not parsed_content and email.mime_content:
+        parsed_content = parse_email_content(email.mime_content)
+    if not parsed_content and email.body:
+        parsed_content = plain_to_html(email.body)
+    parsed_content = parsed_content or ""
     logger.info(f"Using stored email body for display (length: {len(parsed_content)})")
 
     # Mark as read if it's an inbox email

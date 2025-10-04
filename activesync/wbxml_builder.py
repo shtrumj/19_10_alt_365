@@ -222,16 +222,22 @@ def _prepare_body_payload(
     body_type = requested_type if requested_type in (1, 2, 4) else 2
 
     if body_type == 4:
-        mime_bytes = _build_mime_message(em, html, plain)
+        mime_bytes = em.get('mime_content')
+        if mime_bytes:
+            if isinstance(mime_bytes, str):
+                mime_bytes = mime_bytes.encode('utf-8', errors='ignore')
+        else:
+            mime_bytes = _build_mime_message(em, html, plain)
         estimated_size = str(len(mime_bytes))
         payload_bytes, truncated_flag = _truncate_bytes(mime_bytes, truncation_size)
         data_text = base64.b64encode(payload_bytes).decode('ascii') if payload_bytes else ''
+        native = '4' if payload_bytes else native_body_type
         return {
             'type': '4',
             'data': data_text,
             'estimated_size': estimated_size,
             'truncated': truncated_flag,
-            'native_type': '4' if payload_bytes else native_body_type,
+            'native_type': native,
         }
 
     preference = 1 if body_type == 1 else 2
