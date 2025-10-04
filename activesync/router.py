@@ -14,28 +14,28 @@ from sqlalchemy.orm import Session
 # CRITICAL FIX #31B: Add logger for protocol version negotiation logging
 logger = logging.getLogger(__name__)
 
-from app.auth import get_current_user_from_basic_auth
-from app.database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
-from app.diagnostic_logger import _write_json_line
-from app.email_service import EmailService
+from ..auth import get_current_user_from_basic_auth
+from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
+from ..diagnostic_logger import _write_json_line
+from ..email_service import EmailService
 # ActiveSync WBXML builders (root-level module)
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 # Z-Push-compliant WBXML builder imports
-from .wbxml_builder import (
+from activesync.wbxml_builder import (
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
     SyncBatch,
 )
-from .state_machine import SyncStateStore
-from .adapter import sync_prepare_batch
-from app.wbxml_parser import (
+from activesync.state_machine import SyncStateStore
+from activesync.adapter import sync_prepare_batch
+from ..wbxml_parser import (
     parse_wbxml_sync_request,
     parse_wbxml_foldersync_request,
     parse_wbxml_sync_fetch_and_delete,
 )
-from app.synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
+from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
 # Rate limiting for sync requests
 _sync_rate_limits = {}
@@ -231,7 +231,7 @@ async def eas_options(request: Request):
     """
     headers = _eas_options_headers()  # ← Use OPTIONS-specific headers!
     _write_json_line(
-        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+        "activesync/activesync.log",
         {
             "event": "options",
             "ip": (request.client.host if request.client else None),
@@ -359,7 +359,7 @@ async def eas_dispatch(
     except Exception:
         request_body_for_log = f"Could not decode request body. Length: {len(request_body_bytes)} bytes."
     _write_json_line(
-        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+        "activesync/activesync.log",
         {
             "event": "request_received", "command": cmd, "device_id": device_id,
             "user_agent": request.headers.get("User-Agent"), "query_params": dict(request.query_params),
@@ -368,7 +368,7 @@ async def eas_dispatch(
     )
 
     if not cmd:
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "no_command", "message": "No command specified"})
+        _write_json_line("activesync/activesync.log", {"event": "no_command", "message": "No command specified"})
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <Error xmlns="Error">
     <Status>2</Status>
@@ -433,7 +433,7 @@ async def eas_dispatch(
             device.is_provisioned = 1
             db.commit()
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "provision_acknowledgment_final",
                 "device_id": device_id,
                 "step": 2,
@@ -444,7 +444,7 @@ async def eas_dispatch(
             # Step 1: Initial request, send temporary PolicyKey=0
             policy_key = "0"
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "provision_initial_request",
                 "device_id": device_id,
                 "step": 1,
@@ -467,28 +467,28 @@ from sqlalchemy.orm import Session
 # CRITICAL FIX #31B: Add logger for protocol version negotiation logging
 logger = logging.getLogger(__name__)
 
-from app.auth import get_current_user_from_basic_auth
-from app.database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
-from app.diagnostic_logger import _write_json_line
-from app.email_service import EmailService
+from ..auth import get_current_user_from_basic_auth
+from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
+from ..diagnostic_logger import _write_json_line
+from ..email_service import EmailService
 # ActiveSync WBXML builders (root-level module)
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 # Z-Push-compliant WBXML builder imports
-from .wbxml_builder import (
+from activesync.wbxml_builder import (
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
     SyncBatch,
 )
-from .state_machine import SyncStateStore
-from .adapter import sync_prepare_batch
-from app.wbxml_parser import (
+from activesync.state_machine import SyncStateStore
+from activesync.adapter import sync_prepare_batch
+from ..wbxml_parser import (
     parse_wbxml_sync_request,
     parse_wbxml_foldersync_request,
     parse_wbxml_sync_fetch_and_delete,
 )
-from app.synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
+from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
 # Rate limiting for sync requests
 _sync_rate_limits = {}
@@ -689,7 +689,7 @@ async def eas_options(request: Request):
     """
     headers = _eas_options_headers()  # ← Use OPTIONS-specific headers!
     _write_json_line(
-        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+        "activesync/activesync.log",
         {
             "event": "options",
             "ip": (request.client.host if request.client else None),
@@ -817,7 +817,7 @@ async def eas_dispatch(
     except Exception:
         request_body_for_log = f"Could not decode request body. Length: {len(request_body_bytes)} bytes."
     _write_json_line(
-        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+        "activesync/activesync.log",
         {
             "event": "request_received", "command": cmd, "device_id": device_id,
             "user_agent": request.headers.get("User-Agent"), "query_params": dict(request.query_params),
@@ -826,7 +826,7 @@ async def eas_dispatch(
     )
 
     if not cmd:
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "no_command", "message": "No command specified"})
+        _write_json_line("activesync/activesync.log", {"event": "no_command", "message": "No command specified"})
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <Error xmlns="Error">
     <Status>2</Status>
@@ -891,7 +891,7 @@ async def eas_dispatch(
             device.is_provisioned = 1
             db.commit()
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "provision_acknowledgment_final",
                 "device_id": device_id,
                 "step": 2,
@@ -902,7 +902,7 @@ async def eas_dispatch(
             # Step 1: Initial request, send temporary PolicyKey=0
             policy_key = "0"
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "provision_initial_request",
                 "device_id": device_id,
                 "step": 1,
@@ -986,7 +986,7 @@ async def eas_dispatch(
     # All other commands require that the device has completed the provisioning step above.
     if device.is_provisioned != 1:
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {
                 "event": "provisioning_required", "command": cmd, "device_id": device_id,
                 "message": "Device not provisioned. Sending HTTP 449.",
@@ -1016,7 +1016,7 @@ async def eas_dispatch(
         
         # *** ENHANCED DEBUGGING: COMPREHENSIVE REQUEST/RESPONSE LOGGING ***
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {
                 "event": "foldersync_debug_comprehensive",
                 "client_key": client_sync_key,
@@ -1039,7 +1039,7 @@ async def eas_dispatch(
             if state.sync_key == "0":
                 state.sync_key = "1"
                 db.commit()
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "foldersync_initial_sync_key_updated", 
                     "device_id": device_id,
                     "old_sync_key": "0",
@@ -1051,7 +1051,7 @@ async def eas_dispatch(
                 from activesync import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "foldersync_initial_wbxml_response",
                         "sync_key": state.sync_key,
@@ -1155,7 +1155,7 @@ async def eas_dispatch(
 </FolderSync>"""
                 # *** ENHANCED LOGGING: CAPTURE FULL RESPONSE ***
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "foldersync_initial_response",
                         "sync_key": state.sync_key,
@@ -1170,7 +1170,7 @@ async def eas_dispatch(
                 from activesync import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key},
                 )
                 return Response(
@@ -1184,7 +1184,7 @@ async def eas_dispatch(
     <Changes><Count>0</Count></Changes>
 </FolderSync>"""
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key},
                 )
 
@@ -1195,7 +1195,7 @@ async def eas_dispatch(
                 from activesync import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)  # Simplified error response
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_recovery_sync_wbxml", "server_key": state.sync_key, "client_key": client_sync_key},
                 )
                 return Response(
@@ -1207,7 +1207,7 @@ async def eas_dispatch(
     <Status>8</Status>
 </FolderSync>"""
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_recovery_sync", "server_key": state.sync_key, "client_key": client_sync_key},
                 )
         
@@ -1227,7 +1227,7 @@ async def eas_dispatch(
         extra_ops = parse_wbxml_sync_fetch_and_delete(request_body_bytes)
         fetch_ids = extra_ops.get("fetch_ids", [])
         delete_ids = extra_ops.get("delete_ids", [])
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sync_ops_parsed", "fetch_ids": fetch_ids, "delete_ids": delete_ids})
+        _write_json_line("activesync/activesync.log", {"event": "sync_ops_parsed", "fetch_ids": fetch_ids, "delete_ids": delete_ids})
         client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
         collection_id = wbxml_params.get("collection_id", request.query_params.get("CollectionId", "1"))
         window_size_str = wbxml_params.get("window_size", "5")
@@ -1256,7 +1256,7 @@ async def eas_dispatch(
             state.pending_item_ids = None
             db.commit()
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_initial_reset_EARLY",
                 "device_id": device_id,
                 "collection_id": collection_id,
@@ -1268,7 +1268,7 @@ async def eas_dispatch(
         # return Status=3 (InvalidSyncKey) with SyncKey=0 to force client reset"
         # Allow tolerance of ±2 for pending batches, but reject if gap is huge
         if client_sync_key != "0" and abs(client_key_int - server_key_int) > 3:
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_invalid_synckey_detected",
                 "client_sync_key": client_sync_key,
                 "server_sync_key": state.sync_key,
@@ -1315,7 +1315,7 @@ async def eas_dispatch(
             state.pending_item_ids = None
             db.commit()
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_pending_confirmed",
                 "client_sync_key": client_sync_key,
                 "committed_max_id": state.last_synced_email_id,
@@ -1346,7 +1346,7 @@ async def eas_dispatch(
             
             if is_asking_for_pending:
                 # Re-send the exact same pending batch!
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_resend_pending",
                     "client_sync_key": client_sync_key,
                     "server_sync_key": state.sync_key,
@@ -1384,7 +1384,7 @@ async def eas_dispatch(
         
         # Debug logging for sync key comparison
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {"event": "sync_debug", "client_key": client_sync_key, "client_key_int": client_key_int, "server_key": state.sync_key, "server_key_int": server_key_int, "user_id": current_user.id, "has_pending": bool(state.pending_sync_key)},
         )
         
@@ -1426,11 +1426,11 @@ async def eas_dispatch(
                     if n.isdigit():
                         fetch_int_ids.append(int(n))
                 fetched_emails = email_service.get_emails_by_ids(current_user.id, fetch_int_ids)
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sync_fetch_lookup", "fetch_ids": fetch_ids, "resolved": [e.id for e in fetched_emails]})
+                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_lookup", "fetch_ids": fetch_ids, "resolved": [e.id for e in fetched_emails]})
             except Exception as ex:
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sync_fetch_error", "error": str(ex)})
+                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_error", "error": str(ex)})
         
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+        _write_json_line("activesync/activesync.log", {
             "event": "sync_pagination_filter",
             "last_synced_email_id": last_id,
             "total_emails_in_folder": len(all_emails),
@@ -1474,7 +1474,7 @@ async def eas_dispatch(
             })
         
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {
                 "event": "sync_emails_found", 
                 "count": len(emails), 
@@ -1507,7 +1507,7 @@ async def eas_dispatch(
                 emails_to_send = emails[:window_size] if window_size else emails
                 has_more = len(emails) > window_size if window_size else False
                 
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_initial_WITH_ITEMS",
                     "reason": "Expert: iOS accepts items on first response",
                     "window_size": window_size,
@@ -1570,7 +1570,7 @@ async def eas_dispatch(
                 db.commit()
                 
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "sync_initial_wbxml", 
                         "sync_key": response_sync_key, 
@@ -1609,13 +1609,13 @@ async def eas_dispatch(
             # XML response for non-WBXML clients (with emails for initial sync)
             xml_response = create_sync_response(emails, sync_key=response_sync_key, collection_id=collection_id)
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "sync_initial_complete", "sync_key": state.sync_key, "client_key": client_sync_key, "response_key": response_sync_key, "email_count": len(emails)},
             )
         # Client sends SyncKey=0 but server is ahead - sync key mismatch, need to reset
         elif client_key_int == 0 and server_key_int > 1:
             # Server is ahead, client wants to restart - send error to force client to reset
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_key_mismatch_reset_required",
                 "client_key": client_sync_key,
                 "server_key": state.sync_key,
@@ -1636,7 +1636,7 @@ async def eas_dispatch(
             try:
                 client_counter = int(client_sync_key)
             except ValueError:
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_invalid_synckey_format",
                     "client_sync_key": client_sync_key,
                     "error": "Not a valid integer"
@@ -1655,7 +1655,7 @@ async def eas_dispatch(
             state.sync_key = response_sync_key  # Update for next request
             # NOTE: We commit this BEFORE sending, so the key is persisted!
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_client_confirmed_simple",
                 "client_sync_key": client_sync_key,
                 "response_sync_key": response_sync_key,
@@ -1754,7 +1754,7 @@ async def eas_dispatch(
                 db.commit()
                 
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "sync_emails_sent_wbxml_simple", 
                         "sync_key": response_sync_key,  # ← NEW key in response
@@ -1795,7 +1795,7 @@ async def eas_dispatch(
                     )
                     wbxml = wbxml_batch.payload
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {
                             "event": "sync_emails_sent_wbxml", 
                             "sync_key": new_sync_key, 
@@ -1813,7 +1813,7 @@ async def eas_dispatch(
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
                 xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "sync_emails_sent", "sync_key": new_sync_key, "client_key": client_sync_key, "email_count": len(emails), "collection_id": collection_id},
                 )
             else:
@@ -1830,7 +1830,7 @@ async def eas_dispatch(
                     )
                     wbxml = wbxml_batch.payload
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
                 )
                 return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
@@ -1840,7 +1840,7 @@ async def eas_dispatch(
     <SyncKey>{state.sync_key}</SyncKey>
 </Sync>"""
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "sync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "No changes - client and server in sync"},
             )
         # Client sync key is behind server - Graceful catch-up approach
@@ -1865,7 +1865,7 @@ async def eas_dispatch(
                 except Exception as e:
                     # Log the error
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {
                             "event": "sync_wbxml_creation_error",
                             "error": str(e),
@@ -1878,7 +1878,7 @@ async def eas_dispatch(
                     wbxml = wbxml_batch.payload
                     # Log the successful WBXML creation
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {
                             "event": "sync_client_behind_graceful_wbxml",
                             "sync_key": new_sync_key,
@@ -1896,7 +1896,7 @@ async def eas_dispatch(
                 xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
                 
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
                 )
         # Client sync key is ahead of server - this shouldn't happen, return MS-ASCMD compliant error
@@ -1913,7 +1913,7 @@ async def eas_dispatch(
     </Response>
 </Sync>"""
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "sync_sync_key_error", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "Sync key error - client ahead of server"},
             )
         
@@ -1924,11 +1924,11 @@ async def eas_dispatch(
         )
     if cmd == "ping":
         # Minimal Ping response with heartbeat interval acceptance
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "ping"})
+        _write_json_line("activesync/activesync.log", {"event": "ping"})
         return Response(status_code=200, headers=headers)
     if cmd == "sendmail":
         # Accept request (actual SMTP send could be wired later)
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sendmail"})
+        _write_json_line("activesync/activesync.log", {"event": "sendmail"})
         return Response(status_code=200, headers=headers)
     elif cmd == "getitemestimate":
         # MS-ASCMD GetItemEstimate implementation
@@ -1950,7 +1950,7 @@ async def eas_dispatch(
 </GetItemEstimate>"""
         
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {"event": "getitemestimate", "collection_id": collection_id, "estimate": len(emails), "user_id": current_user.id},
         )
     if cmd == "settings":
@@ -1988,7 +1988,7 @@ async def eas_dispatch(
         </Get>
     </UserInformation>
 </Settings>"""
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "settings", "user": current_user.email})
+        _write_json_line("activesync/activesync.log", {"event": "settings", "user": current_user.email})
         return Response(
             content=xml, media_type="application/xml", headers=headers
         )
@@ -2039,7 +2039,7 @@ async def eas_dispatch(
                 last if last else (u.full_name or u.username)
             )
         xml = ET.tostring(root, encoding="unicode")
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "search", "query": query, "results": len(users)})
+        _write_json_line("activesync/activesync.log", {"event": "search", "query": query, "results": len(users)})
         return Response(
             content=xml, media_type="application/xml", headers=headers
         )
@@ -2078,7 +2078,7 @@ async def eas_dispatch(
             else:
                 xml = f"<ItemOperations xmlns=\"ItemOperations\"><Status>2</Status></ItemOperations>"
         
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "itemoperations", "item_id": item_id, "collection_id": collection_id})
+        _write_json_line("activesync/activesync.log", {"event": "itemoperations", "item_id": item_id, "collection_id": collection_id})
         return Response(
             content=xml, media_type="application/xml", headers=headers
         )
@@ -2086,7 +2086,7 @@ async def eas_dispatch(
     # MS-ASCMD SmartForward command implementation
     if cmd == "smartforward":
         # MS-ASCMD SmartForward for forwarding emails
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "smartforward"})
+        _write_json_line("activesync/activesync.log", {"event": "smartforward"})
         xml = f"<SmartForward xmlns=\"SmartForward\"><Status>1</Status></SmartForward>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2095,7 +2095,7 @@ async def eas_dispatch(
     # MS-ASCMD SmartReply command implementation
     if cmd == "smartreply":
         # MS-ASCMD SmartReply for replying to emails
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "smartreply"})
+        _write_json_line("activesync/activesync.log", {"event": "smartreply"})
         xml = f"<SmartReply xmlns=\"SmartReply\"><Status>1</Status></SmartReply>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2104,7 +2104,7 @@ async def eas_dispatch(
     # MS-ASCMD MoveItems command implementation
     if cmd == "moveitems":
         # MS-ASCMD MoveItems for moving emails between folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "moveitems"})
+        _write_json_line("activesync/activesync.log", {"event": "moveitems"})
         xml = f"<MoveItems xmlns=\"MoveItems\"><Status>1</Status></MoveItems>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2113,7 +2113,7 @@ async def eas_dispatch(
     # MS-ASCMD MeetingResponse command implementation
     if cmd == "meetingresponse":
         # MS-ASCMD MeetingResponse for calendar meeting responses
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "meetingresponse"})
+        _write_json_line("activesync/activesync.log", {"event": "meetingresponse"})
         xml = f"<MeetingResponse xmlns=\"MeetingResponse\"><Status>1</Status></MeetingResponse>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2122,7 +2122,7 @@ async def eas_dispatch(
     # MS-ASCMD Find command implementation
     if cmd == "find":
         # MS-ASCMD Find for searching within folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "find"})
+        _write_json_line("activesync/activesync.log", {"event": "find"})
         xml = f"<Find xmlns=\"Find\"><Status>1</Status></Find>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2131,7 +2131,7 @@ async def eas_dispatch(
     # MS-ASCMD GetAttachment command implementation
     if cmd == "getattachment":
         # MS-ASCMD GetAttachment for fetching email attachments
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "getattachment"})
+        _write_json_line("activesync/activesync.log", {"event": "getattachment"})
         xml = f"<GetAttachment xmlns=\"GetAttachment\"><Status>1</Status></GetAttachment>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2140,7 +2140,7 @@ async def eas_dispatch(
     # MS-ASCMD Calendar command implementation
     if cmd == "calendar":
         # MS-ASCMD Calendar for calendar synchronization
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "calendar"})
+        _write_json_line("activesync/activesync.log", {"event": "calendar"})
         xml = f"<Calendar xmlns=\"Calendar\"><Status>1</Status></Calendar>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2149,7 +2149,7 @@ async def eas_dispatch(
     # MS-ASCMD FolderCreate command implementation
     if cmd == "foldercreate":
         # MS-ASCMD FolderCreate for creating new folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "foldercreate"})
+        _write_json_line("activesync/activesync.log", {"event": "foldercreate"})
         xml = f"<FolderCreate xmlns=\"FolderCreate\"><Status>1</Status></FolderCreate>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2158,7 +2158,7 @@ async def eas_dispatch(
     # MS-ASCMD FolderDelete command implementation
     if cmd == "folderdelete":
         # MS-ASCMD FolderDelete for deleting folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "folderdelete"})
+        _write_json_line("activesync/activesync.log", {"event": "folderdelete"})
         xml = f"<FolderDelete xmlns=\"FolderDelete\"><Status>1</Status></FolderDelete>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2167,7 +2167,7 @@ async def eas_dispatch(
     # MS-ASCMD FolderUpdate command implementation
     if cmd == "folderupdate":
         # MS-ASCMD FolderUpdate for updating folder properties
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "folderupdate"})
+        _write_json_line("activesync/activesync.log", {"event": "folderupdate"})
         xml = f"<FolderUpdate xmlns=\"FolderUpdate\"><Status>1</Status></FolderUpdate>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -2176,7 +2176,7 @@ async def eas_dispatch(
     # MS-ASCMD ResolveRecipients command implementation
     if cmd == "resolverecipients":
         # MS-ASCMD ResolveRecipients for resolving email addresses
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "resolverecipients"})
+        _write_json_line("activesync/activesync.log", {"event": "resolverecipients"})
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <ResolveRecipients xmlns="ResolveRecipients">
     <Status>1</Status>
@@ -2195,7 +2195,7 @@ async def eas_dispatch(
     # MS-ASCMD ValidateCert command implementation
     if cmd == "validatecert":
         # MS-ASCMD ValidateCert for certificate validation
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "validatecert"})
+        _write_json_line("activesync/activesync.log", {"event": "validatecert"})
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <ValidateCert xmlns="ValidateCert">
     <Status>1</Status>
@@ -2213,7 +2213,7 @@ async def eas_dispatch(
     # MS-ASCMD SendMail command implementation
     if cmd == "sendmail":
         # MS-ASCMD SendMail for sending emails
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sendmail"})
+        _write_json_line("activesync/activesync.log", {"event": "sendmail"})
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <SendMail xmlns="SendMail">
     <Status>1</Status>
@@ -2225,7 +2225,7 @@ async def eas_dispatch(
             content=xml, media_type="application/xml", headers=headers
         )
     # MS-ASCMD compliant error handling for unsupported commands
-    _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "unsupported_command", "command": cmd, "message": f"Unsupported ActiveSync command: {cmd}"})
+    _write_json_line("activesync/activesync.log", {"event": "unsupported_command", "command": cmd, "message": f"Unsupported ActiveSync command: {cmd}"})
     
     # Return MS-ASCMD compliant error response
     xml = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -2351,7 +2351,7 @@ async def eas_options_alias(request: Request):
     """CRITICAL FIX #31: Use OPTIONS-specific headers (no singular version)!"""
     headers = _eas_options_headers()  # ← Use OPTIONS headers!
     _write_json_line(
-        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+        "activesync/activesync.log",
         {
             "event": "options_alias",
             "ip": (request.client.host if request.client else None),
@@ -2393,7 +2393,7 @@ async def sync_emails(
         return ActiveSyncResponse(xml_response)
 
     except Exception as e:
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "error", "error": str(e), "command": cmd})
+        _write_json_line("activesync/activesync.log", {"event": "error", "error": str(e), "command": cmd})
         
         # MS-ASCMD compliant error response for server errors
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -2564,7 +2564,7 @@ def get_folder_emails(
     # All other commands require that the device has completed the provisioning step above.
     if device.is_provisioned != 1:
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {
                 "event": "provisioning_required", "command": cmd, "device_id": device_id,
                 "message": "Device not provisioned. Sending HTTP 449.",
@@ -2594,7 +2594,7 @@ def get_folder_emails(
         
         # *** ENHANCED DEBUGGING: COMPREHENSIVE REQUEST/RESPONSE LOGGING ***
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {
                 "event": "foldersync_debug_comprehensive",
                 "client_key": client_sync_key,
@@ -2617,7 +2617,7 @@ def get_folder_emails(
             if state.sync_key == "0":
                 state.sync_key = "1"
                 db.commit()
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "foldersync_initial_sync_key_updated", 
                     "device_id": device_id,
                     "old_sync_key": "0",
@@ -2626,10 +2626,10 @@ def get_folder_emails(
             
             if is_wbxml_request:
                 # Return correct minimal WBXML response with all 5 folders
-                from .wbxml_builder import build_foldersync_no_changes
+                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "foldersync_initial_wbxml_response",
                         "sync_key": state.sync_key,
@@ -2733,7 +2733,7 @@ def get_folder_emails(
 </FolderSync>"""
                 # *** ENHANCED LOGGING: CAPTURE FULL RESPONSE ***
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "foldersync_initial_response",
                         "sync_key": state.sync_key,
@@ -2745,10 +2745,10 @@ def get_folder_emails(
         elif client_key_int == server_key_int:
             if is_wbxml_request:
                 # Return WBXML response for iPhone clients
-                from .wbxml_builder import build_foldersync_no_changes
+                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key},
                 )
                 return Response(
@@ -2762,7 +2762,7 @@ def get_folder_emails(
     <Changes><Count>0</Count></Changes>
 </FolderSync>"""
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key},
                 )
 
@@ -2770,10 +2770,10 @@ def get_folder_emails(
         else:
             if is_wbxml_request:
                 # Return WBXML response for iPhone clients
-                from .wbxml_builder import build_foldersync_no_changes
+                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)  # Simplified error response
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_recovery_sync_wbxml", "server_key": state.sync_key, "client_key": client_sync_key},
                 )
                 return Response(
@@ -2785,7 +2785,7 @@ def get_folder_emails(
     <Status>8</Status>
 </FolderSync>"""
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "foldersync_recovery_sync", "server_key": state.sync_key, "client_key": client_sync_key},
                 )
         
@@ -2805,7 +2805,7 @@ def get_folder_emails(
         extra_ops = parse_wbxml_sync_fetch_and_delete(request_body_bytes)
         fetch_ids = extra_ops.get("fetch_ids", [])
         delete_ids = extra_ops.get("delete_ids", [])
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sync_ops_parsed", "fetch_ids": fetch_ids, "delete_ids": delete_ids})
+        _write_json_line("activesync/activesync.log", {"event": "sync_ops_parsed", "fetch_ids": fetch_ids, "delete_ids": delete_ids})
         client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
         collection_id = wbxml_params.get("collection_id", request.query_params.get("CollectionId", "1"))
         window_size_str = wbxml_params.get("window_size", "5")
@@ -2834,7 +2834,7 @@ def get_folder_emails(
             state.pending_item_ids = None
             db.commit()
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_initial_reset_EARLY",
                 "device_id": device_id,
                 "collection_id": collection_id,
@@ -2846,7 +2846,7 @@ def get_folder_emails(
         # return Status=3 (InvalidSyncKey) with SyncKey=0 to force client reset"
         # Allow tolerance of ±2 for pending batches, but reject if gap is huge
         if client_sync_key != "0" and abs(client_key_int - server_key_int) > 3:
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_invalid_synckey_detected",
                 "client_sync_key": client_sync_key,
                 "server_sync_key": state.sync_key,
@@ -2893,7 +2893,7 @@ def get_folder_emails(
             state.pending_item_ids = None
             db.commit()
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_pending_confirmed",
                 "client_sync_key": client_sync_key,
                 "committed_max_id": state.last_synced_email_id,
@@ -2924,7 +2924,7 @@ def get_folder_emails(
             
             if is_asking_for_pending:
                 # Re-send the exact same pending batch!
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_resend_pending",
                     "client_sync_key": client_sync_key,
                     "server_sync_key": state.sync_key,
@@ -2962,7 +2962,7 @@ def get_folder_emails(
         
         # Debug logging for sync key comparison
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {"event": "sync_debug", "client_key": client_sync_key, "client_key_int": client_key_int, "server_key": state.sync_key, "server_key_int": server_key_int, "user_id": current_user.id, "has_pending": bool(state.pending_sync_key)},
         )
         
@@ -3004,11 +3004,11 @@ def get_folder_emails(
                     if n.isdigit():
                         fetch_int_ids.append(int(n))
                 fetched_emails = email_service.get_emails_by_ids(current_user.id, fetch_int_ids)
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sync_fetch_lookup", "fetch_ids": fetch_ids, "resolved": [e.id for e in fetched_emails]})
+                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_lookup", "fetch_ids": fetch_ids, "resolved": [e.id for e in fetched_emails]})
             except Exception as ex:
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sync_fetch_error", "error": str(ex)})
+                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_error", "error": str(ex)})
         
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+        _write_json_line("activesync/activesync.log", {
             "event": "sync_pagination_filter",
             "last_synced_email_id": last_id,
             "total_emails_in_folder": len(all_emails),
@@ -3024,7 +3024,7 @@ def get_folder_emails(
             # Check if we're stuck: last_id >= max_email_id in folder
             max_email_id = max(e.id for e in all_emails) if all_emails else 0
             if last_id >= max_email_id:
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_stuck_state_detected",
                     "last_synced_email_id": last_id,
                     "max_email_id_in_folder": max_email_id,
@@ -3037,7 +3037,7 @@ def get_folder_emails(
                 db.commit()
                 # Re-query emails after reset
                 emails = [e for e in all_emails if e.id > 0]
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_state_reset_auto",
                     "new_last_synced_email_id": 0,
                     "emails_to_sync_after_reset": len(emails),
@@ -3080,7 +3080,7 @@ def get_folder_emails(
             })
         
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {
                 "event": "sync_emails_found", 
                 "count": len(emails), 
@@ -3113,7 +3113,7 @@ def get_folder_emails(
                 emails_to_send = emails[:window_size] if window_size else emails
                 has_more = len(emails) > window_size if window_size else False
                 
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_initial_WITH_ITEMS",
                     "reason": "Expert: iOS accepts items on first response",
                     "window_size": window_size,
@@ -3176,7 +3176,7 @@ def get_folder_emails(
                 db.commit()
                 
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "sync_initial_wbxml", 
                         "sync_key": response_sync_key, 
@@ -3215,13 +3215,13 @@ def get_folder_emails(
             # XML response for non-WBXML clients (with emails for initial sync)
             xml_response = create_sync_response(emails, sync_key=response_sync_key, collection_id=collection_id)
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "sync_initial_complete", "sync_key": state.sync_key, "client_key": client_sync_key, "response_key": response_sync_key, "email_count": len(emails)},
             )
         # Client sends SyncKey=0 but server is ahead - sync key mismatch, need to reset
         elif client_key_int == 0 and server_key_int > 1:
             # Server is ahead, client wants to restart - send error to force client to reset
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_key_mismatch_reset_required",
                 "client_key": client_sync_key,
                 "server_key": state.sync_key,
@@ -3242,7 +3242,7 @@ def get_folder_emails(
             try:
                 client_counter = int(client_sync_key)
             except ValueError:
-                _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+                _write_json_line("activesync/activesync.log", {
                     "event": "sync_invalid_synckey_format",
                     "client_sync_key": client_sync_key,
                     "error": "Not a valid integer"
@@ -3275,7 +3275,7 @@ def get_folder_emails(
             # Sanity trace: explicit log when fetch-only (no collection changes)
             if not has_collection_changes and fetched_emails:
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "sync_fetch_only_no_key_bump",
                         "client_sync_key": client_sync_key,
@@ -3285,7 +3285,7 @@ def get_folder_emails(
                 )
             # NOTE: We commit this BEFORE sending, so the key is persisted!
             
-            _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {
+            _write_json_line("activesync/activesync.log", {
                 "event": "sync_client_confirmed_simple",
                 "client_sync_key": client_sync_key,
                 "response_sync_key": response_sync_key,
@@ -3305,7 +3305,7 @@ def get_folder_emails(
                 has_more = len(emails) > window_size if window_size else False
 
                 # Use builder that can include both Adds and Fetch responses
-                from .wbxml_builder import create_sync_response_wbxml_with_fetch
+                from activesync.wbxml_builder import create_sync_response_wbxml_with_fetch
                 wbxml_batch = create_sync_response_wbxml_with_fetch(
                     sync_key=response_sync_key,
                     emails=[{
@@ -3363,7 +3363,7 @@ def get_folder_emails(
                 wbxml = wbxml_batch.payload
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
                 if fetched_emails:
-                    from .wbxml_builder import write_fetch_responses
+                    from activesync.wbxml_builder import write_fetch_responses
                     w = activesync_w = None
                     try:
                         # Append to existing WBXML: we need a writer capable of appending; since our
@@ -3387,7 +3387,7 @@ def get_folder_emails(
                 db.commit()
                 
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "sync_emails_sent_wbxml_simple", 
                         "sync_key": response_sync_key,  # ← NEW key in response
@@ -3429,7 +3429,7 @@ def get_folder_emails(
                     )
                     wbxml = wbxml_batch.payload
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {
                             "event": "sync_emails_sent_wbxml", 
                             "sync_key": new_sync_key, 
@@ -3459,7 +3459,7 @@ def get_folder_emails(
                     )
                     wbxml = wbxml_batch.payload
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
                     )
                     return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
@@ -3469,7 +3469,7 @@ def get_folder_emails(
     <SyncKey>{state.sync_key}</SyncKey>
 </Sync>"""
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "sync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "No changes - client and server in sync"},
             )
         # Client sync key is behind server - Graceful catch-up approach
@@ -3494,7 +3494,7 @@ def get_folder_emails(
                 except Exception as e:
                     # Log the error
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {
                             "event": "sync_wbxml_creation_error",
                             "error": str(e),
@@ -3507,7 +3507,7 @@ def get_folder_emails(
                     wbxml = wbxml_batch.payload
                     # Log the successful WBXML creation
                     _write_json_line(
-                        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                        "activesync/activesync.log",
                         {
                             "event": "sync_client_behind_graceful_wbxml",
                             "sync_key": new_sync_key,
@@ -3525,7 +3525,7 @@ def get_folder_emails(
                 xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
                 
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
                 )
         # Client sync key is ahead of server - this shouldn't happen, return MS-ASCMD compliant error
@@ -3542,7 +3542,7 @@ def get_folder_emails(
     </Response>
 </Sync>"""
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "sync_sync_key_error", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "Sync key error - client ahead of server"},
             )
         
@@ -3587,7 +3587,7 @@ def get_folder_emails(
                     pass
             
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {
                     "event": "ping_start",
                     "heartbeat_interval": heartbeat_interval,
@@ -3613,7 +3613,7 @@ def get_folder_emails(
                 # If we get here, changes were detected!
                 changes_detected = True
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "ping_changes_detected",
                         "trigger": "push_notification",
@@ -3623,7 +3623,7 @@ def get_folder_emails(
             except asyncio.TimeoutError:
                 # Heartbeat expired with no changes
                 _write_json_line(
-                    os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                    "activesync/activesync.log",
                     {
                         "event": "ping_timeout",
                         "elapsed_seconds": int(time.time() - start_time),
@@ -3635,7 +3635,7 @@ def get_folder_emails(
             
             # Build WBXML Ping response
             # Per MS-ASCMD: Status 2 = changes, Status 1 = no changes (timeout)
-            from .wbxml_builder import WBXMLWriter, CP_PING
+            from activesync.wbxml_builder import WBXMLWriter, CP_PING
             
             w = WBXMLWriter()
             w.header()
@@ -3661,7 +3661,7 @@ def get_folder_emails(
             w.end()  # Close Ping
             
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {
                     "event": "ping_complete",
                     "changes_detected": changes_detected,
@@ -3677,11 +3677,11 @@ def get_folder_emails(
             
         except Exception as e:
             _write_json_line(
-                os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+                "activesync/activesync.log",
                 {"event": "ping_error", "error": str(e), "traceback": traceback.format_exc()}
             )
             # Return Status 1 (no changes) on error to avoid client loop
-            from .wbxml_builder import WBXMLWriter
+            from activesync.wbxml_builder import WBXMLWriter
             w = WBXMLWriter()
             w.header()
             w.page(1)  # Ping codepage
@@ -3698,7 +3698,7 @@ def get_folder_emails(
         )
     if cmd == "sendmail":
         # Accept request (actual SMTP send could be wired later)
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sendmail"})
+        _write_json_line("activesync/activesync.log", {"event": "sendmail"})
         return Response(status_code=200, headers=headers)
     elif cmd == "getitemestimate":
         # MS-ASCMD GetItemEstimate implementation
@@ -3720,7 +3720,7 @@ def get_folder_emails(
 </GetItemEstimate>"""
         
         _write_json_line(
-            os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+            "activesync/activesync.log",
             {"event": "getitemestimate", "collection_id": collection_id, "estimate": len(emails), "user_id": current_user.id},
         )
     if cmd == "settings":
@@ -3758,7 +3758,7 @@ def get_folder_emails(
         </Get>
     </UserInformation>
 </Settings>"""
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "settings", "user": current_user.email})
+        _write_json_line("activesync/activesync.log", {"event": "settings", "user": current_user.email})
         return Response(
             content=xml, media_type="application/xml", headers=headers
         )
@@ -3809,7 +3809,7 @@ def get_folder_emails(
                 last if last else (u.full_name or u.username)
             )
         xml = ET.tostring(root, encoding="unicode")
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "search", "query": query, "results": len(users)})
+        _write_json_line("activesync/activesync.log", {"event": "search", "query": query, "results": len(users)})
         return Response(
             content=xml, media_type="application/xml", headers=headers
         )
@@ -3848,7 +3848,7 @@ def get_folder_emails(
             else:
                 xml = f"<ItemOperations xmlns=\"ItemOperations\"><Status>2</Status></ItemOperations>"
         
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "itemoperations", "item_id": item_id, "collection_id": collection_id})
+        _write_json_line("activesync/activesync.log", {"event": "itemoperations", "item_id": item_id, "collection_id": collection_id})
         return Response(
             content=xml, media_type="application/xml", headers=headers
         )
@@ -3856,7 +3856,7 @@ def get_folder_emails(
     # MS-ASCMD SmartForward command implementation
     if cmd == "smartforward":
         # MS-ASCMD SmartForward for forwarding emails
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "smartforward"})
+        _write_json_line("activesync/activesync.log", {"event": "smartforward"})
         xml = f"<SmartForward xmlns=\"SmartForward\"><Status>1</Status></SmartForward>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3865,7 +3865,7 @@ def get_folder_emails(
     # MS-ASCMD SmartReply command implementation
     if cmd == "smartreply":
         # MS-ASCMD SmartReply for replying to emails
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "smartreply"})
+        _write_json_line("activesync/activesync.log", {"event": "smartreply"})
         xml = f"<SmartReply xmlns=\"SmartReply\"><Status>1</Status></SmartReply>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3874,7 +3874,7 @@ def get_folder_emails(
     # MS-ASCMD MoveItems command implementation
     if cmd == "moveitems":
         # MS-ASCMD MoveItems for moving emails between folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "moveitems"})
+        _write_json_line("activesync/activesync.log", {"event": "moveitems"})
         xml = f"<MoveItems xmlns=\"MoveItems\"><Status>1</Status></MoveItems>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3883,7 +3883,7 @@ def get_folder_emails(
     # MS-ASCMD MeetingResponse command implementation
     if cmd == "meetingresponse":
         # MS-ASCMD MeetingResponse for calendar meeting responses
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "meetingresponse"})
+        _write_json_line("activesync/activesync.log", {"event": "meetingresponse"})
         xml = f"<MeetingResponse xmlns=\"MeetingResponse\"><Status>1</Status></MeetingResponse>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3892,7 +3892,7 @@ def get_folder_emails(
     # MS-ASCMD Find command implementation
     if cmd == "find":
         # MS-ASCMD Find for searching within folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "find"})
+        _write_json_line("activesync/activesync.log", {"event": "find"})
         xml = f"<Find xmlns=\"Find\"><Status>1</Status></Find>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3901,7 +3901,7 @@ def get_folder_emails(
     # MS-ASCMD GetAttachment command implementation
     if cmd == "getattachment":
         # MS-ASCMD GetAttachment for fetching email attachments
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "getattachment"})
+        _write_json_line("activesync/activesync.log", {"event": "getattachment"})
         xml = f"<GetAttachment xmlns=\"GetAttachment\"><Status>1</Status></GetAttachment>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3910,7 +3910,7 @@ def get_folder_emails(
     # MS-ASCMD Calendar command implementation
     if cmd == "calendar":
         # MS-ASCMD Calendar for calendar synchronization
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "calendar"})
+        _write_json_line("activesync/activesync.log", {"event": "calendar"})
         xml = f"<Calendar xmlns=\"Calendar\"><Status>1</Status></Calendar>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3919,7 +3919,7 @@ def get_folder_emails(
     # MS-ASCMD FolderCreate command implementation
     if cmd == "foldercreate":
         # MS-ASCMD FolderCreate for creating new folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "foldercreate"})
+        _write_json_line("activesync/activesync.log", {"event": "foldercreate"})
         xml = f"<FolderCreate xmlns=\"FolderCreate\"><Status>1</Status></FolderCreate>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3928,7 +3928,7 @@ def get_folder_emails(
     # MS-ASCMD FolderDelete command implementation
     if cmd == "folderdelete":
         # MS-ASCMD FolderDelete for deleting folders
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "folderdelete"})
+        _write_json_line("activesync/activesync.log", {"event": "folderdelete"})
         xml = f"<FolderDelete xmlns=\"FolderDelete\"><Status>1</Status></FolderDelete>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3937,7 +3937,7 @@ def get_folder_emails(
     # MS-ASCMD FolderUpdate command implementation
     if cmd == "folderupdate":
         # MS-ASCMD FolderUpdate for updating folder properties
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "folderupdate"})
+        _write_json_line("activesync/activesync.log", {"event": "folderupdate"})
         xml = f"<FolderUpdate xmlns=\"FolderUpdate\"><Status>1</Status></FolderUpdate>"
         return Response(
             content=xml, media_type="application/xml", headers=headers
@@ -3946,7 +3946,7 @@ def get_folder_emails(
     # MS-ASCMD ResolveRecipients command implementation
     if cmd == "resolverecipients":
         # MS-ASCMD ResolveRecipients for resolving email addresses
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "resolverecipients"})
+        _write_json_line("activesync/activesync.log", {"event": "resolverecipients"})
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <ResolveRecipients xmlns="ResolveRecipients">
     <Status>1</Status>
@@ -3965,7 +3965,7 @@ def get_folder_emails(
     # MS-ASCMD ValidateCert command implementation
     if cmd == "validatecert":
         # MS-ASCMD ValidateCert for certificate validation
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "validatecert"})
+        _write_json_line("activesync/activesync.log", {"event": "validatecert"})
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <ValidateCert xmlns="ValidateCert">
     <Status>1</Status>
@@ -3983,7 +3983,7 @@ def get_folder_emails(
     # MS-ASCMD SendMail command implementation
     if cmd == "sendmail":
         # MS-ASCMD SendMail for sending emails
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "sendmail"})
+        _write_json_line("activesync/activesync.log", {"event": "sendmail"})
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <SendMail xmlns="SendMail">
     <Status>1</Status>
@@ -3995,7 +3995,7 @@ def get_folder_emails(
             content=xml, media_type="application/xml", headers=headers
         )
     # MS-ASCMD compliant error handling for unsupported commands
-    _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "unsupported_command", "command": cmd, "message": f"Unsupported ActiveSync command: {cmd}"})
+    _write_json_line("activesync/activesync.log", {"event": "unsupported_command", "command": cmd, "message": f"Unsupported ActiveSync command: {cmd}"})
     
     # Return MS-ASCMD compliant error response
     xml = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -4121,7 +4121,7 @@ async def eas_options_alias(request: Request):
     """CRITICAL FIX #31: Use OPTIONS-specific headers (no singular version)!"""
     headers = _eas_options_headers()  # ← Use OPTIONS headers!
     _write_json_line(
-        os.path.join(os.path.dirname(__file__), "logs", "activesync.log"),
+        "activesync/activesync.log",
         {
             "event": "options_alias",
             "ip": (request.client.host if request.client else None),
@@ -4163,7 +4163,7 @@ async def sync_emails(
         return ActiveSyncResponse(xml_response)
 
     except Exception as e:
-        _write_json_line(os.path.join(os.path.dirname(__file__), "logs", "activesync.log"), {"event": "error", "error": str(e), "command": cmd})
+        _write_json_line("activesync/activesync.log", {"event": "error", "error": str(e), "command": cmd})
         
         # MS-ASCMD compliant error response for server errors
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
