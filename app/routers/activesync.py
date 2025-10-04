@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Set, Tuple
 from xml.etree import ElementTree as ET
 import time
 import uuid
@@ -8,6 +8,7 @@ import traceback
 import logging
 import re
 import html as html_module
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
@@ -29,6 +30,9 @@ from activesync.wbxml_builder import (
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
     create_invalid_synckey_response_wbxml,
+    build_foldersync_no_changes,
+    build_foldersync_with_folders,
+    build_provision_response,
     SyncBatch,
 )
 from activesync.state_machine import SyncStateStore
@@ -49,6 +53,59 @@ router = APIRouter(prefix="/activesync", tags=["activesync"])
 _pending_batches_cache = {}
 
 _HTML_PATTERN = re.compile(r"<(html|body|table|div|span|p|br|!DOCTYPE)[^>]*>", re.IGNORECASE)
+
+WBXML_MEDIA_TYPE = "application/vnd.ms-sync.wbxml"
+
+DEFAULT_SYSTEM_FOLDERS = [
+    {"server_id": "0", "display_name": "Root", "type": "0", "parent_id": "0"},
+    {"server_id": "1", "display_name": "Inbox", "type": "2", "parent_id": "0"},
+    {"server_id": "2", "display_name": "Drafts", "type": "3", "parent_id": "0"},
+    {"server_id": "3", "display_name": "Deleted Items", "type": "4", "parent_id": "0"},
+    {"server_id": "4", "display_name": "Sent Items", "type": "5", "parent_id": "0"},
+    {"server_id": "5", "display_name": "Outbox", "type": "6", "parent_id": "0"},
+    {"server_id": "6", "display_name": "Calendar", "type": "8", "parent_id": "0"},
+    {"server_id": "7", "display_name": "Contacts", "type": "9", "parent_id": "0"},
+]
+
+
+def _wbxml_response(payload: bytes, headers: dict) -> Response:
+    hdrs = dict(headers or {})
+    hdrs["Content-Type"] = WBXML_MEDIA_TYPE
+    return Response(content=payload, media_type=WBXML_MEDIA_TYPE, headers=hdrs)
+
+_MAX_SYNC_HISTORY_IDS = 2000  # Cap cached server IDs per device/collection
+
+
+def _parse_id_list(raw: Optional[str]) -> List[int]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    ids: List[int] = []
+    if isinstance(data, list):
+        for item in data:
+            try:
+                ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+    return ids
+
+
+def _load_synced_ids(state: ActiveSyncState) -> Set[int]:
+    try:
+        return set(_parse_id_list(state.synced_email_ids))
+    except Exception:
+        return set()
+
+
+def _store_synced_ids(state: ActiveSyncState, ids: Iterable[int]) -> None:
+    unique_sorted = sorted({int(i) for i in ids if isinstance(i, (int, float, str)) and str(i).isdigit()}, reverse=True)
+    if len(unique_sorted) > _MAX_SYNC_HISTORY_IDS:
+        unique_sorted = unique_sorted[:_MAX_SYNC_HISTORY_IDS]
+    state.synced_email_ids = json.dumps(unique_sorted)
+    state.last_synced_email_id = unique_sorted[0] if unique_sorted else 0
 
 
 def _split_plain_html(email) -> Tuple[str, str]:
@@ -509,78 +566,22 @@ async def eas_dispatch(
                 "message": "Sending initial policy with temporary PolicyKey=0"
             })
         
-        # Build XML response based on step
-        if is_acknowledgment:
-            # Step 2 response: Just PolicyKey, no Data
-            xml = (
-                f"""<?xml version="1.0" encoding="utf-8"?>
-<Provision xmlns="Provision:">
-    <Status>1</Status>
-    <Policies>
-        <Policy>
-            <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
-            <Status>1</Status>
-            <PolicyKey>{policy_key}</PolicyKey>
-        </Policy>
-    </Policies>
-</Provision>"""
-            )
-        else:
-            # Step 1 response: PolicyKey=0 + full policy settings
-            xml = f"""<?xml version="1.0" encoding="utf-8"?>
-<Provision xmlns="Provision:">
-            <Status>1</Status>
-    <Policies>
-        <Policy>
-            <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
-            <Status>1</Status>
-            <PolicyKey>{policy_key}</PolicyKey>
-            <Data>
-                <EASProvisionDoc>
-                    <DevicePasswordEnabled>0</DevicePasswordEnabled>
-                    <AlphanumericDevicePasswordRequired>0</AlphanumericDevicePasswordRequired>
-                    <PasswordRecoveryEnabled>0</PasswordRecoveryEnabled>
-                    <RequireDeviceEncryption>0</RequireDeviceEncryption>
-                    <AttachmentsEnabled>1</AttachmentsEnabled>
-                    <MinDevicePasswordLength>0</MinDevicePasswordLength>
-                    <MaxInactivityTimeDeviceLock>0</MaxInactivityTimeDeviceLock>
-                    <MaxDevicePasswordFailedAttempts>0</MaxDevicePasswordFailedAttempts>
-                    <MaxEmailAgeFilter>0</MaxEmailAgeFilter>
-                    <AllowSimpleDevicePassword>1</AllowSimpleDevicePassword>
-                    <MaxAttachmentSize>51200000</MaxAttachmentSize>
-                    <AllowStorageCard>1</AllowStorageCard>
-                    <AllowCamera>1</AllowCamera>
-                    <AllowUnsignedApplications>1</AllowUnsignedApplications>
-                    <AllowUnsignedInstallationPackages>1</AllowUnsignedInstallationPackages>
-                    <MinDevicePasswordComplexCharacters>0</MinDevicePasswordComplexCharacters>
-                    <AllowWiFi>1</AllowWiFi>
-                    <AllowTextMessaging>1</AllowTextMessaging>
-                    <AllowPOPIMAPEmail>1</AllowPOPIMAPEmail>
-                    <AllowBluetooth>2</AllowBluetooth>
-                    <AllowIrDA>1</AllowIrDA>
-                    <RequireManualSyncWhenRoaming>0</RequireManualSyncWhenRoaming>
-                    <AllowDesktopSync>1</AllowDesktopSync>
-                    <MaxCalendarAgeFilter>0</MaxCalendarAgeFilter>
-                    <AllowHTMLEmail>1</AllowHTMLEmail>
-                    <MaxEmailBodyTruncationSize>-1</MaxEmailBodyTruncationSize>
-                    <MaxEmailHTMLBodyTruncationSize>-1</MaxEmailHTMLBodyTruncationSize>
-                    <RequireSignedSMIMEMessages>0</RequireSignedSMIMEMessages>
-                    <RequireEncryptedSMIMEMessages>0</RequireEncryptedSMIMEMessages>
-                    <RequireSignedSMIMEAlgorithm>0</RequireSignedSMIMEAlgorithm>
-                    <RequireEncryptionSMIMEAlgorithm>0</RequireEncryptionSMIMEAlgorithm>
-                    <AllowSMIMEEncryptionAlgorithmNegotiation>2</AllowSMIMEEncryptionAlgorithmNegotiation>
-                    <AllowSMIMESoftCerts>1</AllowSMIMESoftCerts>
-                    <AllowBrowser>1</AllowBrowser>
-                    <AllowConsumerEmail>1</AllowConsumerEmail>
-                    <AllowRemoteDesktop>1</AllowRemoteDesktop>
-                    <AllowInternetSharing>1</AllowInternetSharing>
-                </EASProvisionDoc>
-            </Data>
-        </Policy>
-    </Policies>
-</Provision>"""
-        
-        return Response(content=xml, media_type="application/xml", headers=headers)
+        wbxml_payload = build_provision_response(
+            policy_key=policy_key,
+            include_policy_data=not is_acknowledgment,
+        )
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "provision_response",
+                "step": 2 if is_acknowledgment else 1,
+                "policy_key": policy_key,
+                "payload_length": len(wbxml_payload),
+            },
+        )
+
+        return _wbxml_response(wbxml_payload, headers)
 
     # All other commands require that the device has completed the provisioning step above.
     if device.is_provisioned != 1:
@@ -600,7 +601,8 @@ async def eas_dispatch(
         
         # Parse WBXML request body to extract actual SyncKey
         wbxml_params = parse_wbxml_foldersync_request(request_body_bytes)
-        client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
+        # CRITICAL FIX: Handle case where parse returns None (malformed WBXML or empty body)
+        client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0")) if wbxml_params else request.query_params.get("SyncKey", "0")
         
         # Handle sync key validation according to ActiveSync spec
         try:
@@ -634,21 +636,25 @@ async def eas_dispatch(
         
         # CASE 1: Initial Sync (client_key=0). Provide the full, detailed folder hierarchy.
         if client_key_int == 0:
-            # Only set sync_key if it's actually 0 in the database (true first request)
-            if state.sync_key == "0":
-                state.sync_key = "1"
-                db.commit()
-                _write_json_line("activesync/activesync.log", {
-                    "event": "foldersync_initial_sync_key_updated", 
-                    "device_id": device_id,
-                    "old_sync_key": "0",
-                    "new_sync_key": "1"
-                })
+            # Z-Push Fix: ALWAYS reset to 1 when client sends 0, regardless of server state
+            # This allows recovery from desync situations where server is ahead
+            old_sync_key = state.sync_key
+            state.sync_key = "1"
+            db.commit()
+            _write_json_line("activesync/activesync.log", {
+                "event": "foldersync_initial_sync_key_updated", 
+                "device_id": device_id,
+                "old_sync_key": old_sync_key,
+                "new_sync_key": "1",
+                "zpush_recovery": old_sync_key != "0"
+            })
             
             if is_wbxml_request:
-                # Return correct minimal WBXML response with all 5 folders
-                from activesync.wbxml_builder import build_foldersync_no_changes
-                wbxml_content = build_foldersync_no_changes(state.sync_key)
+                wbxml_content = build_foldersync_with_folders(
+                    state.sync_key,
+                    DEFAULT_SYSTEM_FOLDERS,
+                )
+
                 _write_json_line(
                     "activesync/activesync.log",
                     {
@@ -656,125 +662,59 @@ async def eas_dispatch(
                         "sync_key": state.sync_key,
                         "client_key": client_sync_key,
                         "wbxml_length": len(wbxml_content),
-                        "wbxml_type": "minimal_correct",
-                        "wbxml_hex": wbxml_content[:100].hex(),
-                        "wbxml_full_hex": wbxml_content.hex(),
+                        "folder_count": len(DEFAULT_SYSTEM_FOLDERS),
+                        "folders": [f["display_name"] for f in DEFAULT_SYSTEM_FOLDERS],
                         "sync_key_progression": {
                             "client_sent": client_sync_key,
                             "server_responding": state.sync_key,
-                            "is_initial_sync": client_key_int == 0,
-                            "database_updated": state.sync_key == "1" and client_key_int == 0
+                            "is_initial_sync": True,
+                            "database_updated": True,
                         },
-                        "response_analysis": {
-                            "header": wbxml_content[:10].hex(),
-                            "folder_count": wbxml_content.count(b'\x4F'),  # Count Add tags (0x0F + 0x40 = 0x4F)
-                            "has_status": b'\x4C' in wbxml_content,  # Status tag (0x0C + 0x40 = 0x4C)
-                            "has_synckey": b'\x52' in wbxml_content,  # SyncKey tag (0x12 + 0x40 = 0x52)
-                            "has_changes": b'\x4E' in wbxml_content,  # Changes tag (0x0E + 0x40 = 0x4E)
-                        }
                     },
                 )
-                return Response(
-                    content=wbxml_content, media_type="application/vnd.ms-sync.wbxml", headers=headers
-                )
+
+                return _wbxml_response(wbxml_content, headers)
             else:
-                # Return XML response for other clients
-                # *** FINAL FIX: Provide the complete, standard Exchange mailbox structure. ***
-                # This includes Mail, Calendar, and Contacts folders.
-                xml = f"""<?xml version="1.0" encoding="utf-8"?>
-<FolderSync xmlns="FolderHierarchy">
-    <Status>1</Status>
-    <SyncKey>{state.sync_key}</SyncKey>
-    <Changes>
-        <Count>7</Count>
-        <Add>
-            <ServerId>1</ServerId>
-            <ParentId>0</ParentId>
-            <DisplayName>Inbox</DisplayName>
-            <Type>2</Type>
-            <SupportedClasses>
-                <SupportedClass>Email</SupportedClass>
-            </SupportedClasses>
-        </Add>
-        <Add>
-            <ServerId>2</ServerId>
-            <ParentId>0</ParentId>
-            <DisplayName>Drafts</DisplayName>
-            <Type>3</Type>
-            <SupportedClasses>
-                <SupportedClass>Email</SupportedClass>
-            </SupportedClasses>
-        </Add>
-        <Add>
-            <ServerId>3</ServerId>
-            <ParentId>0</ParentId>
-            <DisplayName>Deleted Items</DisplayName>
-            <Type>4</Type>
-            <SupportedClasses>
-                <SupportedClass>Email</SupportedClass>
-            </SupportedClasses>
-        </Add>
-        <Add>
-            <ServerId>4</ServerId>
-            <ParentId>0</ParentId>
-            <DisplayName>Sent Items</DisplayName>
-            <Type>5</Type>
-            <SupportedClasses>
-                <SupportedClass>Email</SupportedClass>
-            </SupportedClasses>
-        </Add>
-        <Add>
-            <ServerId>5</ServerId>
-            <ParentId>0</ParentId>
-            <DisplayName>Outbox</DisplayName>
-            <Type>6</Type>
-            <SupportedClasses>
-                <SupportedClass>Email</SupportedClass>
-            </SupportedClasses>
-        </Add>
-        <Add>
-            <ServerId>calendar</ServerId> 
-            <ParentId>0</ParentId>
-            <DisplayName>Calendar</DisplayName>
-            <Type>8</Type> 
-            <SupportedClasses>
-                <SupportedClass>Calendar</SupportedClass>
-            </SupportedClasses>
-        </Add>
-        <Add>
-            <ServerId>contacts</ServerId> 
-            <ParentId>0</ParentId>
-            <DisplayName>Contacts</DisplayName>
-            <Type>9</Type> 
-            <SupportedClasses>
-                <SupportedClass>Contacts</SupportedClass>
-            </SupportedClasses>
-        </Add>
-    </Changes>
-</FolderSync>"""
-                # *** ENHANCED LOGGING: CAPTURE FULL RESPONSE ***
+                folder_entries = []
+                for folder in DEFAULT_SYSTEM_FOLDERS:
+                    folder_entries.append(
+                        f"        <Add>\n"
+                        f"            <ServerId>{folder['server_id']}</ServerId>\n"
+                        f"            <ParentId>{folder['parent_id']}</ParentId>\n"
+                        f"            <DisplayName>{folder['display_name']}</DisplayName>\n"
+                        f"            <Type>{folder['type']}</Type>\n"
+                        f"        </Add>"
+                    )
+                changes_xml = "\n".join(folder_entries)
+                xml = (
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                    "<FolderSync xmlns=\"FolderHierarchy\">\n"
+                    "    <Status>1</Status>\n"
+                    f"    <SyncKey>{state.sync_key}</SyncKey>\n"
+                    "    <Changes>\n"
+                    f"        <Count>{len(DEFAULT_SYSTEM_FOLDERS)}</Count>\n"
+                    f"{changes_xml}\n"
+                    "    </Changes>\n"
+                    "</FolderSync>"
+                )
                 _write_json_line(
                     "activesync/activesync.log",
                     {
                         "event": "foldersync_initial_response",
                         "sync_key": state.sync_key,
                         "client_key": client_sync_key,
-                        "full_response_xml": xml  # Log the entire XML response
+                        "folder_count": len(DEFAULT_SYSTEM_FOLDERS),
                     },
                 )
         # CASE 2: Client is up to date. Report no changes.
         elif client_key_int == server_key_int:
             if is_wbxml_request:
-                # Return WBXML response for iPhone clients
-                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
                     "activesync/activesync.log",
                     {"event": "foldersync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key},
                 )
-                return Response(
-                    content=wbxml_content, media_type="application/vnd.ms-sync.wbxml", headers=headers
-                )
+                return _wbxml_response(wbxml_content, headers)
             else:
                 xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <FolderSync xmlns="FolderHierarchy">
@@ -784,22 +724,22 @@ async def eas_dispatch(
 </FolderSync>"""
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "foldersync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key},
+                    {
+                        "event": "foldersync_no_changes",
+                        "sync_key": state.sync_key,
+                        "client_key": client_sync_key,
+                    },
                 )
 
         # CASE 3: Client is out of sync. Force it to start over.
         else:
             if is_wbxml_request:
-                # Return WBXML response for iPhone clients
-                from activesync.wbxml_builder import build_foldersync_no_changes
                 wbxml_content = build_foldersync_no_changes(state.sync_key)  # Simplified error response
                 _write_json_line(
                     "activesync/activesync.log",
                     {"event": "foldersync_recovery_sync_wbxml", "server_key": state.sync_key, "client_key": client_sync_key},
                 )
-                return Response(
-                    content=wbxml_content, media_type="application/vnd.ms-sync.wbxml", headers=headers
-                )
+                return _wbxml_response(wbxml_content, headers)
             else:
                 xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <FolderSync xmlns="FolderHierarchy">
@@ -885,6 +825,7 @@ async def eas_dispatch(
             state.synckey_counter = 1
             state.sync_key = "1"
             state.last_synced_email_id = 0  # RESET PAGINATION!
+            state.synced_email_ids = None
             state.pending_sync_key = None
             state.pending_max_email_id = None
             state.pending_item_ids = None
@@ -931,8 +872,7 @@ async def eas_dispatch(
         
         # CRITICAL FIX #26: Two-phase commit - check for pending batch first!
         # Expert: "Only commit when the client echoes back the SyncKey you issued"
-        import json
-        
+
         # CRITICAL FIX #27: Expert's correction - SyncKey must ALWAYS advance!
         # "Every Sync response must issue a new SyncKey. If you keep returning
         #  the same SyncKey, iOS treats the state as inconsistent and restarts."
@@ -941,7 +881,17 @@ async def eas_dispatch(
         # 1) Client confirms last batch? → Clear pending, advance to next batch
         if state.pending_sync_key and client_sync_key == state.pending_sync_key:
             # Client got the batch! Commit it now
-            state.last_synced_email_id = state.pending_max_email_id or state.last_synced_email_id
+            pending_ids = _parse_id_list(state.pending_item_ids)
+            if pending_ids:
+                synced_ids = _load_synced_ids(state)
+                synced_ids.update(pending_ids)
+                _store_synced_ids(state, synced_ids)
+            else:
+                synced_ids = _load_synced_ids(state)
+                if synced_ids:
+                    _store_synced_ids(state, synced_ids)
+                elif state.pending_max_email_id:
+                    _store_synced_ids(state, [state.pending_max_email_id])
             state.sync_key = state.pending_sync_key
             state.synckey_counter = int(state.pending_sync_key) if state.pending_sync_key.isdigit() else state.synckey_counter
             state.pending_sync_key = None
@@ -990,7 +940,7 @@ async def eas_dispatch(
                 
                 # Fetch the specific emails from pending
                 if state.pending_item_ids:
-                    pending_ids = json.loads(state.pending_item_ids)
+                    pending_ids = _parse_id_list(state.pending_item_ids)
                     email_service = EmailService(db)
                     # Ensure folder_map defined before use
                     try:
@@ -1041,14 +991,18 @@ async def eas_dispatch(
         # We must track which emails have been sent and only send NEW ones!
         email_service = EmailService(db)
         
-        # Get last synced email ID for this device+collection
-        last_id = state.last_synced_email_id or 0
-        
-        # Query emails AFTER the last synced ID (proper pagination!)
+        # Track which IDs the client already has
+        synced_ids = _load_synced_ids(state)
+        pending_id_list = _parse_id_list(state.pending_item_ids)
+        pending_ids = set(pending_id_list)
+        last_id = max(synced_ids) if synced_ids else (state.last_synced_email_id or 0)
+
+        # Query latest emails (ordered newest first)
         all_emails = email_service.get_user_emails(current_user.id, folder_type, limit=100)
-        
-        # Filter to only unsent emails
-        emails = [e for e in all_emails if e.id > last_id]
+
+        # Filter to only unsent emails (exclude already synced + pending)
+        exclude_ids = synced_ids.union(pending_ids)
+        emails = [e for e in all_emails if e.id not in exclude_ids]
 
         # Include FETCHED items regardless of pagination
         fetched_emails = []
@@ -1071,6 +1025,8 @@ async def eas_dispatch(
             "last_synced_email_id": last_id,
             "total_emails_in_folder": len(all_emails),
             "new_emails_to_sync": len(emails),
+            "synced_ids_cached": len(synced_ids),
+            "pending_ids": pending_id_list,
             "message": "Filtered to only NEW emails not yet synced"
         })
         
@@ -2064,15 +2020,12 @@ def calendar_create(
     current_user: User = Depends(get_current_user_from_basic_auth),
     db: Session = Depends(get_db),
 ):
-    import json
-
     data = (
         json.loads(request._body.decode("utf-8"))
         if hasattr(request, "_body") and request._body
         else {}
     )
     title = data.get("title") or "Event"
-    from datetime import datetime
 
     start = datetime.fromisoformat(data.get("start_time"))
     end = datetime.fromisoformat(data.get("end_time"))

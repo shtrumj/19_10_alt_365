@@ -29,6 +29,7 @@ CP_AIRSYNC     = 0
 CP_PING        = 1  # Ping codepage for push notifications
 CP_EMAIL       = 2
 CP_AIRSYNCBASE = 17
+CP_PROVISION   = 14
 
 # AirSync (CP 0)
 AS_Sync            = 0x05
@@ -178,6 +179,7 @@ def _format_email_date(value: Any) -> str:
 
 
 def _build_mime_message(em: Dict[str, Any], html_body: str, plain_body: str) -> bytes:
+    """Build a proper MIME message for ActiveSync body_type 4 responses."""
     msg = MIMEMultipart('alternative')
 
     subject = str(em.get('subject') or '')
@@ -198,13 +200,29 @@ def _build_mime_message(em: Dict[str, Any], html_body: str, plain_body: str) -> 
         msg['Date'] = formatdate(localtime=True)
 
     msg['Message-ID'] = em.get('message_id') or make_msgid()
+    
+    # Add MIME-Version header (required for proper MIME parsing)
+    msg['MIME-Version'] = '1.0'
+    
+    # Add Content-Type header for multipart/alternative
+    msg['Content-Type'] = 'multipart/alternative; boundary="{}"'.format(msg.get_boundary())
 
+    # Attach parts in order: plain text first, then HTML
     if plain_body:
-        msg.attach(MIMEText(plain_body, 'plain', 'utf-8'))
+        plain_part = MIMEText(plain_body, 'plain', 'utf-8')
+        plain_part['Content-Type'] = 'text/plain; charset=utf-8'
+        msg.attach(plain_part)
+    
     if html_body:
-        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+        html_part = MIMEText(html_body, 'html', 'utf-8')
+        html_part['Content-Type'] = 'text/html; charset=utf-8'
+        msg.attach(html_part)
+    
+    # Ensure we have at least one part
     if not msg.get_payload():
-        msg.attach(MIMEText('', 'plain', 'utf-8'))
+        plain_part = MIMEText('', 'plain', 'utf-8')
+        plain_part['Content-Type'] = 'text/plain; charset=utf-8'
+        msg.attach(plain_part)
 
     return msg.as_bytes(policy=policy.SMTP)
 
@@ -225,7 +243,12 @@ def _prepare_body_payload(
         mime_bytes = em.get('mime_content')
         if mime_bytes:
             if isinstance(mime_bytes, str):
-                mime_bytes = mime_bytes.encode('utf-8', errors='ignore')
+                # MIME content in DB is base64 encoded - decode it first
+                try:
+                    mime_bytes = base64.b64decode(mime_bytes)
+                except Exception:
+                    # If decode fails, treat as raw bytes
+                    mime_bytes = mime_bytes.encode('utf-8', errors='ignore')
         else:
             mime_bytes = _build_mime_message(em, html, plain)
         estimated_size = str(len(mime_bytes))
@@ -471,6 +494,90 @@ def build_sync_response(
     )
 
 
+def build_foldersync_with_folders(
+    sync_key: str,
+    folders: List[Dict[str, str]],
+) -> bytes:
+    """
+    Build a FolderSync response with folder hierarchy for initial sync (SyncKey 0→1).
+
+    Parameters
+    ----------
+    sync_key: str
+        Server sync key to advertise in the response.
+    folders: list[dict]
+        Each dict should contain ``server_id`` / ``id``, ``display_name`` / ``name``,
+        optional ``parent_id`` (defaults to "0"), and ``type`` (Folder class code, e.g. 2=Inbox).
+
+    CRITICAL: Pass BASE tokens WITHOUT 0x40 bit - WBXMLWriter.start() adds it automatically!
+    
+    Base token values for FolderHierarchy codepage (0x07):
+    - FolderSync = 0x16
+    - Status = 0x0B  
+    - SyncKey = 0x12
+    - Changes = 0x0E
+    - Count = 0x07
+    - Add = 0x0C
+    - ServerId = 0x15
+    - ParentId = 0x17
+    - DisplayName = 0x08
+    - Type = 0x0F
+    """
+    w = WBXMLWriter()
+    w.header()
+    
+    # FolderHierarchy codepage (CP 7)
+    w.page(0x07)
+    
+    # <FolderSync>
+    w.start(0x16)
+    
+    # <Status>1</Status>
+    w.start(0x0B)
+    w.write_str("1")
+    w.end()
+    
+    # <SyncKey>1</SyncKey>
+    w.start(0x12)
+    w.write_str(sync_key)
+    w.end()
+    
+    # <Changes>
+    w.start(0x0E)
+
+    # <Count>N</Count>
+    w.start(0x07)
+    w.write_str(str(len(folders)))
+    w.end()
+
+    for folder in folders:
+        server_id = folder.get("server_id") or folder.get("id") or ""
+        display_name = folder.get("display_name") or folder.get("name") or ""
+        folder_type = folder.get("type") or "2"
+        parent_id = folder.get("parent_id") or "0"
+
+        # <Add>
+        w.start(0x0C)
+
+        # <ServerId>
+        w.start(0x15); w.write_str(str(server_id)); w.end()
+
+        # <ParentId>0</ParentId> (root)
+        w.start(0x17); w.write_str(str(parent_id)); w.end()
+
+        # <DisplayName>
+        w.start(0x08); w.write_str(display_name); w.end()
+
+        # <Type>
+        w.start(0x0F); w.write_str(str(folder_type)); w.end()
+
+        w.end()  # </Add>
+    w.end()  # </Changes>
+    w.end()  # </FolderSync>
+    
+    return w.bytes()
+
+
 def build_foldersync_no_changes(sync_key: str = "1") -> bytes:
     """
     Minimal FolderSync 'no changes' WBXML (keeps the device happy).
@@ -486,6 +593,88 @@ def build_foldersync_no_changes(sync_key: str = "1") -> bytes:
     w.start(AS_Status);  w.write_str("1"); w.end()
     w.start(AS_SyncKey); w.write_str(sync_key); w.end()
     w.end()
+    return w.bytes()
+
+
+def build_provision_response(*, policy_key: str, include_policy_data: bool) -> bytes:
+    """Build WBXML Provision response.
+
+    When ``include_policy_data`` is True (phase 1), an ``EASProvisionDoc`` is emitted with
+    a permissive policy document. For the final acknowledgement (phase 2) only
+    the PolicyKey is returned.
+    """
+    w = WBXMLWriter()
+    w.header()
+
+    w.page(CP_PROVISION)
+    w.start(PR_Provision)
+
+    w.start(PR_Status); w.write_str("1"); w.end()
+
+    w.start(PR_Policies)
+    w.start(PR_Policy)
+
+    w.start(PR_PolicyType); w.write_str("MS-EAS-Provisioning-WBXML"); w.end()
+    w.start(PR_Status); w.write_str("1"); w.end()
+    w.start(PR_PolicyKey); w.write_str(policy_key); w.end()
+
+    if include_policy_data:
+        w.start(PR_Data)
+        w.start(PR_EASProvisionDoc)
+
+        # Minimal permissive policy compatible with iOS expectations
+        policy_fields: List[tuple[int, str]] = [
+            (PR_DevicePasswordEnabled, "0"),
+            (PR_AlphanumericDevicePasswordRequired, "0"),
+            (PR_PasswordRecoveryEnabled, "0"),
+            (PR_AttachmentsEnabled, "1"),
+            (PR_MinDevicePasswordLength, "0"),
+            (PR_MaxInactivityTimeDeviceLock, "0"),
+            (PR_MaxDevicePasswordFailedAttempts, "0"),
+            (PR_MaxAttachmentSize, "52428800"),  # 50 MB
+            (PR_AllowSimpleDevicePassword, "1"),
+            (PR_DevicePasswordExpiration, "0"),
+            (PR_DevicePasswordHistory, "0"),
+            (PR_AllowStorageCard, "1"),
+            (PR_AllowCamera, "1"),
+            (PR_RequireDeviceEncryption, "0"),
+            (PR_AllowUnsignedApplications, "1"),
+            (PR_AllowUnsignedInstallationPackages, "1"),
+            (PR_MinDevicePasswordComplexCharacters, "0"),
+            (PR_AllowWiFi, "1"),
+            (PR_AllowTextMessaging, "1"),
+            (PR_AllowPOPIMAPEmail, "1"),
+            (PR_AllowBluetooth, "2"),
+            (PR_AllowIrDA, "1"),
+            (PR_RequireManualSyncWhenRoaming, "0"),
+            (PR_AllowDesktopSync, "1"),
+            (PR_MaxCalendarAgeFilter, "0"),
+            (PR_AllowHTMLEmail, "1"),
+            (PR_MaxEmailAgeFilter, "0"),
+            (PR_MaxEmailBodyTruncationSize, "-1"),
+            (PR_MaxEmailHTMLBodyTruncationSize, "-1"),
+            (PR_RequireSignedSMIMEMessages, "0"),
+            (PR_RequireEncryptedSMIMEMessages, "0"),
+            (PR_RequireSignedSMIMEAlgorithm, "0"),
+            (PR_RequireEncryptionSMIMEAlgorithm, "0"),
+            (PR_AllowSMIMEEncryptionAlgorithmNegotiation, "2"),
+            (PR_AllowSMIMESoftCerts, "1"),
+            (PR_AllowBrowser, "1"),
+            (PR_AllowConsumerEmail, "1"),
+            (PR_AllowRemoteDesktop, "1"),
+            (PR_AllowInternetSharing, "1"),
+        ]
+
+        for token, value in policy_fields:
+            w.start(token); w.write_str(value); w.end()
+
+        w.end()  # </EASProvisionDoc>
+        w.end()  # </Data>
+
+    w.end()  # </Policy>
+    w.end()  # </Policies>
+    w.end()  # </Provision>
+
     return w.bytes()
 
 
@@ -717,3 +906,53 @@ def create_invalid_synckey_response_wbxml(*, collection_id: str = "1", class_nam
         total_available=0,
         more_available=False,
     )
+# Provision (CP 14)
+PR_Provision                = 0x05
+PR_Policies                 = 0x06
+PR_Policy                   = 0x07
+PR_PolicyType               = 0x08
+PR_PolicyKey                = 0x09
+PR_Data                     = 0x0A
+PR_Status                   = 0x0B
+PR_RemoteWipe               = 0x0C
+PR_EASProvisionDoc          = 0x0D
+PR_DevicePasswordEnabled    = 0x0E
+PR_AlphanumericDevicePasswordRequired = 0x0F
+PR_PasswordRecoveryEnabled  = 0x11
+PR_AttachmentsEnabled       = 0x13
+PR_MinDevicePasswordLength  = 0x14
+PR_MaxInactivityTimeDeviceLock = 0x15
+PR_MaxDevicePasswordFailedAttempts = 0x16
+PR_MaxAttachmentSize        = 0x17
+PR_AllowSimpleDevicePassword = 0x18
+PR_DevicePasswordExpiration = 0x19
+PR_DevicePasswordHistory    = 0x1A
+PR_AllowStorageCard         = 0x1B
+PR_AllowCamera              = 0x1C
+PR_RequireDeviceEncryption  = 0x1D
+PR_AllowUnsignedApplications = 0x1E
+PR_AllowUnsignedInstallationPackages = 0x1F
+PR_MinDevicePasswordComplexCharacters = 0x20
+PR_AllowWiFi                = 0x21
+PR_AllowTextMessaging       = 0x22
+PR_AllowPOPIMAPEmail        = 0x23
+PR_AllowBluetooth           = 0x24
+PR_AllowIrDA               = 0x25
+PR_RequireManualSyncWhenRoaming = 0x26
+PR_AllowDesktopSync         = 0x27
+PR_MaxCalendarAgeFilter     = 0x28
+PR_AllowHTMLEmail           = 0x29
+PR_MaxEmailAgeFilter        = 0x2A
+PR_MaxEmailBodyTruncationSize = 0x2B
+PR_MaxEmailHTMLBodyTruncationSize = 0x2C
+PR_RequireSignedSMIMEMessages = 0x2D
+PR_RequireEncryptedSMIMEMessages = 0x2E
+PR_RequireSignedSMIMEAlgorithm = 0x2F
+PR_RequireEncryptionSMIMEAlgorithm = 0x30
+PR_AllowSMIMEEncryptionAlgorithmNegotiation = 0x31
+PR_AllowSMIMESoftCerts      = 0x32
+PR_AllowBrowser             = 0x33
+PR_AllowConsumerEmail       = 0x34
+PR_AllowRemoteDesktop       = 0x35
+PR_AllowInternetSharing     = 0x36
+PR_AccountOnlyRemoteWipe    = 0x3B

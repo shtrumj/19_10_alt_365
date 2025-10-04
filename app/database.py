@@ -254,6 +254,8 @@ class ActiveSyncState(Base):
     sync_key = Column(String, nullable=False, default="0")
     # CRITICAL FIX #24: Track pagination for proper email sync
     last_synced_email_id = Column(Integer, default=0)  # Last email ID sent to client
+    # Track all server IDs already acknowledged by the client to drive pagination
+    synced_email_ids = Column(Text, nullable=True)  # JSON array of previously synced email IDs
     # CRITICAL FIX #26: Two-phase commit - stage pending batches
     pending_sync_key = Column(String, nullable=True)  # SyncKey of pending batch
     pending_max_email_id = Column(Integer, nullable=True)  # Max email ID in pending batch

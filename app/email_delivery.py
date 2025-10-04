@@ -170,13 +170,19 @@ class EmailDeliveryService:
                 plain_body,
                 body_html if body_html else None,
             )
+            
+            # CRITICAL: Base64 encode MIME content for ActiveSync compatibility
+            # The MIME content must be stored as base64 in the database
+            import base64
+            mime_content_bytes = mime_content.encode('utf-8', errors='ignore')
+            mime_content_b64 = base64.b64encode(mime_content_bytes).decode('ascii')
 
             # Create email record
             email_record = Email(
                 subject=queued_email.subject,
                 body=plain_body,
                 body_html=body_html,
-                mime_content=mime_content,
+                mime_content=mime_content_b64,
                 mime_content_type=mime_type,
                 sender_id=sender_user.id,
                 recipient_id=recipient_user.id,
