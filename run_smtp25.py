@@ -20,7 +20,6 @@ from app.database import (
 from app.email_queue import Base as QueueBase
 from app.queue_processor import queue_processor
 from app.routers import (
-    activesync,
     auth,
     autodiscover,
     calendar,
@@ -40,6 +39,8 @@ from app.routers import websocket as ws_router
 from app.routers import (
     websocket_simple,
 )
+# Import ActiveSync from its own module
+from activesync import router as activesync_router
 from app.smtp_server import start_smtp_server_25, stop_smtp_server_25
 
 
@@ -75,7 +76,7 @@ app.include_router(calendar.router)
 app.include_router(contacts.router)
 app.include_router(emails.router)
 app.include_router(owa.router)
-app.include_router(activesync.router)
+app.include_router(activesync_router)
 app.include_router(queue.router)
 app.include_router(debug.router)
 app.include_router(websocket_simple.router)
