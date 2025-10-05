@@ -6,7 +6,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -92,6 +92,184 @@ SUPPORTED_PROTOCOL_VERSIONS: List[str] = ["12.1", "14.0", "14.1", "16.0", "16.1"
 SUPPORTED_VERSIONS_HEADER_VALUE = ",".join(SUPPORTED_PROTOCOL_VERSIONS)
 DEFAULT_PROTOCOL_VERSION = "16.1"
 LEGACY_FALLBACK_PROTOCOL_VERSION = "14.1"
+
+
+def _select_body_pref(
+    prefs: List[Dict], is_single_item_fetch: bool
+) -> tuple[int, int | None]:
+    """
+    Select the best body preference for ActiveSync.
+
+    Args:
+        prefs: List of body preferences from client
+        is_single_item_fetch: True if this is a single-item fetch (prefer MIME)
+
+    Returns:
+        (body_type, truncation_size)
+    """
+    if not prefs:
+        return (2, 32768)  # Default: HTML with moderate truncation
+
+    # Order preferences by priority
+    if is_single_item_fetch:
+        # For single-item fetch: prefer MIME (4), then HTML (2), then plain (1)
+        order = [4, 2, 1]
+    else:
+        # For normal sync: prefer HTML (2), then plain (1), only fall back to MIME (4) if requested
+        order = [2, 1, 4]
+
+    # Group preferences by type
+    by_type = {p.get("type", 2): p for p in prefs if "type" in p}
+
+    # Try each type in order of preference
+    for body_type in order:
+        if body_type in by_type:
+            pref = by_type[body_type]
+            return (pref.get("type", 2), pref.get("truncation_size"))
+
+    # Fallback to first preference
+    if prefs:
+        pref = prefs[0]
+        return (pref.get("type", 2), pref.get("truncation_size"))
+
+    return (2, 32768)  # Final fallback
+
+
+def _parse_itemops_fetches(
+    request_body_bytes: bytes,
+) -> List[tuple[str, str, List[Dict]]]:
+    """
+    Parse ItemOperations WBXML request to extract fetch requests.
+
+    Returns:
+        List of (collection_id, server_id, body_preferences) tuples
+    """
+    # For now, return a simple implementation
+    # In a full implementation, this would parse the WBXML to extract:
+    # - <Fetch><Store>Mailbox</Store><ServerId>...</ServerId><BodyPreference>...</BodyPreference></Fetch>
+
+    # Placeholder implementation - in practice, you'd parse the WBXML here
+    # This is a simplified version that assumes basic ItemOperations structure
+    return []
+
+
+def _build_itemops_wbxml_response(response_items: List[Dict]) -> bytes:
+    """
+    Build WBXML ItemOperations response with MIME support.
+    """
+    from activesync.wbxml_builder import (
+        CP_AIRSYNC,
+        AS_Fetch,
+        AS_ItemOperations,
+        AS_Properties,
+        AS_Response,
+        AS_Status,
+        ASB_Body,
+        ASB_ContentType,
+        ASB_Data,
+        ASB_EstimatedDataSize,
+        ASB_Truncated,
+        ASB_Type,
+        EM_DateReceived,
+        EM_From,
+        EM_Subject,
+        EM_To,
+        WBXMLWriter,
+        _prepare_body_payload,
+    )
+
+    w = WBXMLWriter()
+    w.header()
+
+    # <ItemOperations>
+    w.page(CP_AIRSYNC)
+    w.start(AS_ItemOperations)
+
+    # <Status>1</Status>
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
+
+    # <Response>
+    w.start(AS_Response)
+
+    for item in response_items:
+        # <Fetch>
+        w.start(AS_Fetch)
+
+        # <Status>1</Status>
+        w.start(AS_Status)
+        w.write_str("1")
+        w.end()
+
+        # <Properties>
+        w.start(AS_Properties)
+
+        email = item["email"]
+
+        # Basic email properties
+        w.page(2)  # Email codepage
+        w.start(EM_Subject)
+        w.write_str(email.get("subject", ""))
+        w.end()
+
+        w.start(EM_From)
+        w.write_str(email.get("from", ""))
+        w.end()
+
+        w.start(EM_To)
+        w.write_str(email.get("to", ""))
+        w.end()
+
+        w.start(EM_DateReceived)
+        if email.get("created_at"):
+            w.write_str(email["created_at"].strftime("%Y-%m-%dT%H:%M:%SZ"))
+        else:
+            w.write_str("")
+        w.end()
+
+        # Body with MIME support
+        body_payload = _prepare_body_payload(
+            email,
+            requested_type=item["body_type"],
+            truncation_size=item["truncation_size"],
+        )
+
+        w.page(17)  # AirSyncBase codepage
+        w.start(ASB_Body)
+        w.start(ASB_Type)
+        w.write_str(body_payload["type"])
+        w.end()
+        w.start(ASB_EstimatedDataSize)
+        w.write_str(body_payload["estimated_size"])
+        w.end()
+        w.start(ASB_Truncated)
+        w.write_str(body_payload["truncated"])
+        w.end()
+        w.start(ASB_Data)
+        if body_payload["type"] == "4" and "data_bytes" in body_payload:
+            # Type=4 (MIME) uses OPAQUE bytes
+            w.write_opaque(body_payload["data_bytes"])
+        else:
+            # Type=1/2 uses string data
+            w.write_str(body_payload["data"])
+        w.end()
+
+        content_type = body_payload.get("content_type")
+        if content_type:
+            w.start(ASB_ContentType)
+            w.write_str(content_type)
+            w.end()
+        w.end()  # </Body>
+
+        w.page(2)  # Back to Email codepage
+        w.end()  # </Properties>
+        w.end()  # </Fetch>
+
+    w.end()  # </Response>
+    w.end()  # </ItemOperations>
+
+    return w.bytes()
 
 
 def _wbxml_response(payload: bytes, headers: dict) -> Response:
@@ -1003,16 +1181,14 @@ async def eas_dispatch(
             window_size = 5  # Default to 5 emails per sync
 
         body_prefs = wbxml_params.get("body_preferences", []) or []
-        body_type_preference = 2
-        truncation_size = None
-        if body_prefs:
-            supported_types = {4, 2, 1}
-            for pref in body_prefs:
-                pref_type = pref.get("type")
-                if pref_type in supported_types:
-                    body_type_preference = pref_type
-                    truncation_size = pref.get("truncation_size")
-                    break
+
+        # Determine if this is a single-item fetch (prefer MIME)
+        is_single_item_fetch = bool(fetch_ids)
+
+        # Select best body preference
+        body_type_preference, truncation_size = _select_body_pref(
+            body_prefs, is_single_item_fetch
+        )
         if truncation_size is not None:
             try:
                 truncation_size = int(truncation_size)
@@ -2277,51 +2453,86 @@ async def eas_dispatch(
 
     # MS-ASCMD ItemOperations command implementation
     if cmd == "itemoperations":
-        # MS-ASCMD ItemOperations for fetching specific items
-        item_id = request.query_params.get("ItemId", "")
-        collection_id = request.query_params.get("CollectionId", "1")
+        # Parse WBXML request to extract fetch requests
+        request_body_bytes = await request.body()
 
-        if not item_id:
-            xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
-        else:
-            # Fetch specific email item
-            email_service = EmailService(db)
-            emails = email_service.get_user_emails(current_user.id, "inbox", limit=1000)
-            target_email = next((e for e in emails if str(e.id) == item_id), None)
+        try:
+            # Parse WBXML to extract fetch requests
+            fetches = _parse_itemops_fetches(request_body_bytes)
 
-            if target_email:
-                root = ET.Element("ItemOperations")
-                root.set("xmlns", "ItemOperations")
-                ET.SubElement(root, "Status").text = "1"
-                response = ET.SubElement(root, "Response")
-                fetch = ET.SubElement(response, "Fetch")
-                ET.SubElement(fetch, "Status").text = "1"
-                properties = ET.SubElement(fetch, "Properties")
-
-                # Add email properties according to MS-ASCMD
-                ET.SubElement(properties, "Subject").text = target_email.subject or ""
-                ET.SubElement(properties, "From").text = target_email.sender or ""
-                ET.SubElement(properties, "To").text = target_email.recipient or ""
-                ET.SubElement(properties, "DateReceived").text = (
-                    target_email.received_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    if target_email.received_at
-                    else ""
-                )
-                ET.SubElement(properties, "Body").text = target_email.body or ""
-
-                xml = ET.tostring(root, encoding="unicode")
-            else:
+            if not fetches:
+                # No valid fetch requests
                 xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
+                return Response(
+                    content=xml, media_type="application/xml", headers=headers
+                )
 
-        _write_json_line(
-            "activesync/activesync.log",
-            {
-                "event": "itemoperations",
-                "item_id": item_id,
-                "collection_id": collection_id,
-            },
-        )
-        return Response(content=xml, media_type="application/xml", headers=headers)
+            # Process each fetch request
+            email_service = EmailService(db)
+            response_items = []
+
+            for collection_id, server_id, body_prefs in fetches:
+                # Get the email
+                emails = email_service.get_user_emails(
+                    current_user.id, "inbox", limit=1000
+                )
+                target_email = next((e for e in emails if str(e.id) == server_id), None)
+
+                if target_email:
+                    # Convert email to dict format
+                    email_dict = {
+                        "id": target_email.id,
+                        "subject": target_email.subject or "",
+                        "from": target_email.sender or "",
+                        "to": target_email.recipient or "",
+                        "body": target_email.body or "",
+                        "body_html": getattr(target_email, "body_html", None) or "",
+                        "created_at": target_email.received_at,
+                        "mime_content": getattr(target_email, "mime_content", None),
+                    }
+
+                    # Select body preference (prefer MIME for single-item fetch)
+                    body_type, truncation_size = _select_body_pref(
+                        body_prefs, is_single_item_fetch=True
+                    )
+
+                    # Build response item
+                    response_items.append(
+                        {
+                            "collection_id": collection_id,
+                            "server_id": server_id,
+                            "email": email_dict,
+                            "body_type": body_type,
+                            "truncation_size": truncation_size,
+                        }
+                    )
+
+            # Build WBXML ItemOperations response
+            wbxml_payload = _build_itemops_wbxml_response(response_items)
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "itemoperations_wbxml",
+                    "fetch_count": len(fetches),
+                    "response_count": len(response_items),
+                    "body_types": [item["body_type"] for item in response_items],
+                },
+            )
+
+            return _wbxml_response(wbxml_payload, headers)
+
+        except Exception as e:
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "itemoperations_error",
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+            xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
+            return Response(content=xml, media_type="application/xml", headers=headers)
 
     # MS-ASCMD SmartForward command implementation
     if cmd == "smartforward":

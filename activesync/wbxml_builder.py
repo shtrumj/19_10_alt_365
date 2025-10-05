@@ -10,65 +10,69 @@ Highlights
 """
 
 from __future__ import annotations
+
 import base64
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from email import policy
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import format_datetime, formatdate, make_msgid
+from typing import Any, Dict, List, Optional
 
 # WBXML control
 SWITCH_PAGE = 0x00
-END         = 0x01
-STR_I       = 0x03
+END = 0x01
+STR_I = 0x03
 
 # Code pages
-CP_AIRSYNC     = 0
-CP_PING        = 1  # Ping codepage for push notifications
-CP_EMAIL       = 2
+CP_AIRSYNC = 0
+CP_PING = 1  # Ping codepage for push notifications
+CP_EMAIL = 2
 CP_AIRSYNCBASE = 17
-CP_PROVISION   = 14
+CP_PROVISION = 14
 
 # AirSync (CP 0)
-AS_Sync            = 0x05
-AS_Responses       = 0x06
-AS_Add             = 0x07
-AS_Change          = 0x08
-AS_Delete          = 0x09
-AS_Fetch           = 0x0A
-AS_SyncKey         = 0x0B
-AS_ClientId        = 0x0C
-AS_ServerId        = 0x0D
-AS_Status          = 0x0E
-AS_Collection      = 0x0F
-AS_Class           = 0x10
-AS_CollectionId    = 0x12
-AS_GetChanges      = 0x13
-AS_MoreAvailable   = 0x14
-AS_WindowSize      = 0x15
-AS_Commands        = 0x16
-AS_Collections     = 0x1C
+AS_Sync = 0x05
+AS_Responses = 0x06
+AS_Add = 0x07
+AS_Change = 0x08
+AS_Delete = 0x09
+AS_Fetch = 0x0A
+AS_SyncKey = 0x0B
+AS_ClientId = 0x0C
+AS_ServerId = 0x0D
+AS_Status = 0x0E
+AS_Collection = 0x0F
+AS_Class = 0x10
+AS_CollectionId = 0x12
+AS_GetChanges = 0x13
+AS_MoreAvailable = 0x14
+AS_WindowSize = 0x15
+AS_Commands = 0x16
+AS_Collections = 0x1C
 AS_ApplicationData = 0x1D
+AS_ItemOperations = 0x1E
+AS_Response = 0x1F
+AS_Properties = 0x20
 
 # Email (CP 2)
-EM_DateReceived   = 0x0F
-EM_MessageClass   = 0x13
-EM_Subject        = 0x14
-EM_Read           = 0x15
-EM_To             = 0x16
-EM_From           = 0x18
-EM_InternetCPID   = 0x39  # UTF-8 = 65001
+EM_DateReceived = 0x0F
+EM_MessageClass = 0x13
+EM_Subject = 0x14
+EM_Read = 0x15
+EM_To = 0x16
+EM_From = 0x18
+EM_InternetCPID = 0x39  # UTF-8 = 65001
 
 # AirSyncBase (CP 17)
-ASB_Type              = 0x06
-ASB_Body              = 0x0A
-ASB_Data              = 0x0B
+ASB_Type = 0x06
+ASB_Body = 0x0A
+ASB_Data = 0x0B
 ASB_EstimatedDataSize = 0x0C
-ASB_Truncated         = 0x0D
-ASB_ContentType       = 0x0E
-ASB_NativeBodyType    = 0x16
+ASB_Truncated = 0x0D
+ASB_ContentType = 0x0E
+ASB_NativeBodyType = 0x16
 
 
 class WBXMLWriter:
@@ -80,12 +84,32 @@ class WBXMLWriter:
         # WBXML v1.3, public id 0x01 (unknown), charset UTF-8 (0x6A), string table = 0
         self.buf.extend([0x03, 0x01, 0x6A, 0x00])
 
-    def write_byte(self, b: int): self.buf.append(b & 0xFF)
+    def write_byte(self, b: int):
+        self.buf.append(b & 0xFF)
 
     def write_str(self, s: str):
         self.write_byte(STR_I)
         self.buf.extend(s.encode("utf-8"))
         self.write_byte(0x00)
+
+    def write_opaque(self, data_bytes: bytes):
+        """Write OPAQUE block (WBXML token 0xC3 + mb_u_int32 length + raw bytes)"""
+        # 0xC3 = OPAQUE
+        self.buf.append(0xC3)
+        # write WBXML multibyte length (mb_u_int32)
+        n = len(data_bytes)
+        stack = []
+        while True:
+            stack.append(n & 0x7F)
+            n >>= 7
+            if n == 0:
+                break
+        while stack:
+            b = stack.pop()
+            if stack:
+                b |= 0x80
+            self.buf.append(b)
+        self.buf.extend(data_bytes)
 
     def page(self, cp: int):
         if self.cur_page != cp:
@@ -100,14 +124,21 @@ class WBXMLWriter:
     def start(self, tok: int, with_content: bool = True):
         self.write_byte((tok | 0x40) if with_content else tok)
 
-    def end(self): self.write_byte(END)
+    def end(self):
+        self.write_byte(END)
 
-    def bytes(self) -> bytes: return bytes(self.buf)
+    def bytes(self) -> bytes:
+        return bytes(self.buf)
 
 
 def _ensure_utc_z(dt_or_str: Any) -> str:
     if isinstance(dt_or_str, datetime):
-        return dt_or_str.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="milliseconds") + "Z"
+        return (
+            dt_or_str.astimezone(timezone.utc)
+            .replace(tzinfo=None)
+            .isoformat(timespec="milliseconds")
+            + "Z"
+        )
     if isinstance(dt_or_str, str):
         s = dt_or_str
         if not s.endswith("Z"):
@@ -130,7 +161,9 @@ class SyncBatch:
     more_available: bool
 
 
-def _select_body_content(em: Dict[str, Any], body_type_preference: int = 2) -> tuple[str, int]:
+def _select_body_content(
+    em: Dict[str, Any], body_type_preference: int = 2
+) -> tuple[str, int]:
     """
     Choose body content according to BodyPreference:
     - 2 => HTML preferred (if available), else plain
@@ -181,48 +214,50 @@ def _format_email_date(value: Any) -> str:
 
 def _build_mime_message(em: Dict[str, Any], html_body: str, plain_body: str) -> bytes:
     """Build a proper MIME message for ActiveSync body_type 4 responses."""
-    msg = MIMEMultipart('alternative')
+    msg = MIMEMultipart("alternative")
 
-    subject = str(em.get('subject') or '')
+    subject = str(em.get("subject") or "")
     if subject:
-        msg['Subject'] = subject
+        msg["Subject"] = subject
 
-    from_addr = str(em.get('from') or em.get('sender') or '')
-    to_addr = str(em.get('to') or em.get('recipient') or '')
+    from_addr = str(em.get("from") or em.get("sender") or "")
+    to_addr = str(em.get("to") or em.get("recipient") or "")
     if from_addr:
-        msg['From'] = from_addr
+        msg["From"] = from_addr
     if to_addr:
-        msg['To'] = to_addr
+        msg["To"] = to_addr
 
-    created_at = em.get('created_at')
+    created_at = em.get("created_at")
     try:
-        msg['Date'] = _format_email_date(created_at)
+        msg["Date"] = _format_email_date(created_at)
     except Exception:
-        msg['Date'] = formatdate(localtime=True)
+        msg["Date"] = formatdate(localtime=True)
 
-    msg['Message-ID'] = em.get('message_id') or make_msgid()
-    
+    msg["Message-ID"] = em.get("message_id") or make_msgid()
+
     # Add MIME-Version header (required for proper MIME parsing)
-    msg['MIME-Version'] = '1.0'
-    
+    msg["MIME-Version"] = "1.0"
+
     # Add Content-Type header for multipart/alternative
-    msg['Content-Type'] = 'multipart/alternative; boundary="{}"'.format(msg.get_boundary())
+    msg["Content-Type"] = 'multipart/alternative; boundary="{}"'.format(
+        msg.get_boundary()
+    )
 
     # Attach parts in order: plain text first, then HTML
     if plain_body:
-        plain_part = MIMEText(plain_body, 'plain', 'utf-8')
-        plain_part['Content-Type'] = 'text/plain; charset=utf-8'
+        plain_part = MIMEText(plain_body, "plain", "utf-8")
+        plain_part["Content-Type"] = "text/plain; charset=utf-8"
         msg.attach(plain_part)
-    
+
     if html_body:
-        html_part = MIMEText(html_body, 'html', 'utf-8')
-        html_part['Content-Type'] = 'text/html; charset=utf-8'
+        html_part = MIMEText(html_body, "html", "utf-8")
+        html_part["Content-Type"] = "text/html; charset=utf-8"
         msg.attach(html_part)
-    
+
     # Ensure we have at least one part
     if not msg.get_payload():
-        plain_part = MIMEText('', 'plain', 'utf-8')
-        plain_part['Content-Type'] = 'text/plain; charset=utf-8'
+        plain_part = MIMEText("", "plain", "utf-8")
+        plain_part["Content-Type"] = "text/plain; charset=utf-8"
         msg.attach(plain_part)
 
     return msg.as_bytes(policy=policy.SMTP)
@@ -234,13 +269,13 @@ def _prepare_body_payload(
     requested_type: int = 2,
     truncation_size: Optional[int] = None,
 ) -> Dict[str, str]:
-    html = str(em.get('body_html') or em.get('html') or '')
-    plain = str(em.get('body') or em.get('preview') or '')
+    html = str(em.get("body_html") or em.get("html") or "")
+    plain = str(em.get("body") or em.get("preview") or "")
 
     body_type = requested_type if requested_type in (1, 2, 4) else 2
 
     if body_type == 4:
-        mime_bytes = em.get('mime_content')
+        mime_bytes = em.get("mime_content")
         if mime_bytes:
             if isinstance(mime_bytes, str):
                 # MIME content in DB is base64 encoded - decode it first
@@ -248,44 +283,48 @@ def _prepare_body_payload(
                     mime_bytes = base64.b64decode(mime_bytes)
                 except Exception:
                     # If decode fails, treat as raw bytes
-                    mime_bytes = mime_bytes.encode('utf-8', errors='ignore')
+                    mime_bytes = mime_bytes.encode("utf-8", errors="ignore")
         else:
             mime_bytes = _build_mime_message(em, html, plain)
+
         estimated_size = str(len(mime_bytes))
         payload_bytes, truncated_flag = _truncate_bytes(mime_bytes, truncation_size)
-        data_text = base64.b64encode(payload_bytes).decode('ascii') if payload_bytes else ''
-        native = '4' if payload_bytes else native_body_type
+
+        # For Type=4, we need to return the raw bytes for OPAQUE writing
         return {
-            'type': '4',
-            'data': data_text,
-            'estimated_size': estimated_size,
-            'truncated': truncated_flag,
-            'native_type': '4',
-            'content_type': 'message/rfc822',
+            "type": "4",
+            "data_bytes": payload_bytes,  # Raw bytes for OPAQUE
+            "estimated_size": estimated_size,
+            "truncated": truncated_flag,
+            "native_type": "4",
+            "content_type": "message/rfc822",
         }
 
     preference = 1 if body_type == 1 else 2
     content, selected_native = _select_body_content(em, body_type_preference=preference)
-    body_bytes = content.encode('utf-8') if content else b''
+    body_bytes = content.encode("utf-8") if content else b""
     estimated_size = str(len(body_bytes))
     payload_bytes, truncated_flag = _truncate_bytes(body_bytes, truncation_size)
-    data_text = payload_bytes.decode('utf-8', errors='ignore') if payload_bytes else ''
+    data_text = payload_bytes.decode("utf-8", errors="ignore") if payload_bytes else ""
 
-    actual_type = '2' if (content and selected_native == 2 and data_text) else '1'
+    actual_type = "2" if (content and selected_native == 2 and data_text) else "1"
 
     content_type = (
-        'text/html; charset=utf-8' if actual_type == '2' else 'text/plain; charset=utf-8'
+        "text/html; charset=utf-8"
+        if actual_type == "2"
+        else "text/plain; charset=utf-8"
     )
-    native_type = '2' if selected_native == 2 else '1'
+    native_type = "2" if selected_native == 2 else "1"
 
     return {
-        'type': actual_type,
-        'data': data_text,
-        'estimated_size': estimated_size,
-        'truncated': truncated_flag,
-        'native_type': native_type,
-        'content_type': content_type,
+        "type": actual_type,
+        "data": data_text,
+        "estimated_size": estimated_size,
+        "truncated": truncated_flag,
+        "native_type": native_type,
+        "content_type": content_type,
     }
+
 
 def write_fetch_responses(
     *,
@@ -306,27 +345,45 @@ def write_fetch_responses(
         # <Fetch>
         w.start(AS_Fetch)
         # ORDER: ServerId -> Status -> Class -> ApplicationData
-        w.start(AS_ServerId); w.write_str(server_id); w.end()
-        w.start(AS_Status);   w.write_str("1");     w.end()
-        w.start(AS_Class);    w.write_str("Email"); w.end()
+        w.start(AS_ServerId)
+        w.write_str(server_id)
+        w.end()
+        w.start(AS_Status)
+        w.write_str("1")
+        w.end()
+        w.start(AS_Class)
+        w.write_str("Email")
+        w.end()
         # <ApplicationData>
         w.start(AS_ApplicationData)
         # Optional envelope
         w.cp(CP_EMAIL)
         subj = str(em.get("subject") or "")
-        frm  = str(em.get("from") or em.get("sender") or "")
-        to   = str(em.get("to") or em.get("recipient") or "")
+        frm = str(em.get("from") or em.get("sender") or "")
+        to = str(em.get("to") or em.get("recipient") or "")
         when = _ensure_utc_z(em.get("created_at"))
         if subj:
-            w.start(EM_Subject);      w.write_str(subj); w.end()
+            w.start(EM_Subject)
+            w.write_str(subj)
+            w.end()
         if frm:
-            w.start(EM_From);         w.write_str(frm);  w.end()
+            w.start(EM_From)
+            w.write_str(frm)
+            w.end()
         if to:
-            w.start(EM_To);           w.write_str(to);   w.end()
+            w.start(EM_To)
+            w.write_str(to)
+            w.end()
         if when:
-            w.start(EM_DateReceived); w.write_str(when); w.end()
-        w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
-        w.start(EM_InternetCPID); w.write_str("65001");    w.end()
+            w.start(EM_DateReceived)
+            w.write_str(when)
+            w.end()
+        w.start(EM_MessageClass)
+        w.write_str("IPM.Note")
+        w.end()
+        w.start(EM_InternetCPID)
+        w.write_str("65001")
+        w.end()
         # Body (respect preference & truncation)
         body_payload = _prepare_body_payload(
             em,
@@ -335,15 +392,37 @@ def write_fetch_responses(
         )
         w.cp(CP_AIRSYNCBASE)
         w.start(ASB_Body)
-        w.start(ASB_Type);              w.write_str(body_payload['type']);         w.end()
-        w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
-        w.start(ASB_Truncated);         w.write_str(body_payload['truncated']);    w.end()
-        w.start(ASB_Data);              w.write_str(body_payload['data']);         w.end()
-        content_type = body_payload.get('content_type')
+        w.start(ASB_Type)
+        w.write_str(body_payload["type"])
+        w.end()
+        w.start(ASB_EstimatedDataSize)
+        w.write_str(body_payload["estimated_size"])
+        w.end()
+        w.start(ASB_Truncated)
+        w.write_str(body_payload["truncated"])
+        w.end()
+        w.start(ASB_Data)
+        if body_payload["type"] == "4" and "data_bytes" in body_payload:
+            # Type=4 (MIME) uses OPAQUE bytes
+            w.write_opaque(body_payload["data_bytes"])
+        else:
+            # Type=1/2 uses string data
+            if body_payload["type"] == "4" and "data_bytes" in body_payload:
+                # Type=4 (MIME) uses OPAQUE bytes
+                w.write_opaque(body_payload["data_bytes"])
+            else:
+                # Type=1/2 uses string data
+                w.write_str(body_payload["data"])
+        w.end()
+        content_type = body_payload.get("content_type")
         if content_type:
-            w.start(ASB_ContentType); w.write_str(content_type); w.end()
+            w.start(ASB_ContentType)
+            w.write_str(content_type)
+            w.end()
         w.end()  # </Body>
-        w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
+        w.start(ASB_NativeBodyType)
+        w.write_str(body_payload["native_type"])
+        w.end()
         # Close ApplicationData and Fetch
         w.cp(CP_AIRSYNC)
         w.end()  # </ApplicationData>
@@ -366,8 +445,12 @@ def write_delete_responses(
         status = str(item.get("status") or "1")
         # <Delete>
         w.start(AS_Delete)
-        w.start(AS_Status); w.write_str(status); w.end()
-        w.start(AS_ServerId); w.write_str(sid); w.end()
+        w.start(AS_Status)
+        w.write_str(status)
+        w.end()
+        w.start(AS_ServerId)
+        w.write_str(sid)
+        w.end()
         w.end()  # </Delete>
     w.end()  # </Responses>
 
@@ -419,10 +502,18 @@ def build_sync_response(
     w.start(AS_Collection)
 
     # Required children (Z-Push-like order): SyncKey -> CollectionId -> Class -> Status
-    w.start(AS_SyncKey);      w.write_str(new_sync_key);         w.end()
-    w.start(AS_CollectionId); w.write_str(str(collection_id));   w.end()
-    w.start(AS_Class);        w.write_str(class_name);           w.end()
-    w.start(AS_Status);       w.write_str("1");                  w.end()
+    w.start(AS_SyncKey)
+    w.write_str(new_sync_key)
+    w.end()
+    w.start(AS_CollectionId)
+    w.write_str(str(collection_id))
+    w.end()
+    w.start(AS_Class)
+    w.write_str(class_name)
+    w.end()
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
 
     count = 0
     if items:
@@ -436,9 +527,9 @@ def build_sync_response(
             server_id = em.get("server_id") or f"{collection_id}:{em.get('id', idx+1)}"
             subj = em.get("subject") or "(no subject)"
             from_ = em.get("from") or em.get("sender") or ""
-            to_   = em.get("to") or em.get("recipient") or ""
-            read  = "1" if bool(em.get("is_read")) else "0"
-            when  = _ensure_utc_z(em.get("created_at"))
+            to_ = em.get("to") or em.get("recipient") or ""
+            read = "1" if bool(em.get("is_read")) else "0"
+            when = _ensure_utc_z(em.get("created_at"))
 
             body_payload = _prepare_body_payload(
                 em,
@@ -447,45 +538,80 @@ def build_sync_response(
             )
 
             # <Add>
-            w.page(CP_AIRSYNC); w.start(AS_Add)
+            w.page(CP_AIRSYNC)
+            w.start(AS_Add)
 
             # <ServerId>
-            w.start(AS_ServerId); w.write_str(server_id); w.end()
+            w.start(AS_ServerId)
+            w.write_str(server_id)
+            w.end()
 
             # <ApplicationData>
             w.start(AS_ApplicationData)
 
             # Email props
             w.page(CP_EMAIL)
-            w.start(EM_Subject);      w.write_str(str(subj));  w.end()
-            w.start(EM_From);         w.write_str(str(from_)); w.end()
-            w.start(EM_To);           w.write_str(str(to_));   w.end()
-            w.start(EM_DateReceived); w.write_str(when);       w.end()
+            w.start(EM_Subject)
+            w.write_str(str(subj))
+            w.end()
+            w.start(EM_From)
+            w.write_str(str(from_))
+            w.end()
+            w.start(EM_To)
+            w.write_str(str(to_))
+            w.end()
+            w.start(EM_DateReceived)
+            w.write_str(when)
+            w.end()
             # Include MessageClass like Z-Push
-            w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
+            w.start(EM_MessageClass)
+            w.write_str("IPM.Note")
+            w.end()
             # InternetCPID to signal UTF-8
-            w.start(EM_InternetCPID); w.write_str("65001");    w.end()
-            w.start(EM_Read);         w.write_str(read);       w.end()
+            w.start(EM_InternetCPID)
+            w.write_str("65001")
+            w.end()
+            w.start(EM_Read)
+            w.write_str(read)
+            w.end()
 
             # AirSyncBase <Body> (always include) with preference/truncation
             w.page(CP_AIRSYNCBASE)
             w.start(ASB_Body)
             # ORDER MATTERS: Type -> EstimatedDataSize -> Truncated -> Data
-            w.start(ASB_Type);              w.write_str(body_payload['type']);          w.end()
-            w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
-            w.start(ASB_Truncated);         w.write_str(body_payload['truncated']);      w.end()
-            w.start(ASB_Data);              w.write_str(body_payload['data']);           w.end()
-            content_type = body_payload.get('content_type')
+            w.start(ASB_Type)
+            w.write_str(body_payload["type"])
+            w.end()
+            w.start(ASB_EstimatedDataSize)
+            w.write_str(body_payload["estimated_size"])
+            w.end()
+            w.start(ASB_Truncated)
+            w.write_str(body_payload["truncated"])
+            w.end()
+            w.start(ASB_Data)
+            if body_payload["type"] == "4" and "data_bytes" in body_payload:
+                # Type=4 (MIME) uses OPAQUE bytes
+                w.write_opaque(body_payload["data_bytes"])
+            else:
+                # Type=1/2 uses string data
+                w.write_str(body_payload["data"])
+            w.end()
+            content_type = body_payload.get("content_type")
             if content_type:
-                w.start(ASB_ContentType); w.write_str(content_type); w.end()
+                w.start(ASB_ContentType)
+                w.write_str(content_type)
+                w.end()
             w.end()  # </Body>
             # Native body type hint (as Z-Push does)
             w.page(CP_AIRSYNCBASE)
-            w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
+            w.start(ASB_NativeBodyType)
+            w.write_str(body_payload["native_type"])
+            w.end()
 
             # close ApplicationData, Add
-            w.page(CP_AIRSYNC); w.end()     # </ApplicationData>
-            w.end()                         # </Add>
+            w.page(CP_AIRSYNC)
+            w.end()  # </ApplicationData>
+            w.end()  # </Add>
 
             count += 1
 
@@ -523,10 +649,10 @@ def build_foldersync_with_folders(
         optional ``parent_id`` (defaults to "0"), and ``type`` (Folder class code, e.g. 2=Inbox).
 
     CRITICAL: Pass BASE tokens WITHOUT 0x40 bit - WBXMLWriter.start() adds it automatically!
-    
+
     Base token values for FolderHierarchy codepage (0x07):
     - FolderSync = 0x16
-    - Status = 0x0B  
+    - Status = 0x0B
     - SyncKey = 0x12
     - Changes = 0x0E
     - Count = 0x07
@@ -538,7 +664,7 @@ def build_foldersync_with_folders(
     """
     w = WBXMLWriter()
     w.header()
-    
+
     # FolderHierarchy codepage (CP 7)
     CP_FOLDER = 0x07
     TAG_FOLDERSYNC = 0x16
@@ -585,21 +711,29 @@ def build_foldersync_with_folders(
         w.start(TAG_ADD)
 
         # <ServerId>
-        w.start(TAG_SERVERID); w.write_str(str(server_id)); w.end()
+        w.start(TAG_SERVERID)
+        w.write_str(str(server_id))
+        w.end()
 
         # <ParentId>
-        w.start(TAG_PARENTID); w.write_str(str(parent_id)); w.end()
+        w.start(TAG_PARENTID)
+        w.write_str(str(parent_id))
+        w.end()
 
         # <DisplayName>
-        w.start(TAG_DISPLAYNAME); w.write_str(display_name); w.end()
+        w.start(TAG_DISPLAYNAME)
+        w.write_str(display_name)
+        w.end()
 
         # <Type>
-        w.start(TAG_TYPE); w.write_str(str(folder_type)); w.end()
+        w.start(TAG_TYPE)
+        w.write_str(str(folder_type))
+        w.end()
 
         w.end()  # </Add>
     w.end()  # </Changes>
     w.end()  # </FolderSync>
-    
+
     return w.bytes()
 
 
@@ -619,10 +753,16 @@ def build_foldersync_no_changes(sync_key: str = "1") -> bytes:
 
     w.page(CP_FOLDER)
     w.start(TAG_FOLDERSYNC)
-    w.start(TAG_STATUS); w.write_str("1"); w.end()
-    w.start(TAG_SYNCKEY); w.write_str(sync_key); w.end()
+    w.start(TAG_STATUS)
+    w.write_str("1")
+    w.end()
+    w.start(TAG_SYNCKEY)
+    w.write_str(sync_key)
+    w.end()
     w.start(TAG_CHANGES)
-    w.start(TAG_COUNT); w.write_str("0"); w.end()
+    w.start(TAG_COUNT)
+    w.write_str("0")
+    w.end()
     w.end()  # </Changes>
     w.end()  # </FolderSync>
     return w.bytes()
@@ -641,14 +781,22 @@ def build_provision_response(*, policy_key: str, include_policy_data: bool) -> b
     w.page(CP_PROVISION)
     w.start(PR_Provision)
 
-    w.start(PR_Status); w.write_str("1"); w.end()
+    w.start(PR_Status)
+    w.write_str("1")
+    w.end()
 
     w.start(PR_Policies)
     w.start(PR_Policy)
 
-    w.start(PR_PolicyType); w.write_str("MS-EAS-Provisioning-WBXML"); w.end()
-    w.start(PR_Status); w.write_str("1"); w.end()
-    w.start(PR_PolicyKey); w.write_str(policy_key); w.end()
+    w.start(PR_PolicyType)
+    w.write_str("MS-EAS-Provisioning-WBXML")
+    w.end()
+    w.start(PR_Status)
+    w.write_str("1")
+    w.end()
+    w.start(PR_PolicyKey)
+    w.write_str(policy_key)
+    w.end()
 
     if include_policy_data:
         w.start(PR_Data)
@@ -698,7 +846,9 @@ def build_provision_response(*, policy_key: str, include_policy_data: bool) -> b
         ]
 
         for token, value in policy_fields:
-            w.start(token); w.write_str(value); w.end()
+            w.start(token)
+            w.write_str(value)
+            w.end()
 
         w.end()  # </EASProvisionDoc>
         w.end()  # </Data>
@@ -729,11 +879,14 @@ def extract_synckey_and_collection(wb: bytes) -> tuple[Optional[str], Optional[s
         return s, j + 1
 
     while i < len(wb):
-        b = wb[i]; i += 1
+        b = wb[i]
+        i += 1
 
         if b == SWITCH_PAGE:
-            if i >= len(wb): break
-            cp = wb[i]; i += 1
+            if i >= len(wb):
+                break
+            cp = wb[i]
+            i += 1
             continue
 
         if b == STR_I:
@@ -789,7 +942,7 @@ def create_sync_response_wbxml(
 ) -> SyncBatch:
     """
     Legacy compatibility wrapper with Z-Push body preference support.
-    
+
     Args:
         body_type_preference: 1=PlainText, 2=HTML (default), 3=RTF, 4=MIME
         truncation_size: Max body size in bytes (None = no truncation)
@@ -834,10 +987,18 @@ def create_sync_response_wbxml_with_fetch(
     w.start(AS_Collection)
 
     # Required children (Z-Push-like order): SyncKey -> CollectionId -> Class -> Status
-    w.start(AS_SyncKey);      w.write_str(sync_key);         w.end()
-    w.start(AS_CollectionId); w.write_str(collection_id);   w.end()
-    w.start(AS_Class);        w.write_str(class_name);           w.end()
-    w.start(AS_Status);       w.write_str("1");                  w.end()
+    w.start(AS_SyncKey)
+    w.write_str(sync_key)
+    w.end()
+    w.start(AS_CollectionId)
+    w.write_str(collection_id)
+    w.end()
+    w.start(AS_Class)
+    w.write_str(class_name)
+    w.end()
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
 
     # Commands for new items
     count = 0
@@ -848,23 +1009,40 @@ def create_sync_response_wbxml_with_fetch(
                 break
             server_id = em.get("server_id") or f"{collection_id}:{em.get('id', idx+1)}"
             subj = str(em.get("subject") or "(no subject)")
-            frm  = str(em.get("from") or em.get("sender") or "")
-            to   = str(em.get("to") or em.get("recipient") or "")
+            frm = str(em.get("from") or em.get("sender") or "")
+            to = str(em.get("to") or em.get("recipient") or "")
             read = "1" if bool(em.get("is_read")) else "0"
             when = _ensure_utc_z(em.get("created_at"))
             # <Add>
-            w.cp(CP_AIRSYNC); w.start(AS_Add)
-            w.start(AS_ServerId); w.write_str(str(server_id)); w.end()
+            w.cp(CP_AIRSYNC)
+            w.start(AS_Add)
+            w.start(AS_ServerId)
+            w.write_str(str(server_id))
+            w.end()
             w.start(AS_ApplicationData)
             # Email props
             w.cp(CP_EMAIL)
-            w.start(EM_Subject);      w.write_str(subj);  w.end()
-            w.start(EM_From);         w.write_str(frm);   w.end()
-            w.start(EM_To);           w.write_str(to);    w.end()
-            w.start(EM_DateReceived); w.write_str(when);  w.end()
-            w.start(EM_MessageClass); w.write_str("IPM.Note"); w.end()
-            w.start(EM_InternetCPID); w.write_str("65001"); w.end()
-            w.start(EM_Read);         w.write_str(read);  w.end()
+            w.start(EM_Subject)
+            w.write_str(subj)
+            w.end()
+            w.start(EM_From)
+            w.write_str(frm)
+            w.end()
+            w.start(EM_To)
+            w.write_str(to)
+            w.end()
+            w.start(EM_DateReceived)
+            w.write_str(when)
+            w.end()
+            w.start(EM_MessageClass)
+            w.write_str("IPM.Note")
+            w.end()
+            w.start(EM_InternetCPID)
+            w.write_str("65001")
+            w.end()
+            w.start(EM_Read)
+            w.write_str(read)
+            w.end()
             # AirSyncBase Body — honor client BodyPreference and truncation
             w.cp(CP_AIRSYNCBASE)
             w.start(ASB_Body)
@@ -873,26 +1051,45 @@ def create_sync_response_wbxml_with_fetch(
                 requested_type=body_type_preference,
                 truncation_size=truncation_size,
             )
-            w.start(ASB_Type); w.write_str(body_payload['type']); w.end()
-            w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
-            w.start(ASB_Truncated); w.write_str(body_payload['truncated']); w.end()
-            w.start(ASB_Data); w.write_str(body_payload['data']); w.end()
-            content_type = body_payload.get('content_type')
+            w.start(ASB_Type)
+            w.write_str(body_payload["type"])
+            w.end()
+            w.start(ASB_EstimatedDataSize)
+            w.write_str(body_payload["estimated_size"])
+            w.end()
+            w.start(ASB_Truncated)
+            w.write_str(body_payload["truncated"])
+            w.end()
+            w.start(ASB_Data)
+            if body_payload["type"] == "4" and "data_bytes" in body_payload:
+                # Type=4 (MIME) uses OPAQUE bytes
+                w.write_opaque(body_payload["data_bytes"])
+            else:
+                # Type=1/2 uses string data
+                w.write_str(body_payload["data"])
+            w.end()
+            content_type = body_payload.get("content_type")
             if content_type:
-                w.start(ASB_ContentType); w.write_str(content_type); w.end()
+                w.start(ASB_ContentType)
+                w.write_str(content_type)
+                w.end()
             w.end()  # </Body>
             w.cp(CP_AIRSYNCBASE)
-            w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
+            w.start(ASB_NativeBodyType)
+            w.write_str(body_payload["native_type"])
+            w.end()
             # Close appdata/add
             w.cp(CP_AIRSYNC)
-            w.end(); w.end()
+            w.end()
+            w.end()
             count += 1
         w.end()  # </Commands>
 
     # MoreAvailable after Commands
     if more_available:
         w.start(AS_MoreAvailable, with_content=False)
-    w.end(); w.end()  # </Collection></Collections>
+    w.end()
+    w.end()  # </Collection></Collections>
 
     # <Responses><Fetch> for fetched items
     write_fetch_responses(
@@ -914,7 +1111,10 @@ def create_sync_response_wbxml_with_fetch(
         more_available=more_available,
     )
 
-def create_invalid_synckey_response_wbxml(*, collection_id: str = "1", class_name: str = "Email") -> SyncBatch:
+
+def create_invalid_synckey_response_wbxml(
+    *, collection_id: str = "1", class_name: str = "Email"
+) -> SyncBatch:
     """
     Build a minimal response that signals Status=3 (InvalidSyncKey) and forces the client to re-init
     the collection with SyncKey=0 (per MS-ASCMD).
@@ -924,14 +1124,26 @@ def create_invalid_synckey_response_wbxml(*, collection_id: str = "1", class_nam
 
     w.page(CP_AIRSYNC)
     w.start(AS_Sync)
-    w.start(AS_Status); w.write_str("3"); w.end()  # InvalidSyncKey
+    w.start(AS_Status)
+    w.write_str("3")
+    w.end()  # InvalidSyncKey
     w.start(AS_Collections)
     w.start(AS_Collection)
-    w.start(AS_Class);        w.write_str(class_name);   w.end()
-    w.start(AS_SyncKey);      w.write_str("0");          w.end()
-    w.start(AS_CollectionId); w.write_str(collection_id); w.end()
-    w.start(AS_Status);       w.write_str("3");          w.end()  # InvalidSyncKey
-    w.end(); w.end(); w.end()
+    w.start(AS_Class)
+    w.write_str(class_name)
+    w.end()
+    w.start(AS_SyncKey)
+    w.write_str("0")
+    w.end()
+    w.start(AS_CollectionId)
+    w.write_str(collection_id)
+    w.end()
+    w.start(AS_Status)
+    w.write_str("3")
+    w.end()  # InvalidSyncKey
+    w.end()
+    w.end()
+    w.end()
 
     payload = w.bytes()
     return SyncBatch(
@@ -941,43 +1153,45 @@ def create_invalid_synckey_response_wbxml(*, collection_id: str = "1", class_nam
         total_available=0,
         more_available=False,
     )
+
+
 # Provision (CP 14)
-PR_Provision                = 0x05
-PR_Policies                 = 0x06
-PR_Policy                   = 0x07
-PR_PolicyType               = 0x08
-PR_PolicyKey                = 0x09
-PR_Data                     = 0x0A
-PR_Status                   = 0x0B
-PR_RemoteWipe               = 0x0C
-PR_EASProvisionDoc          = 0x0D
-PR_DevicePasswordEnabled    = 0x0E
+PR_Provision = 0x05
+PR_Policies = 0x06
+PR_Policy = 0x07
+PR_PolicyType = 0x08
+PR_PolicyKey = 0x09
+PR_Data = 0x0A
+PR_Status = 0x0B
+PR_RemoteWipe = 0x0C
+PR_EASProvisionDoc = 0x0D
+PR_DevicePasswordEnabled = 0x0E
 PR_AlphanumericDevicePasswordRequired = 0x0F
-PR_PasswordRecoveryEnabled  = 0x11
-PR_AttachmentsEnabled       = 0x13
-PR_MinDevicePasswordLength  = 0x14
+PR_PasswordRecoveryEnabled = 0x11
+PR_AttachmentsEnabled = 0x13
+PR_MinDevicePasswordLength = 0x14
 PR_MaxInactivityTimeDeviceLock = 0x15
 PR_MaxDevicePasswordFailedAttempts = 0x16
-PR_MaxAttachmentSize        = 0x17
+PR_MaxAttachmentSize = 0x17
 PR_AllowSimpleDevicePassword = 0x18
 PR_DevicePasswordExpiration = 0x19
-PR_DevicePasswordHistory    = 0x1A
-PR_AllowStorageCard         = 0x1B
-PR_AllowCamera              = 0x1C
-PR_RequireDeviceEncryption  = 0x1D
+PR_DevicePasswordHistory = 0x1A
+PR_AllowStorageCard = 0x1B
+PR_AllowCamera = 0x1C
+PR_RequireDeviceEncryption = 0x1D
 PR_AllowUnsignedApplications = 0x1E
 PR_AllowUnsignedInstallationPackages = 0x1F
 PR_MinDevicePasswordComplexCharacters = 0x20
-PR_AllowWiFi                = 0x21
-PR_AllowTextMessaging       = 0x22
-PR_AllowPOPIMAPEmail        = 0x23
-PR_AllowBluetooth           = 0x24
-PR_AllowIrDA               = 0x25
+PR_AllowWiFi = 0x21
+PR_AllowTextMessaging = 0x22
+PR_AllowPOPIMAPEmail = 0x23
+PR_AllowBluetooth = 0x24
+PR_AllowIrDA = 0x25
 PR_RequireManualSyncWhenRoaming = 0x26
-PR_AllowDesktopSync         = 0x27
-PR_MaxCalendarAgeFilter     = 0x28
-PR_AllowHTMLEmail           = 0x29
-PR_MaxEmailAgeFilter        = 0x2A
+PR_AllowDesktopSync = 0x27
+PR_MaxCalendarAgeFilter = 0x28
+PR_AllowHTMLEmail = 0x29
+PR_MaxEmailAgeFilter = 0x2A
 PR_MaxEmailBodyTruncationSize = 0x2B
 PR_MaxEmailHTMLBodyTruncationSize = 0x2C
 PR_RequireSignedSMIMEMessages = 0x2D
@@ -985,9 +1199,9 @@ PR_RequireEncryptedSMIMEMessages = 0x2E
 PR_RequireSignedSMIMEAlgorithm = 0x2F
 PR_RequireEncryptionSMIMEAlgorithm = 0x30
 PR_AllowSMIMEEncryptionAlgorithmNegotiation = 0x31
-PR_AllowSMIMESoftCerts      = 0x32
-PR_AllowBrowser             = 0x33
-PR_AllowConsumerEmail       = 0x34
-PR_AllowRemoteDesktop       = 0x35
-PR_AllowInternetSharing     = 0x36
-PR_AccountOnlyRemoteWipe    = 0x3B
+PR_AllowSMIMESoftCerts = 0x32
+PR_AllowBrowser = 0x33
+PR_AllowConsumerEmail = 0x34
+PR_AllowRemoteDesktop = 0x35
+PR_AllowInternetSharing = 0x36
+PR_AccountOnlyRemoteWipe = 0x3B
