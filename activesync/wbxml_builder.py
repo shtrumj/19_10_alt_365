@@ -67,6 +67,7 @@ ASB_Body              = 0x0A
 ASB_Data              = 0x0B
 ASB_EstimatedDataSize = 0x0C
 ASB_Truncated         = 0x0D
+ASB_ContentType       = 0x0E
 ASB_NativeBodyType    = 0x16
 
 
@@ -338,6 +339,9 @@ def write_fetch_responses(
         w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
         w.start(ASB_Truncated);         w.write_str(body_payload['truncated']);    w.end()
         w.start(ASB_Data);              w.write_str(body_payload['data']);         w.end()
+        content_type = body_payload.get('content_type')
+        if content_type:
+            w.start(ASB_ContentType); w.write_str(content_type); w.end()
         w.end()  # </Body>
         w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()
         # Close ApplicationData and Fetch
@@ -471,6 +475,9 @@ def build_sync_response(
             w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
             w.start(ASB_Truncated);         w.write_str(body_payload['truncated']);      w.end()
             w.start(ASB_Data);              w.write_str(body_payload['data']);           w.end()
+            content_type = body_payload.get('content_type')
+            if content_type:
+                w.start(ASB_ContentType); w.write_str(content_type); w.end()
             w.end()  # </Body>
             # Native body type hint (as Z-Push does)
             w.page(CP_AIRSYNCBASE)
@@ -870,6 +877,9 @@ def create_sync_response_wbxml_with_fetch(
             w.start(ASB_EstimatedDataSize); w.write_str(body_payload['estimated_size']); w.end()
             w.start(ASB_Truncated); w.write_str(body_payload['truncated']); w.end()
             w.start(ASB_Data); w.write_str(body_payload['data']); w.end()
+            content_type = body_payload.get('content_type')
+            if content_type:
+                w.start(ASB_ContentType); w.write_str(content_type); w.end()
             w.end()  # </Body>
             w.cp(CP_AIRSYNCBASE)
             w.start(ASB_NativeBodyType); w.write_str(body_payload['native_type']); w.end()

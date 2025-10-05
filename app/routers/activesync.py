@@ -1342,6 +1342,7 @@ async def eas_dispatch(
 
         # Include FETCHED items regardless of pagination
         fetched_emails = []
+        fetch_int_id_set: Set[int] = set()
         if fetch_ids:
             try:
                 # server_id may be formatted like "1:36"; extract numeric id portion
@@ -1351,6 +1352,7 @@ async def eas_dispatch(
                     n = parts[-1]
                     if n.isdigit():
                         fetch_int_ids.append(int(n))
+                fetch_int_id_set = set(fetch_int_ids)
                 fetched_emails = email_service.get_emails_by_ids(
                     current_user.id, fetch_int_ids
                 )
@@ -1367,6 +1369,9 @@ async def eas_dispatch(
                     "activesync/activesync.log",
                     {"event": "sync_fetch_error", "error": str(ex)},
                 )
+
+        if fetch_int_id_set:
+            emails = [e for e in emails if e.id not in fetch_int_id_set]
 
         _write_json_line(
             "activesync/activesync.log",
