@@ -6,7 +6,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +22,14 @@ import os
 import sys
 
 from ..auth import get_current_user_from_basic_auth
-from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db, EmailAttachment
+from ..database import (
+    ActiveSyncDevice,
+    ActiveSyncState,
+    CalendarEvent,
+    EmailAttachment,
+    User,
+    get_db,
+)
 from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
 
@@ -108,6 +115,9 @@ def _select_body_pref(
         (body_type, truncation_size)
     """
     if not prefs:
+        # For single fetches default to full MIME to satisfy iOS' "Download Message" flow
+        if is_single_item_fetch:
+            return (4, None)
         return (2, 32768)  # Default: HTML with moderate truncation
 
     # Order preferences by priority
@@ -144,13 +154,165 @@ def _parse_itemops_fetches(
     Returns:
         List of (collection_id, server_id, body_preferences) tuples
     """
-    # For now, return a simple implementation
-    # In a full implementation, this would parse the WBXML to extract:
-    # - <Fetch><Store>Mailbox</Store><ServerId>...</ServerId><BodyPreference>...</BodyPreference></Fetch>
+    if not request_body_bytes:
+        return []
 
-    # Placeholder implementation - in practice, you'd parse the WBXML here
-    # This is a simplified version that assumes basic ItemOperations structure
-    return []
+    SWITCH_PAGE = 0x00
+    END = 0x01
+    STR_I = 0x03
+
+    CP_AIRSYNC = 0
+    CP_AIRSYNCBASE = 17
+
+    AS_FETCH = 0x0A
+    AS_COLLECTION_ID = 0x12
+    AS_SERVER_ID = 0x0D
+
+    ASB_BODY_PREFERENCE = 0x05
+    ASB_TYPE = 0x06
+    ASB_TRUNCATION_SIZE = 0x07
+    ASB_ALL_OR_NONE = 0x08
+
+    cp = 0
+    stack: List[Optional[str]] = []
+    fetches: List[tuple[str, str, List[Dict]]] = []
+
+    current_fetch: Optional[Dict[str, Any]] = None
+    current_pref: Optional[Dict[str, Any]] = None
+
+    data = request_body_bytes
+    i = 0
+
+    def _read_inline_string(buf: bytes, pos: int) -> tuple[str, int]:
+        if pos >= len(buf) or buf[pos] != STR_I:
+            return "", pos
+        pos += 1
+        start = pos
+        while pos < len(buf) and buf[pos] != 0x00:
+            pos += 1
+        text = buf[start:pos].decode("utf-8", errors="ignore")
+        if pos < len(buf):
+            pos += 1
+        return text, pos
+
+    while i < len(data):
+        b = data[i]
+        i += 1
+
+        if b == SWITCH_PAGE:
+            if i < len(data):
+                cp = data[i]
+                i += 1
+            continue
+
+        if b == END:
+            if stack:
+                tag = stack.pop()
+                if (
+                    tag == "BodyPreference"
+                    and current_pref is not None
+                    and current_fetch is not None
+                ):
+                    if current_pref.get("type") is not None:
+                        current_fetch.setdefault("body_preferences", []).append(
+                            current_pref
+                        )
+                    current_pref = None
+                elif tag == "Fetch" and current_fetch is not None:
+                    coll = current_fetch.get("collection_id") or "1"
+                    sid = current_fetch.get("server_id")
+                    prefs = current_fetch.get("body_preferences") or []
+                    if sid:
+                        fetches.append((str(coll), str(sid), prefs))
+                    current_fetch = None
+            continue
+
+        token = b & 0x3F
+        has_content = (b & 0x40) != 0
+
+        if cp == CP_AIRSYNC and token == AS_FETCH:
+            stack.append("Fetch")
+            current_fetch = {
+                "collection_id": None,
+                "server_id": None,
+                "body_preferences": [],
+            }
+            current_pref = None
+            continue
+
+        if current_fetch is None:
+            # Outside of a <Fetch> block we only track option nesting
+            stack.append(None)
+            if has_content and i < len(data) and data[i] == STR_I:
+                _, i = _read_inline_string(data, i)
+            continue
+
+        # Within a fetch: capture CollectionId/ServerId
+        if cp == CP_AIRSYNC and token == AS_COLLECTION_ID:
+            stack.append("CollectionId")
+            if has_content:
+                text, i = _read_inline_string(data, i)
+                if text:
+                    current_fetch["collection_id"] = text
+            continue
+
+        if cp == CP_AIRSYNC and token == AS_SERVER_ID:
+            stack.append("ServerId")
+            if has_content:
+                text, i = _read_inline_string(data, i)
+                if text:
+                    current_fetch["server_id"] = text
+            continue
+
+        if cp == CP_AIRSYNCBASE and token == ASB_BODY_PREFERENCE:
+            stack.append("BodyPreference")
+            current_pref = {
+                "type": None,
+                "truncation_size": None,
+                "all_or_none": False,
+            }
+            continue
+
+        if current_pref is not None:
+            if cp == CP_AIRSYNCBASE and token == ASB_TYPE and has_content:
+                stack.append("BodyPreference:Type")
+                text, i = _read_inline_string(data, i)
+                if text:
+                    try:
+                        current_pref["type"] = int(text)
+                    except ValueError:
+                        pass
+                continue
+            if cp == CP_AIRSYNCBASE and token == ASB_TRUNCATION_SIZE and has_content:
+                stack.append("BodyPreference:Truncation")
+                text, i = _read_inline_string(data, i)
+                if text:
+                    try:
+                        current_pref["truncation_size"] = int(text)
+                    except ValueError:
+                        pass
+                continue
+            if cp == CP_AIRSYNCBASE and token == ASB_ALL_OR_NONE:
+                stack.append("BodyPreference:AllOrNone")
+                if has_content:
+                    text, i = _read_inline_string(data, i)
+                    current_pref["all_or_none"] = text.strip() == "1"
+                else:
+                    current_pref["all_or_none"] = True
+                continue
+
+        # Unknown tag inside fetch/options: push placeholder and skip inline string if present
+        stack.append(None)
+        if has_content and i < len(data) and data[i] == STR_I:
+            _, i = _read_inline_string(data, i)
+
+    # Safety: flush fetch if WBXML malformed (missing END)
+    if current_fetch and current_fetch.get("server_id"):
+        coll = current_fetch.get("collection_id") or "1"
+        prefs = current_fetch.get("body_preferences") or []
+        fetches.append((str(coll), str(current_fetch["server_id"]), prefs))
+
+    return fetches
 
 
 def _build_itemops_wbxml_response(response_items: List[Dict]) -> bytes:
@@ -159,15 +321,19 @@ def _build_itemops_wbxml_response(response_items: List[Dict]) -> bytes:
     """
     from activesync.wbxml_builder import (
         CP_AIRSYNC,
+        AS_Class,
+        AS_CollectionId,
         AS_Fetch,
         AS_ItemOperations,
         AS_Properties,
         AS_Response,
+        AS_ServerId,
         AS_Status,
         ASB_Body,
         ASB_ContentType,
         ASB_Data,
         ASB_EstimatedDataSize,
+        ASB_NativeBodyType,
         ASB_Truncated,
         ASB_Type,
         EM_DateReceived,
@@ -200,6 +366,25 @@ def _build_itemops_wbxml_response(response_items: List[Dict]) -> bytes:
         # <Status>1</Status>
         w.start(AS_Status)
         w.write_str("1")
+        w.end()
+
+        # <CollectionId> / <ServerId> so the client can correlate the fetch response
+        collection_id = str(item.get("collection_id") or "")
+        server_id = str(item.get("server_id") or "")
+
+        if collection_id:
+            w.start(AS_CollectionId)
+            w.write_str(collection_id)
+            w.end()
+
+        if server_id:
+            w.start(AS_ServerId)
+            w.write_str(server_id)
+            w.end()
+
+        # Explicit Class helps certain clients (notably iOS) treat the payload as an Email item
+        w.start(AS_Class)
+        w.write_str("Email")
         w.end()
 
         # <Properties>
@@ -260,7 +445,13 @@ def _build_itemops_wbxml_response(response_items: List[Dict]) -> bytes:
             w.start(ASB_ContentType)
             w.write_str(content_type)
             w.end()
+
         w.end()  # </Body>
+
+        native_type = body_payload.get("native_type") or body_payload["type"]
+        w.start(ASB_NativeBodyType)
+        w.write_str(native_type)
+        w.end()
 
         w.page(2)  # Back to Email codepage
         w.end()  # </Properties>
@@ -1232,26 +1423,26 @@ async def eas_dispatch(
         # When client sends SyncKey=0, it means "I have nothing, start fresh"
         # We MUST reset last_synced_email_id BEFORE filtering emails!
         if client_sync_key == "0":
-            # Preserve state if we already have a non-zero server state; avoid hard resets on reconnects
-            if not state.sync_key or state.sync_key == "0":
-                state.synckey_counter = 1
-                state.sync_key = "1"
-                state.last_synced_email_id = (
-                    0  # RESET PAGINATION for first-time sync only
-                )
-                state.synced_email_ids = None
-                state.pending_sync_key = None
-                state.pending_max_email_id = None
-                state.pending_item_ids = None
-                db.commit()
+            previous_server_key = state.sync_key or "0"
 
+            state.synckey_counter = 1
+            state.sync_key = "1"
+            state.last_synced_email_id = 0  # RESET PAGINATION for first-time sync only
+            state.synced_email_ids = None
+            state.pending_sync_key = None
+            state.pending_max_email_id = None
+            state.pending_item_ids = None
+            db.commit()
+
+            if previous_server_key != "1":
                 _write_json_line(
                     "activesync/activesync.log",
                     {
                         "event": "sync_initial_reset_EARLY",
                         "device_id": device_id,
                         "collection_id": collection_id,
-                        "message": "CRITICAL: Reset last_synced_email_id BEFORE email query",
+                        "previous_server_key": previous_server_key,
+                        "message": "CRITICAL: Resetting server SyncKey to 1 for fresh client request",
                     },
                 )
 
@@ -2464,32 +2655,36 @@ async def eas_dispatch(
     if cmd == "itemoperations":
         # Parse WBXML request to extract fetch requests
         request_body_bytes = await request.body()
-        
+
         try:
             # Parse WBXML to extract fetch requests
             fetches = _parse_itemops_fetches(request_body_bytes)
-            
+
             # Fallback: allow simple query param fetch if WBXML parser yields nothing
             if not fetches:
                 qp_collection = request.query_params.get("CollectionId")
                 qp_server = request.query_params.get("ServerId")
                 if qp_server:
                     fetches = [(qp_collection or "1", qp_server, [])]
-            
+
             if not fetches:
                 # No valid fetch requests
                 xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
-                return Response(content=xml, media_type="application/xml", headers=headers)
-            
+                return Response(
+                    content=xml, media_type="application/xml", headers=headers
+                )
+
             # Process each fetch request
             email_service = EmailService(db)
             response_items = []
-            
+
             for collection_id, server_id, body_prefs in fetches:
                 # Get the email
-                emails = email_service.get_user_emails(current_user.id, "inbox", limit=1000)
+                emails = email_service.get_user_emails(
+                    current_user.id, "inbox", limit=1000
+                )
                 target_email = next((e for e in emails if str(e.id) == server_id), None)
-                
+
                 if target_email:
                     # Convert email to dict format
                     email_dict = {
@@ -2502,22 +2697,26 @@ async def eas_dispatch(
                         "created_at": target_email.received_at,
                         "mime_content": getattr(target_email, "mime_content", None),
                     }
-                    
+
                     # Select body preference (prefer MIME for single-item fetch)
-                    body_type, truncation_size = _select_body_pref(body_prefs, is_single_item_fetch=True)
-                    
+                    body_type, truncation_size = _select_body_pref(
+                        body_prefs, is_single_item_fetch=True
+                    )
+
                     # Build response item
-                    response_items.append({
-                        "collection_id": collection_id,
-                        "server_id": server_id,
-                        "email": email_dict,
-                        "body_type": body_type,
-                        "truncation_size": truncation_size,
-                    })
-            
+                    response_items.append(
+                        {
+                            "collection_id": collection_id,
+                            "server_id": server_id,
+                            "email": email_dict,
+                            "body_type": body_type,
+                            "truncation_size": truncation_size,
+                        }
+                    )
+
             # Build WBXML ItemOperations response
             wbxml_payload = _build_itemops_wbxml_response(response_items)
-            
+
             _write_json_line(
                 "activesync/activesync.log",
                 {
@@ -2527,9 +2726,9 @@ async def eas_dispatch(
                     "body_types": [item["body_type"] for item in response_items],
                 },
             )
-            
+
             return _wbxml_response(wbxml_payload, headers)
-            
+
         except Exception as e:
             _write_json_line(
                 "activesync/activesync.log",
@@ -2586,14 +2785,23 @@ async def eas_dispatch(
             return Response(content=xml, media_type="application/xml", headers=headers)
         try:
             from ..database import EmailAttachment
+
             att = (
                 db.query(EmailAttachment)
-                .filter((EmailAttachment.uuid == file_ref) | (EmailAttachment.id == file_ref))
+                .filter(
+                    (EmailAttachment.uuid == file_ref)
+                    | (EmailAttachment.id == file_ref)
+                )
                 .first()
             )
             if not att or not att.file_path or not os.path.exists(att.file_path):
                 xml = f'<GetAttachment xmlns="GetAttachment"><Status>6</Status></GetAttachment>'
-                return Response(content=xml, media_type="application/xml", headers=headers, status_code=404)
+                return Response(
+                    content=xml,
+                    media_type="application/xml",
+                    headers=headers,
+                    status_code=404,
+                )
             # Stream file
             content_type = att.content_type or "application/octet-stream"
             with open(att.file_path, "rb") as f:
@@ -2606,7 +2814,12 @@ async def eas_dispatch(
                 {"event": "getattachment_error", "error": str(e), "file_ref": file_ref},
             )
             xml = f'<GetAttachment xmlns="GetAttachment"><Status>2</Status></GetAttachment>'
-            return Response(content=xml, media_type="application/xml", headers=headers, status_code=500)
+            return Response(
+                content=xml,
+                media_type="application/xml",
+                headers=headers,
+                status_code=500,
+            )
 
     # MS-ASCMD Calendar command implementation
     if cmd == "calendar":
