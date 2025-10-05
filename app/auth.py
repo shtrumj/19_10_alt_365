@@ -1,17 +1,12 @@
-import os
-from datetime import datetime, timedelta
-from typing import Optional, Union
+import base64
 import hashlib
 import hmac
+import os
 import secrets
+from datetime import datetime, timedelta
+from io import BytesIO
+from typing import Optional
 
-from fastapi import Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, HTTPBasic, HTTPBasicCredentials
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from sqlalchemy.orm import Session
-import base64
 # WebAuthn imports removed for compatibility
 # import webauthn
 # from webauthn import generate_registration_options, verify_registration_response
@@ -20,8 +15,17 @@ import base64
 # from webauthn.helpers.structs import UserVerificationRequirement
 import pyotp
 import qrcode
-from io import BytesIO
-import base64
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
 
 from .database import User, get_db
 from .models import TokenData
@@ -139,22 +143,182 @@ def get_current_user_from_cookie(request: Request, db: Session = Depends(get_db)
 
 def get_current_user_from_basic_auth(
     credentials: HTTPBasicCredentials = Depends(basic_security),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get current user from Basic Authentication (for ActiveSync)"""
-    user = authenticate_user(db, credentials.username, credentials.password)
+    from .diagnostic_logger import _write_json_line
+
+    # Enhanced authentication debugging - log everything
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "auth_attempt_detailed",
+            "username": credentials.username,
+            "password_length": len(credentials.password) if credentials.password else 0,
+            "password_starts_with": (
+                credentials.password[:3] if credentials.password else "None"
+            ),
+            "timestamp": datetime.utcnow().isoformat(),
+            "auth_type": "basic",
+            "debug_info": {
+                "username_type": type(credentials.username).__name__,
+                "password_type": type(credentials.password).__name__,
+                "username_empty": not credentials.username,
+                "password_empty": not credentials.password,
+            },
+        },
+    )
+
+    # Check if credentials are valid before attempting authentication
+    if not credentials.username or not credentials.password:
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "auth_failed_empty_credentials",
+                "username_provided": bool(credentials.username),
+                "password_provided": bool(credentials.password),
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    # Try to authenticate user
+    try:
+        user = authenticate_user(db, credentials.username, credentials.password)
+    except Exception as e:
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "auth_exception",
+                "username": credentials.username,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication error",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
     if not user:
+        # Log authentication failure with detailed reason
+        # Check if user exists by username
+        user_by_username = None
+        user_by_email = None
+
+        try:
+            user_by_username = (
+                db.query(User).filter(User.username == credentials.username).first()
+            )
+        except Exception as e:
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "auth_username_lookup_error",
+                    "username": credentials.username,
+                    "error": str(e),
+                    "timestamp": datetime.utcnow().isoformat(),
+                },
+            )
+
+        try:
+            user_by_email = (
+                db.query(User).filter(User.email == credentials.username).first()
+            )
+        except Exception as e:
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "auth_email_lookup_error",
+                    "email": credentials.username,
+                    "error": str(e),
+                    "timestamp": datetime.utcnow().isoformat(),
+                },
+            )
+
+        failure_reason = "user_not_found"
+        if user_by_username or user_by_email:
+            failure_reason = "invalid_password"
+
+            # Additional debugging for password verification
+            if user_by_username:
+                try:
+                    password_check = verify_password(
+                        credentials.password, user_by_username.hashed_password
+                    )
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "auth_password_verification",
+                            "username": credentials.username,
+                            "password_match": password_check,
+                            "hashed_password_exists": bool(
+                                user_by_username.hashed_password
+                            ),
+                            "timestamp": datetime.utcnow().isoformat(),
+                        },
+                    )
+                except Exception as e:
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "auth_password_verification_error",
+                            "username": credentials.username,
+                            "error": str(e),
+                            "timestamp": datetime.utcnow().isoformat(),
+                        },
+                    )
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "auth_failed_detailed",
+                "username": credentials.username,
+                "reason": failure_reason,
+                "user_exists_by_username": user_by_username is not None,
+                "user_exists_by_email": user_by_email is not None,
+                "username_found": (
+                    user_by_username.username if user_by_username else None
+                ),
+                "email_found": user_by_email.email if user_by_email else None,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
+
+    # Log successful authentication
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "auth_success_detailed",
+            "username": credentials.username,
+            "user_id": user.id,
+            "user_email": user.email,
+            "user_username": user.username,
+            "user_full_name": user.full_name,
+            "user_created_at": user.created_at.isoformat() if user.created_at else None,
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+
     return user
 
 
 # ============================================================================
 # MODERN AUTHENTICATION METHODS
 # ============================================================================
+
 
 def generate_totp_secret() -> str:
     """Generate a TOTP secret for 2FA"""
@@ -164,19 +328,18 @@ def generate_totp_secret() -> str:
 def generate_totp_qr_code(user_email: str, secret: str) -> str:
     """Generate QR code for TOTP setup"""
     totp_uri = pyotp.totp.TOTP(secret).provisioning_uri(
-        name=user_email,
-        issuer_name=TOTP_ISSUER
+        name=user_email, issuer_name=TOTP_ISSUER
     )
-    
+
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
     qr.add_data(totp_uri)
     qr.make(fit=True)
-    
+
     img = qr.make_image(fill_color="black", back_color="white")
     buffer = BytesIO()
-    img.save(buffer, format='PNG')
+    img.save(buffer, format="PNG")
     buffer.seek(0)
-    
+
     return base64.b64encode(buffer.getvalue()).decode()
 
 
@@ -194,12 +357,17 @@ def generate_webauthn_registration_options(user_id: str, user_email: str) -> dic
         "rp": {"id": WEBAUTHN_RP_ID, "name": WEBAUTHN_RP_NAME},
         "user": {"id": user_id, "name": user_email, "displayName": user_email},
         "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
-        "authenticatorSelection": {"authenticatorAttachment": "platform", "userVerification": "preferred"},
-        "attestation": "direct"
+        "authenticatorSelection": {
+            "authenticatorAttachment": "platform",
+            "userVerification": "preferred",
+        },
+        "attestation": "direct",
     }
 
 
-def verify_webauthn_registration(credential: dict, expected_challenge: bytes, expected_origin: str) -> bool:
+def verify_webauthn_registration(
+    credential: dict, expected_challenge: bytes, expected_origin: str
+) -> bool:
     """Verify WebAuthn registration (simplified)"""
     # Simplified verification - in production, use proper WebAuthn library
     return True
@@ -209,12 +377,19 @@ def generate_webauthn_authentication_options(credential_ids: list) -> dict:
     """Generate WebAuthn authentication options (simplified)"""
     return {
         "challenge": "simplified_challenge",
-        "allowCredentials": [{"id": cred_id, "type": "public-key"} for cred_id in credential_ids],
-        "userVerification": "preferred"
+        "allowCredentials": [
+            {"id": cred_id, "type": "public-key"} for cred_id in credential_ids
+        ],
+        "userVerification": "preferred",
     }
 
 
-def verify_webauthn_authentication(credential: dict, expected_challenge: bytes, expected_origin: str, credential_public_key: bytes) -> bool:
+def verify_webauthn_authentication(
+    credential: dict,
+    expected_challenge: bytes,
+    expected_origin: str,
+    credential_public_key: bytes,
+) -> bool:
     """Verify WebAuthn authentication (simplified)"""
     # Simplified verification - in production, use proper WebAuthn library
     return True
@@ -245,32 +420,36 @@ def verify_oauth2_state(state: str, expected_state: str) -> bool:
     return hmac.compare_digest(state, expected_state)
 
 
-def create_oauth2_authorization_url(client_id: str, redirect_uri: str, scope: str, state: str) -> str:
+def create_oauth2_authorization_url(
+    client_id: str, redirect_uri: str, scope: str, state: str
+) -> str:
     """Create OAuth2 authorization URL"""
     params = {
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "scope": scope,
-        "state": state
+        "state": state,
     }
     query_string = "&".join([f"{k}={v}" for k, v in params.items()])
     return f"https://accounts.google.com/o/oauth2/v2/auth?{query_string}"
 
 
-def exchange_oauth2_code(code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict:
+def exchange_oauth2_code(
+    code: str, client_id: str, client_secret: str, redirect_uri: str
+) -> dict:
     """Exchange OAuth2 authorization code for tokens"""
     import requests
-    
+
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "code": code,
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
-        "grant_type": "authorization_code"
+        "grant_type": "authorization_code",
     }
-    
+
     response = requests.post(token_url, data=data)
     return response.json()
 
@@ -278,10 +457,10 @@ def exchange_oauth2_code(code: str, client_id: str, client_secret: str, redirect
 def get_oauth2_user_info(access_token: str) -> dict:
     """Get user info from OAuth2 provider"""
     import requests
-    
+
     user_info_url = "https://www.googleapis.com/oauth2/v2/userinfo"
     headers = {"Authorization": f"Bearer {access_token}"}
-    
+
     response = requests.get(user_info_url, headers=headers)
     return response.json()
 
@@ -289,7 +468,7 @@ def get_oauth2_user_info(access_token: str) -> dict:
 def create_saml_assertion(user: User, issuer: str, audience: str) -> str:
     """Create SAML assertion for SSO"""
     from datetime import datetime, timedelta
-    
+
     # This is a simplified SAML assertion - in production, use a proper SAML library
     assertion = {
         "issuer": issuer,
@@ -300,15 +479,17 @@ def create_saml_assertion(user: User, issuer: str, audience: str) -> str:
         "attributes": {
             "email": user.email,
             "username": user.username,
-            "full_name": user.full_name
-        }
+            "full_name": user.full_name,
+        },
     }
-    
+
     # In production, this would be properly signed and encoded
     return base64.b64encode(str(assertion).encode()).decode()
 
 
-def verify_saml_assertion(assertion: str, expected_issuer: str, expected_audience: str) -> dict:
+def verify_saml_assertion(
+    assertion: str, expected_issuer: str, expected_audience: str
+) -> dict:
     """Verify SAML assertion"""
     try:
         # In production, this would properly verify the signature
@@ -325,7 +506,9 @@ def create_ldap_connection(server: str, port: int, use_ssl: bool = True) -> obje
     return {"server": server, "port": port, "ssl": use_ssl}
 
 
-def authenticate_ldap_user(connection: object, username: str, password: str, base_dn: str) -> bool:
+def authenticate_ldap_user(
+    connection: object, username: str, password: str, base_dn: str
+) -> bool:
     """Authenticate user against LDAP (simplified)"""
     # Simplified LDAP authentication - in production, use proper LDAP library
     return username == "testuser" and password == "testpass"

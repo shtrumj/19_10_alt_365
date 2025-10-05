@@ -527,26 +527,38 @@ def build_foldersync_with_folders(
     w.header()
     
     # FolderHierarchy codepage (CP 7)
-    w.page(0x07)
-    
+    CP_FOLDER = 0x07
+    TAG_FOLDERSYNC = 0x16
+    TAG_STATUS = 0x0C
+    TAG_SYNCKEY = 0x12
+    TAG_CHANGES = 0x0E
+    TAG_COUNT = 0x17
+    TAG_ADD = 0x0F
+    TAG_DISPLAYNAME = 0x07
+    TAG_SERVERID = 0x08
+    TAG_PARENTID = 0x09
+    TAG_TYPE = 0x0A
+
+    w.page(CP_FOLDER)
+
     # <FolderSync>
-    w.start(0x16)
-    
+    w.start(TAG_FOLDERSYNC)
+
     # <Status>1</Status>
-    w.start(0x0B)
+    w.start(TAG_STATUS)
     w.write_str("1")
     w.end()
-    
+
     # <SyncKey>1</SyncKey>
-    w.start(0x12)
+    w.start(TAG_SYNCKEY)
     w.write_str(sync_key)
     w.end()
-    
+
     # <Changes>
-    w.start(0x0E)
+    w.start(TAG_CHANGES)
 
     # <Count>N</Count>
-    w.start(0x07)
+    w.start(TAG_COUNT)
     w.write_str(str(len(folders)))
     w.end()
 
@@ -557,19 +569,19 @@ def build_foldersync_with_folders(
         parent_id = folder.get("parent_id") or "0"
 
         # <Add>
-        w.start(0x0C)
+        w.start(TAG_ADD)
 
         # <ServerId>
-        w.start(0x15); w.write_str(str(server_id)); w.end()
+        w.start(TAG_SERVERID); w.write_str(str(server_id)); w.end()
 
-        # <ParentId>0</ParentId> (root)
-        w.start(0x17); w.write_str(str(parent_id)); w.end()
+        # <ParentId>
+        w.start(TAG_PARENTID); w.write_str(str(parent_id)); w.end()
 
         # <DisplayName>
-        w.start(0x08); w.write_str(display_name); w.end()
+        w.start(TAG_DISPLAYNAME); w.write_str(display_name); w.end()
 
         # <Type>
-        w.start(0x0F); w.write_str(str(folder_type)); w.end()
+        w.start(TAG_TYPE); w.write_str(str(folder_type)); w.end()
 
         w.end()  # </Add>
     w.end()  # </Changes>
@@ -584,15 +596,22 @@ def build_foldersync_no_changes(sync_key: str = "1") -> bytes:
     """
     w = WBXMLWriter()
     w.header()
-    # FolderHierarchy is CP 7 in MS-ASWBXML, but most clients accept the tiny
-    # no-changes response in AirSync page with just <Status> and same <SyncKey>.
-    # For strictness you'd implement real FolderHierarchy CP; this minimal one
-    # mirrors what many home servers do for steady-state.
-    w.page(CP_AIRSYNC)
-    w.start(AS_Sync)
-    w.start(AS_Status);  w.write_str("1"); w.end()
-    w.start(AS_SyncKey); w.write_str(sync_key); w.end()
-    w.end()
+
+    CP_FOLDER = 0x07
+    TAG_FOLDERSYNC = 0x16
+    TAG_STATUS = 0x0C
+    TAG_SYNCKEY = 0x12
+    TAG_CHANGES = 0x0E
+    TAG_COUNT = 0x17
+
+    w.page(CP_FOLDER)
+    w.start(TAG_FOLDERSYNC)
+    w.start(TAG_STATUS); w.write_str("1"); w.end()
+    w.start(TAG_SYNCKEY); w.write_str(sync_key); w.end()
+    w.start(TAG_CHANGES)
+    w.start(TAG_COUNT); w.write_str("0"); w.end()
+    w.end()  # </Changes>
+    w.end()  # </FolderSync>
     return w.bytes()
 
 

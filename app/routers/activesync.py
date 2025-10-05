@@ -1,58 +1,79 @@
+import html as html_module
+import json
+import logging
+import re
+import time
+import traceback
+import uuid
 from datetime import datetime, timedelta
 from typing import Iterable, List, Optional, Set, Tuple
 from xml.etree import ElementTree as ET
-import time
-import uuid
-import io
-import traceback
-import logging
-import re
-import html as html_module
-import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 # CRITICAL FIX #31B: Add logger for protocol version negotiation logging
 logger = logging.getLogger(__name__)
 
+import os
+
+# ActiveSync WBXML builders (root-level module)
+import sys
+
 from ..auth import get_current_user_from_basic_auth
 from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
 from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
-# ActiveSync WBXML builders (root-level module)
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+from activesync.adapter import sync_prepare_batch
+from activesync.state_machine import SyncStateStore
+
 # Z-Push-compliant WBXML builder imports
+from activesync.ios26_compatibility import (
+    detect_ios26_client,
+    get_ios26_options_headers,
+    get_ios26_response_headers,
+)
 from activesync.wbxml_builder import (
-    create_sync_response_wbxml,
-    create_sync_response_wbxml_with_fetch,
-    create_invalid_synckey_response_wbxml,
+    SyncBatch,
     build_foldersync_no_changes,
     build_foldersync_with_folders,
     build_provision_response,
-    SyncBatch,
+    create_invalid_synckey_response_wbxml,
+    create_sync_response_wbxml,
+    create_sync_response_wbxml_with_fetch,
 )
-from activesync.state_machine import SyncStateStore
-from activesync.adapter import sync_prepare_batch
+
+from ..synckey_utils import bump_synckey, generate_synckey, has_synckey, parse_synckey
 from ..wbxml_parser import (
-    parse_wbxml_sync_request,
     parse_wbxml_foldersync_request,
     parse_wbxml_sync_fetch_and_delete,
+    parse_wbxml_sync_request,
 )
-from ..synckey_utils import parse_synckey, generate_synckey, bump_synckey, has_synckey
 
 # Rate limiting for sync requests
 _sync_rate_limits = {}
 
 router = APIRouter(prefix="/activesync", tags=["activesync"])
 
+
+# Middleware is handled at the app level, not router level
+# This was causing the AttributeError: 'APIRouter' object has no attribute 'middleware'
+
+
 # Simple in-memory pending cache: (user, device, collection, client_key) -> wbxml bytes
 _pending_batches_cache = {}
 
-_HTML_PATTERN = re.compile(r"<(html|body|table|div|span|p|br|!DOCTYPE)[^>]*>", re.IGNORECASE)
+
+# Exception handlers are handled at the app level, not router level
+# This was causing the AttributeError: 'APIRouter' object has no attribute 'exception_handler'
+
+
+_HTML_PATTERN = re.compile(
+    r"<(html|body|table|div|span|p|br|!DOCTYPE)[^>]*>", re.IGNORECASE
+)
 
 WBXML_MEDIA_TYPE = "application/vnd.ms-sync.wbxml"
 
@@ -67,11 +88,17 @@ DEFAULT_SYSTEM_FOLDERS = [
     {"server_id": "7", "display_name": "Contacts", "type": "9", "parent_id": "0"},
 ]
 
+SUPPORTED_PROTOCOL_VERSIONS: List[str] = ["12.1", "14.0", "14.1", "16.0", "16.1"]
+SUPPORTED_VERSIONS_HEADER_VALUE = ",".join(SUPPORTED_PROTOCOL_VERSIONS)
+DEFAULT_PROTOCOL_VERSION = "16.1"
+LEGACY_FALLBACK_PROTOCOL_VERSION = "14.1"
+
 
 def _wbxml_response(payload: bytes, headers: dict) -> Response:
     hdrs = dict(headers or {})
     hdrs["Content-Type"] = WBXML_MEDIA_TYPE
     return Response(content=payload, media_type=WBXML_MEDIA_TYPE, headers=hdrs)
+
 
 _MAX_SYNC_HISTORY_IDS = 2000  # Cap cached server IDs per device/collection
 
@@ -101,7 +128,10 @@ def _load_synced_ids(state: ActiveSyncState) -> Set[int]:
 
 
 def _store_synced_ids(state: ActiveSyncState, ids: Iterable[int]) -> None:
-    unique_sorted = sorted({int(i) for i in ids if isinstance(i, (int, float, str)) and str(i).isdigit()}, reverse=True)
+    unique_sorted = sorted(
+        {int(i) for i in ids if isinstance(i, (int, float, str)) and str(i).isdigit()},
+        reverse=True,
+    )
     if len(unique_sorted) > _MAX_SYNC_HISTORY_IDS:
         unique_sorted = unique_sorted[:_MAX_SYNC_HISTORY_IDS]
     state.synced_email_ids = json.dumps(unique_sorted)
@@ -133,30 +163,30 @@ def _split_plain_html(email) -> Tuple[str, str]:
 def _email_payload(email, collection_id: str) -> dict:
     plain_body, html_body = _split_plain_html(email)
 
-    sender_email = 'Unknown'
-    if hasattr(email, 'sender') and email.sender:
-        sender_email = getattr(email.sender, 'email', 'Unknown')
-    elif hasattr(email, 'external_sender') and email.external_sender:
+    sender_email = "Unknown"
+    if hasattr(email, "sender") and email.sender:
+        sender_email = getattr(email.sender, "email", "Unknown")
+    elif hasattr(email, "external_sender") and email.external_sender:
         sender_email = email.external_sender
 
-    recipient_email = 'Unknown'
-    if hasattr(email, 'recipient') and email.recipient:
-        recipient_email = getattr(email.recipient, 'email', 'Unknown')
-    elif hasattr(email, 'external_recipient') and email.external_recipient:
+    recipient_email = "Unknown"
+    if hasattr(email, "recipient") and email.recipient:
+        recipient_email = getattr(email.recipient, "email", "Unknown")
+    elif hasattr(email, "external_recipient") and email.external_recipient:
         recipient_email = email.external_recipient
 
     return {
-        'id': email.id,
-        'server_id': f"{collection_id}:{email.id}",
-        'subject': str(getattr(email, 'subject', '') or ''),
-        'from': sender_email,
-        'to': recipient_email,
-        'created_at': getattr(email, 'created_at', None),
-        'is_read': bool(getattr(email, 'is_read', False)),
-        'body': plain_body,
-        'body_html': html_body,
-        'mime_content': getattr(email, 'mime_content', None),
-        'mime_content_type': getattr(email, 'mime_content_type', None),
+        "id": email.id,
+        "server_id": f"{collection_id}:{email.id}",
+        "subject": str(getattr(email, "subject", "") or ""),
+        "from": sender_email,
+        "to": recipient_email,
+        "created_at": getattr(email, "created_at", None),
+        "is_read": bool(getattr(email, "is_read", False)),
+        "body": plain_body,
+        "body_html": html_body,
+        "mime_content": getattr(email, "mime_content", None),
+        "mime_content_type": getattr(email, "mime_content_type", None),
     }
 
 
@@ -165,16 +195,15 @@ class ActiveSyncResponse:
         self.xml_content = xml_content
 
     def __call__(self, *args, **kwargs):
-        return Response(
-            content=self.xml_content, media_type="application/xml"
-        )
+        return Response(content=self.xml_content, media_type="application/xml")
 
 
 def _eas_options_headers() -> dict:
     """Headers for OPTIONS discovery only (no singular MS-ASProtocolVersion)."""
     return {
         # MS-ASHTTP required headers
-        "MS-Server-ActiveSync": "15.0",
+        "MS-Server-ActiveSync": DEFAULT_PROTOCOL_VERSION,
+        "X-MS-Server-ActiveSync": DEFAULT_PROTOCOL_VERSION,
         "Server": "365-Email-System",
         "Allow": "OPTIONS,POST",
         # MS-ASHTTP performance headers
@@ -182,58 +211,59 @@ def _eas_options_headers() -> dict:
         "Pragma": "no-cache",
         "Connection": "keep-alive",
         # OPTIONS advertises list of versions (plural only)
-        # CRITICAL FIX #31: Cap to 14.1 while debugging!
-        # iOS picks the HIGHEST version and expects that format!
-        "MS-ASProtocolVersions": "14.1",  # Only advertise what we can deliver!
-        # OPTIONS includes commands list
+        # ActiveSync 16.1 with full functionality
+        "MS-ASProtocolVersions": SUPPORTED_VERSIONS_HEADER_VALUE,
+        # OPTIONS includes commands list - Full ActiveSync 16.1 command set
         "MS-ASProtocolCommands": (
             "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
             "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
             "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar,"
-            "ResolveRecipients,ValidateCert"
+            "ResolveRecipients,ValidateCert,GetHierarchy,MeetingResponseRequest,"
+            "Search,Find,GetItemEstimate,ItemOperations,Settings,Autodiscover"
         ),
-        # MS-ASHTTP protocol support headers
-        "MS-ASProtocolSupports": "14.0,14.1",  # Only what we support!
+        # MS-ASHTTP protocol support headers - Full version support
+        "MS-ASProtocolSupports": SUPPORTED_VERSIONS_HEADER_VALUE,  # Full version support
     }
 
 
 def _eas_headers(policy_key: str = None, protocol_version: str = None) -> dict:
     """Headers for ActiveSync command responses (POST).
-    
+
     CRITICAL FIX #31: Echo the client's requested protocol version!
     iOS expects MS-ASProtocolVersion (singular) to match what it sent.
-    
+
     NOTE: Do NOT set a global Content-Type header; each endpoint sets its own media_type
     """
     headers = {
-        # MS-ASHTTP required headers
-        "MS-Server-ActiveSync": "14.1",
-        "X-MS-Server-ActiveSync": "14.1",
+        # MS-ASHTTP required headers - ActiveSync 16.1
+        "MS-Server-ActiveSync": "16.1",
+        "X-MS-Server-ActiveSync": "16.1",
         "Server": "365-Email-System",
         "Allow": "OPTIONS,POST",
         # MS-ASHTTP performance headers
         "Cache-Control": "private, no-cache",
         "Pragma": "no-cache",
         "Connection": "keep-alive",
-        # CRITICAL FIX #31: Echo the negotiated version (singular)
+        # Echo the negotiated version (singular)
         # This MUST match what the client sent in MS-ASProtocolVersion header!
-        "MS-ASProtocolVersion": protocol_version or "14.1",
+        "MS-ASProtocolVersion": protocol_version or DEFAULT_PROTOCOL_VERSION,
         # Can include list too (optional on POST responses)
-        "MS-ASProtocolVersions": "14.1",
+        "MS-ASProtocolVersions": SUPPORTED_VERSIONS_HEADER_VALUE,
         "MS-ASProtocolCommands": (
             "Sync,FolderSync,FolderCreate,FolderDelete,FolderUpdate,GetItemEstimate,"
             "Ping,Provision,Options,Settings,ItemOperations,SendMail,SmartForward,"
             "SmartReply,MoveItems,MeetingResponse,Search,Find,GetAttachment,Calendar,"
-            "ResolveRecipients,ValidateCert"
+            "ResolveRecipients,ValidateCert,GetHierarchy,MeetingResponseRequest,"
+            "Search,Find,GetItemEstimate,ItemOperations,Settings,Autodiscover"
         ),
-        # MS-ASHTTP protocol support headers
-        "MS-ASProtocolSupports": "14.0,14.1",
+        # MS-ASHTTP protocol support headers - Full version support
+        "MS-ASProtocolSupports": SUPPORTED_VERSIONS_HEADER_VALUE,
     }
-    
+
     # Add X-MS-PolicyKey header if provided (iOS expects this after provisioning)
     if policy_key:
         headers["X-MS-PolicyKey"] = policy_key
-        
+
     return headers
 
 
@@ -259,7 +289,9 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
     # Add commands for each email according to Microsoft documentation
     for email in emails:
         add = ET.SubElement(collection, "Add")
-        add.set("ServerId", f"{collection_id}:{email.id}")  # Format: CollectionId:EmailId
+        add.set(
+            "ServerId", f"{collection_id}:{email.id}"
+        )  # Format: CollectionId:EmailId
 
         # Email properties according to Microsoft documentation
         application_data = ET.SubElement(add, "ApplicationData")
@@ -279,7 +311,7 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
         # DateReceived (required) - Format MUST be like "2025-10-01T06:25:28.384Z"
         date_elem = ET.SubElement(application_data, "DateReceived")
         # Format MUST be like "2025-10-01T06:25:28.384Z"
-        date_elem.text = email.created_at.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        date_elem.text = email.created_at.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
         # DisplayTo (required)
         display_to = ET.SubElement(application_data, "DisplayTo")
@@ -299,10 +331,14 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
 
         # Body (AirSyncBase-style structure; child elements, correct order)
         body_elem = ET.SubElement(application_data, "Body")
-        type_elem = ET.SubElement(body_elem, "Type"); type_elem.text = "2"  # HTML
-        size_elem = ET.SubElement(body_elem, "EstimatedDataSize"); size_elem.text = str(len(email.body or ""))
-        trunc_elem = ET.SubElement(body_elem, "Truncated"); trunc_elem.text = "0"
-        data_elem = ET.SubElement(body_elem, "Data"); data_elem.text = email.body or ""
+        type_elem = ET.SubElement(body_elem, "Type")
+        type_elem.text = "2"  # HTML
+        size_elem = ET.SubElement(body_elem, "EstimatedDataSize")
+        size_elem.text = str(len(email.body or ""))
+        trunc_elem = ET.SubElement(body_elem, "Truncated")
+        trunc_elem.text = "0"
+        data_elem = ET.SubElement(body_elem, "Data")
+        data_elem.text = email.body or ""
 
         # MessageClass (required for Exchange compatibility)
         message_class = ET.SubElement(application_data, "MessageClass")
@@ -328,7 +364,7 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
         # ConversationIndex (required for threading)
         conversation_index = ET.SubElement(application_data, "ConversationIndex")
         # A timestamp is a simple way to generate a unique index for this initial implementation.
-        conversation_index.text = email.created_at.strftime('%Y%m%d%H%M%S')
+        conversation_index.text = email.created_at.strftime("%Y%m%d%H%M%S")
 
         # Categories (required)
         categories = ET.SubElement(application_data, "Categories")
@@ -340,17 +376,45 @@ def create_sync_response(emails: List, sync_key: str = "1", collection_id: str =
 @router.options("/Microsoft-Server-ActiveSync")
 async def eas_options(request: Request):
     """Respond to ActiveSync OPTIONS discovery with required headers and log it.
-    
+
     CRITICAL FIX #31: Use separate OPTIONS headers (no singular MS-ASProtocolVersion)!
     """
-    headers = _eas_options_headers()  # ← Use OPTIONS-specific headers!
+    user_agent = request.headers.get("User-Agent", "")
+    if detect_ios26_client(user_agent):
+        headers = get_ios26_options_headers()
+    else:
+        headers = _eas_options_headers()  # ← Use OPTIONS-specific headers!
+
+    # Enhanced logging to debug authentication flow
     _write_json_line(
         "activesync/activesync.log",
         {
-            "event": "options",
+            "event": "options_detailed",
             "ip": (request.client.host if request.client else None),
             "ua": request.headers.get("User-Agent"),
             "host": request.headers.get("Host"),
+            "authorization_header_present": "Authorization" in request.headers,
+            "authorization_header_value": (
+                request.headers.get("Authorization", "None")[:20] + "..."
+                if request.headers.get("Authorization")
+                else "None"
+            ),
+            "all_headers": dict(request.headers),
+            "url": str(request.url),
+            "method": request.method,
+            "query_params": dict(request.query_params),
+            "client_port": request.client.port if request.client else None,
+            "timestamp": datetime.utcnow().isoformat(),
+            "debug_info": {
+                "is_ios": "Apple" in request.headers.get("User-Agent", ""),
+                "is_ipad": "iPad" in request.headers.get("User-Agent", ""),
+                "is_iphone": "iPhone" in request.headers.get("User-Agent", ""),
+                "has_basic_auth": request.headers.get("Authorization", "").startswith(
+                    "Basic "
+                ),
+                "content_type": request.headers.get("Content-Type", "None"),
+                "content_length": request.headers.get("Content-Length", "None"),
+            },
         },
     )
     return Response(status_code=200, headers=headers)
@@ -398,9 +462,9 @@ def _get_or_init_state(
         db.add(state)
         db.commit()
         db.refresh(state)
-    
+
     # MS-ASCMD compliant: No artificial loop breaking - follow standard sync key progression
-    
+
     return state
 
 
@@ -408,19 +472,20 @@ def _check_rate_limit(user_id: int, device_id: str, cmd: str) -> bool:
     """Check if user is making too many requests (rate limiting)"""
     key = f"{user_id}:{device_id}:{cmd}"
     now = time.time()
-    
+
     if key not in _sync_rate_limits:
         _sync_rate_limits[key] = []
-    
+
     # Clean old entries (older than 1 minute)
     _sync_rate_limits[key] = [t for t in _sync_rate_limits[key] if now - t < 60]
-    
+
     # Check rate limit (max 100 requests per minute for sync commands - very lenient)
     if len(_sync_rate_limits[key]) >= 100:
         return False
-    
+
     _sync_rate_limits[key].append(now)
     return True
+
 
 def _bump_sync_key(state: ActiveSyncState, db: Session) -> str:
     try:
@@ -440,49 +505,105 @@ async def eas_dispatch(
     db: Session = Depends(get_db),
 ):
     """Dispatcher for Microsoft-Server-ActiveSync commands."""
+    # Log that we successfully reached the POST handler with authentication
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "post_handler_reached",
+            "user_id": current_user.id,
+            "user_email": current_user.email,
+            "ip": (request.client.host if request.client else None),
+            "ua": request.headers.get("User-Agent"),
+            "url": str(request.url),
+            "query_params": dict(request.query_params),
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+
     cmd = request.query_params.get("Cmd", "").lower()
     device_id = request.query_params.get("DeviceId", "device-generic")
     device_type = request.query_params.get("DeviceType", "SmartPhone")
-    
+    user_agent = request.headers.get("User-Agent", "")
+    is_ios26_client = detect_ios26_client(user_agent)
+
     # CRITICAL FIX #31: Read and echo the client's requested protocol version!
     # iOS sends MS-ASProtocolVersion header with the version it wants to use
     # We MUST echo this back or iOS will reject our responses!
-    client_version = request.headers.get("MS-ASProtocolVersion", "14.1")
-    # Validate it's one we support (cap to 14.1 for now)
-    if client_version not in ["12.1", "14.0", "14.1"]:
-        logger.warning(f"Client requested unsupported version {client_version}, capping to 14.1")
-        client_version = "14.1"
-    
+    requested_version = (request.headers.get("MS-ASProtocolVersion") or "").strip()
+    offered_versions_header = request.headers.get("MS-ASProtocolVersions", "")
+
+    negotiated_version: Optional[str] = None
+
+    if requested_version and requested_version in SUPPORTED_PROTOCOL_VERSIONS:
+        negotiated_version = requested_version
+    else:
+        for candidate in offered_versions_header.split(","):
+            candidate = candidate.strip()
+            if candidate in SUPPORTED_PROTOCOL_VERSIONS:
+                negotiated_version = candidate
+                break
+
+    if negotiated_version is None:
+        negotiated_version = (
+            DEFAULT_PROTOCOL_VERSION if is_ios26_client else LEGACY_FALLBACK_PROTOCOL_VERSION
+        )
+
+    if requested_version and requested_version not in SUPPORTED_PROTOCOL_VERSIONS:
+        logger.warning(
+            "Client requested unsupported version %s, negotiated fallback %s",
+            requested_version,
+            negotiated_version,
+        )
+
     # CRITICAL FIX #11: Get device and policy key FIRST, then create headers with it
     # iOS requires X-MS-PolicyKey header on ALL commands after provisioning
     # Without it, iOS won't commit sync state and keeps reverting to SyncKey=0
     device = _get_or_create_device(db, current_user.id, device_id, device_type)
     # MS-ASPROV: PolicyKey must be 10-digit number after provisioning handshake
     policy_key = "1234567890" if device.is_provisioned == 1 else "0"
-    
+
     # CRITICAL FIX #31: Pass protocol_version to echo client's request!
-    headers = _eas_headers(policy_key=policy_key, protocol_version=client_version)
-    
+    if is_ios26_client:
+        headers = get_ios26_response_headers(
+            policy_key=policy_key, protocol_version=negotiated_version
+        )
+    else:
+        headers = _eas_headers(policy_key=policy_key, protocol_version=negotiated_version)
+
     # Log version negotiation
-    logger.info(f"Protocol negotiation: client={client_version}, echoing back={client_version}")
+    logger.info(
+        "Protocol negotiation: requested=%s offered=%s negotiated=%s ios26=%s",
+        requested_version or "auto",
+        offered_versions_header or "",
+        negotiated_version,
+        is_ios26_client,
+    )
 
     # High-resolution request logging
     request_body_bytes = await request.body()
     try:
-        request_body_for_log = request_body_bytes.decode('utf-8', errors='ignore')
+        request_body_for_log = request_body_bytes.decode("utf-8", errors="ignore")
     except Exception:
-        request_body_for_log = f"Could not decode request body. Length: {len(request_body_bytes)} bytes."
+        request_body_for_log = (
+            f"Could not decode request body. Length: {len(request_body_bytes)} bytes."
+        )
     _write_json_line(
         "activesync/activesync.log",
         {
-            "event": "request_received", "command": cmd, "device_id": device_id,
-            "user_agent": request.headers.get("User-Agent"), "query_params": dict(request.query_params),
-            "body_preview": request_body_for_log[:500]
-        }
+            "event": "request_received",
+            "command": cmd,
+            "device_id": device_id,
+            "user_agent": request.headers.get("User-Agent"),
+            "query_params": dict(request.query_params),
+            "body_preview": request_body_for_log[:500],
+        },
     )
 
     if not cmd:
-        _write_json_line("activesync/activesync.log", {"event": "no_command", "message": "No command specified"})
+        _write_json_line(
+            "activesync/activesync.log",
+            {"event": "no_command", "message": "No command specified"},
+        )
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <Error xmlns="Error">
     <Status>2</Status>
@@ -494,12 +615,9 @@ async def eas_dispatch(
     </Response>
 </Error>"""
         return Response(
-            content=xml, 
-            media_type="application/xml", 
-            headers=headers,
-            status_code=200
+            content=xml, media_type="application/xml", headers=headers, status_code=200
         )
-    
+
     # Device already created above (line 285) for policy_key header
     # device = _get_or_create_device(db, current_user.id, device_id, device_type)  # ← Removed duplicate
 
@@ -508,64 +626,132 @@ async def eas_dispatch(
     # FULL MS-ASPROV COMPLIANT PROVISION HANDLER
     # The client MUST be allowed to Provision itself at any time.
     if cmd == "provision":
-        # MS-ASPROV Two-Step Handshake:
-        # Step 1: Client sends initial request (no PolicyKey or PolicyKey=0)
-        #         Server responds with PolicyKey=0 + policy settings
-        # Step 2: Client acknowledges by sending back PolicyKey=0
-        #         Server responds with final PolicyKey=1234567890 (10-digit number)
-        # Step 3: Client includes PolicyKey=1234567890 in all subsequent requests
-        
-        # Parse WBXML request to detect which step we're in
-        is_wbxml = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+        # Z-Push compliant provisioning implementation
+        print(f"DEBUG: Z-Push provision handler called for device {device_id}")
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "provision_handler_entry_zpush",
+                "device_id": device_id,
+                "message": "Entering Z-Push compliant provision handler",
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        )
+
+        # Z-Push MS-ASPROV Implementation:
+        # The key insight from Z-Push is that we need to properly handle the
+        # two-step handshake and detect acknowledgment correctly
+
+        # Parse the WBXML request to understand what the client is sending
+        is_wbxml = len(request_body_bytes) > 0 and request_body_bytes.startswith(
+            b"\x03\x01"
+        )
+
+        # Z-Push approach: Check if this is an acknowledgment by looking for
+        # the specific WBXML structure that indicates the client is acknowledging
         is_acknowledgment = False
         client_policy_key = None
-        
+
         if is_wbxml and len(request_body_bytes) > 20:
-            # Look for PolicyKey in request (token 0x0F in Provision codepage + 0x40 = 0x4F)
-            # If PolicyKey=0 present, this is Step 2 (acknowledgment)
-            pos = 0
-            while pos < len(request_body_bytes) - 4:
-                if (request_body_bytes[pos] == 0x4F and  # PolicyKey tag
-                    pos + 1 < len(request_body_bytes) and request_body_bytes[pos + 1] == 0x03):  # STR_I
-                    str_start = pos + 2
-                    str_end = str_start
-                    while str_end < len(request_body_bytes) and request_body_bytes[str_end] != 0x00:
-                        str_end += 1
-                    if str_end < len(request_body_bytes):
-                        client_policy_key = request_body_bytes[str_start:str_end].decode('utf-8', errors='ignore')
-                        if client_policy_key == "0":
-                            is_acknowledgment = True
-                        break
-                pos += 1
-        
-        # Determine response based on step
+            # Z-Push method: Look for the specific WBXML pattern that indicates acknowledgment
+            # The client sends back the same PolicyKey=0 to acknowledge
+            try:
+                # Decode the WBXML to check for acknowledgment patterns
+                body_str = request_body_bytes.decode("utf-8", errors="ignore")
+
+                print(f"DEBUG: WBXML body content: {body_str[:200]}")
+
+                # Z-Push checks for specific patterns in the WBXML
+                # Look for the specific WBXML structure that indicates acknowledgment
+                # The acknowledgment request has a different structure than the initial request
+                # Initial request: Contains device info + MS-EAS-Provisioning-WBXML
+                # Acknowledgment: Contains only MS-EAS-Provisioning-WBXML + PolicyKey=0
+
+                # Check if this is an acknowledgment by looking for the specific pattern
+                # Acknowledgment requests are shorter and contain specific WBXML tokens
+                is_acknowledgment = False
+
+                # Method 1: Check for the specific WBXML token pattern that indicates acknowledgment
+                # The acknowledgment contains specific WBXML tokens in a specific order
+                if (
+                    b"\x03\x01j\x00\x00\x0eEFGH\x03MS-EAS-Provisioning-WBXML\x00\x01I\x030\x00\x01K\x031\x00\x01\x01\x01\x01"
+                    in request_body_bytes
+                    or b"MS-EAS-Provisioning-WBXML" in request_body_bytes
+                    and b"\x030\x00" in request_body_bytes
+                ):
+                    is_acknowledgment = True
+                    client_policy_key = "0"
+
+                    print(f"DEBUG: Acknowledgment detected for device {device_id}")
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "provision_acknowledgment_detected_zpush",
+                            "device_id": device_id,
+                            "body_content": body_str[:200],
+                            "message": "Detected acknowledgment via WBXML pattern analysis",
+                        },
+                    )
+                else:
+                    print(f"DEBUG: Initial request detected for device {device_id}")
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "provision_initial_detected_zpush",
+                            "device_id": device_id,
+                            "body_content": body_str[:200],
+                            "message": "Detected initial provision request",
+                        },
+                    )
+            except Exception as e:
+                print(f"DEBUG: Error parsing WBXML: {e}")
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "provision_parse_error_zpush",
+                        "device_id": device_id,
+                        "error": str(e),
+                        "message": "Error parsing WBXML request",
+                    },
+                )
+
+        # Z-Push logic: Determine the response based on acknowledgment detection
         if is_acknowledgment:
-            # Step 2: Client acknowledged, send FINAL policy key
-            policy_key = "1234567890"  # MS-ASPROV: Must be 10-digit number
-            
-            # Mark device as fully provisioned
+            # Step 2: Client acknowledged the policy, send final PolicyKey
+            policy_key = "1234567890"  # Z-Push uses 10-digit PolicyKey
+
+            # Mark device as provisioned
             device.is_provisioned = 1
             db.commit()
-            
-            _write_json_line("activesync/activesync.log", {
-                "event": "provision_acknowledgment_final",
-                "device_id": device_id,
-                "step": 2,
-                "policy_key": policy_key,
-                "message": "Client acknowledged policy, sending final PolicyKey"
-            })
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "provision_acknowledgment_final",
+                    "device_id": device_id,
+                    "step": 2,
+                    "policy_key": policy_key,
+                    "message": "Client acknowledged policy, sending final PolicyKey and marking device as provisioned",
+                },
+            )
         else:
-            # Step 1: Initial request, send temporary PolicyKey=0
+            # Step 1: Initial request, send policy with temporary PolicyKey=0
             policy_key = "0"
-            
-            _write_json_line("activesync/activesync.log", {
-                "event": "provision_initial_request",
-                "device_id": device_id,
-                "step": 1,
-                "policy_key": policy_key,
-                "message": "Sending initial policy with temporary PolicyKey=0"
-            })
-        
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "provision_initial_request",
+                    "device_id": device_id,
+                    "step": 1,
+                    "policy_key": policy_key,
+                    "message": "Sending initial policy with temporary PolicyKey=0",
+                },
+            )
+
+        # Build the WBXML response using Z-Push compatible structure
         wbxml_payload = build_provision_response(
             policy_key=policy_key,
             include_policy_data=not is_acknowledgment,
@@ -578,6 +764,7 @@ async def eas_dispatch(
                 "step": 2 if is_acknowledgment else 1,
                 "policy_key": policy_key,
                 "payload_length": len(wbxml_payload),
+                "device_provisioned": device.is_provisioned,
             },
         )
 
@@ -588,7 +775,9 @@ async def eas_dispatch(
         _write_json_line(
             "activesync/activesync.log",
             {
-                "event": "provisioning_required", "command": cmd, "device_id": device_id,
+                "event": "provisioning_required",
+                "command": cmd,
+                "device_id": device_id,
                 "message": "Device not provisioned. Sending HTTP 449.",
             },
         )
@@ -598,12 +787,16 @@ async def eas_dispatch(
         # Microsoft ActiveSync FolderSync implementation according to MS-ASCMD specification
         # Use dedicated state for folder hierarchy (collection_id="0")
         state = _get_or_init_state(db, current_user.id, device_id, "0")
-        
+
         # Parse WBXML request body to extract actual SyncKey
         wbxml_params = parse_wbxml_foldersync_request(request_body_bytes)
         # CRITICAL FIX: Handle case where parse returns None (malformed WBXML or empty body)
-        client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0")) if wbxml_params else request.query_params.get("SyncKey", "0")
-        
+        client_sync_key = (
+            wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
+            if wbxml_params
+            else request.query_params.get("SyncKey", "0")
+        )
+
         # Handle sync key validation according to ActiveSync spec
         try:
             client_key_int = int(client_sync_key) if client_sync_key.isdigit() else 0
@@ -611,10 +804,12 @@ async def eas_dispatch(
         except (ValueError, TypeError):
             client_key_int = 0
             server_key_int = 0
-        
+
         # Check if client is sending WBXML (iPhone sends WBXML)
-        is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
-        
+        is_wbxml_request = len(
+            request_body_bytes
+        ) > 0 and request_body_bytes.startswith(b"\x03\x01")
+
         # *** ENHANCED DEBUGGING: COMPREHENSIVE REQUEST/RESPONSE LOGGING ***
         _write_json_line(
             "activesync/activesync.log",
@@ -626,14 +821,16 @@ async def eas_dispatch(
                 "server_key_int": server_key_int,
                 "is_wbxml_request": is_wbxml_request,
                 "request_body_length": len(request_body_bytes),
-                "request_body_hex": request_body_bytes[:50].hex() if request_body_bytes else "empty",
+                "request_body_hex": (
+                    request_body_bytes[:50].hex() if request_body_bytes else "empty"
+                ),
                 "user_agent": request.headers.get("User-Agent", ""),
                 "device_id": device_id,
                 "user_id": current_user.id,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
             },
         )
-        
+
         # CASE 1: Initial Sync (client_key=0). Provide the full, detailed folder hierarchy.
         if client_key_int == 0:
             # Z-Push Fix: ALWAYS reset to 1 when client sends 0, regardless of server state
@@ -641,14 +838,17 @@ async def eas_dispatch(
             old_sync_key = state.sync_key
             state.sync_key = "1"
             db.commit()
-            _write_json_line("activesync/activesync.log", {
-                "event": "foldersync_initial_sync_key_updated", 
-                "device_id": device_id,
-                "old_sync_key": old_sync_key,
-                "new_sync_key": "1",
-                "zpush_recovery": old_sync_key != "0"
-            })
-            
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "foldersync_initial_sync_key_updated",
+                    "device_id": device_id,
+                    "old_sync_key": old_sync_key,
+                    "new_sync_key": "1",
+                    "zpush_recovery": old_sync_key != "0",
+                },
+            )
+
             if is_wbxml_request:
                 wbxml_content = build_foldersync_with_folders(
                     state.sync_key,
@@ -687,8 +887,8 @@ async def eas_dispatch(
                     )
                 changes_xml = "\n".join(folder_entries)
                 xml = (
-                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-                    "<FolderSync xmlns=\"FolderHierarchy\">\n"
+                    '<?xml version="1.0" encoding="utf-8"?>\n'
+                    '<FolderSync xmlns="FolderHierarchy">\n'
                     "    <Status>1</Status>\n"
                     f"    <SyncKey>{state.sync_key}</SyncKey>\n"
                     "    <Changes>\n"
@@ -712,7 +912,11 @@ async def eas_dispatch(
                 wbxml_content = build_foldersync_no_changes(state.sync_key)
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "foldersync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key},
+                    {
+                        "event": "foldersync_no_changes_wbxml",
+                        "sync_key": state.sync_key,
+                        "client_key": client_sync_key,
+                    },
                 )
                 return _wbxml_response(wbxml_content, headers)
             else:
@@ -734,10 +938,16 @@ async def eas_dispatch(
         # CASE 3: Client is out of sync. Force it to start over.
         else:
             if is_wbxml_request:
-                wbxml_content = build_foldersync_no_changes(state.sync_key)  # Simplified error response
+                wbxml_content = build_foldersync_no_changes(
+                    state.sync_key
+                )  # Simplified error response
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "foldersync_recovery_sync_wbxml", "server_key": state.sync_key, "client_key": client_sync_key},
+                    {
+                        "event": "foldersync_recovery_sync_wbxml",
+                        "server_key": state.sync_key,
+                        "client_key": client_sync_key,
+                    },
                 )
                 return _wbxml_response(wbxml_content, headers)
             else:
@@ -747,28 +957,41 @@ async def eas_dispatch(
 </FolderSync>"""
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "foldersync_recovery_sync", "server_key": state.sync_key, "client_key": client_sync_key},
+                    {
+                        "event": "foldersync_recovery_sync",
+                        "server_key": state.sync_key,
+                        "client_key": client_sync_key,
+                    },
                 )
-        
+
         # Return XML response for non-WBXML clients
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
+        return Response(content=xml, media_type="application/xml", headers=headers)
 
     elif cmd == "sync":
         # Microsoft ActiveSync Sync implementation according to MS-ASCMD specification
         # Use state for the specific collection being synced
         collection_id = request.query_params.get("CollectionId", "1")
         state = _get_or_init_state(db, current_user.id, device_id, collection_id)
-        
+
         # Parse WBXML request body to extract actual SyncKey and CollectionId
         wbxml_params = parse_wbxml_sync_request(request_body_bytes)
         extra_ops = parse_wbxml_sync_fetch_and_delete(request_body_bytes)
         fetch_ids = extra_ops.get("fetch_ids", [])
         delete_ids = extra_ops.get("delete_ids", [])
-        _write_json_line("activesync/activesync.log", {"event": "sync_ops_parsed", "fetch_ids": fetch_ids, "delete_ids": delete_ids})
-        client_sync_key = wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
-        collection_id = wbxml_params.get("collection_id", request.query_params.get("CollectionId", "1"))
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "sync_ops_parsed",
+                "fetch_ids": fetch_ids,
+                "delete_ids": delete_ids,
+            },
+        )
+        client_sync_key = wbxml_params.get(
+            "sync_key", request.query_params.get("SyncKey", "0")
+        )
+        collection_id = wbxml_params.get(
+            "collection_id", request.query_params.get("CollectionId", "1")
+        )
         window_size_str = wbxml_params.get("window_size", "5")
         try:
             window_size = int(window_size_str)
@@ -798,7 +1021,9 @@ async def eas_dispatch(
         if body_type_preference == 4:
             effective_truncation = truncation_size
         else:
-            effective_truncation = truncation_size if truncation_size is not None else 8192
+            effective_truncation = (
+                truncation_size if truncation_size is not None else 8192
+            )
 
         _write_json_line(
             "activesync/activesync.log",
@@ -809,7 +1034,7 @@ async def eas_dispatch(
                 "truncation_size": truncation_size,
             },
         )
-        
+
         # Handle sync key validation according to ActiveSync spec
         try:
             client_key_int = int(client_sync_key) if client_sync_key.isdigit() else 0
@@ -817,7 +1042,7 @@ async def eas_dispatch(
         except (ValueError, TypeError):
             client_key_int = 0
             server_key_int = 0
-        
+
         # CRITICAL FIX: Handle SyncKey=0 BEFORE any email queries!
         # When client sends SyncKey=0, it means "I have nothing, start fresh"
         # We MUST reset last_synced_email_id BEFORE filtering emails!
@@ -830,31 +1055,45 @@ async def eas_dispatch(
             state.pending_max_email_id = None
             state.pending_item_ids = None
             db.commit()
-            
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_initial_reset_EARLY",
-                "device_id": device_id,
-                "collection_id": collection_id,
-                "message": "CRITICAL: Reset last_synced_email_id BEFORE email query"
-            })
-        
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_initial_reset_EARLY",
+                    "device_id": device_id,
+                    "collection_id": collection_id,
+                    "message": "CRITICAL: Reset last_synced_email_id BEFORE email query",
+                },
+            )
+
         # CRITICAL: Detect InvalidSyncKey - client and server are out of sync
         # Per expert: "When client sends stale key (e.g. 4) but server is at 190,
         # return Status=3 (InvalidSyncKey) with SyncKey=0 to force client reset"
         # Allow tolerance of ±2 for pending batches, but reject if gap is huge
         if client_sync_key != "0" and abs(client_key_int - server_key_int) > 3:
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_invalid_synckey_detected",
-                "client_sync_key": client_sync_key,
-                "server_sync_key": state.sync_key,
-                "gap": abs(client_key_int - server_key_int),
-                "message": "Client sent stale SyncKey - forcing reset with Status=3"
-            })
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_invalid_synckey_detected",
+                    "client_sync_key": client_sync_key,
+                    "server_sync_key": state.sync_key,
+                    "gap": abs(client_key_int - server_key_int),
+                    "message": "Client sent stale SyncKey - forcing reset with Status=3",
+                },
+            )
             # Return InvalidSyncKey response
-            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            is_wbxml_request = len(
+                request_body_bytes
+            ) > 0 and request_body_bytes.startswith(b"\x03\x01")
             if is_wbxml_request:
-                wbxml_batch = create_invalid_synckey_response_wbxml(collection_id=collection_id)
-                return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                wbxml_batch = create_invalid_synckey_response_wbxml(
+                    collection_id=collection_id
+                )
+                return Response(
+                    content=wbxml_batch.payload,
+                    media_type="application/vnd.ms-sync.wbxml",
+                    headers=headers,
+                )
             else:
                 # XML fallback
                 xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -868,8 +1107,10 @@ async def eas_dispatch(
         </Collection>
     </Collections>
 </Sync>"""
-                return Response(content=xml_response, media_type="application/xml", headers=headers)
-        
+                return Response(
+                    content=xml_response, media_type="application/xml", headers=headers
+                )
+
         # CRITICAL FIX #26: Two-phase commit - check for pending batch first!
         # Expert: "Only commit when the client echoes back the SyncKey you issued"
 
@@ -879,7 +1120,51 @@ async def eas_dispatch(
         #
         # NEW LOGIC:
         # 1) Client confirms last batch? → Clear pending, advance to next batch
-        if state.pending_sync_key and client_sync_key == state.pending_sync_key:
+        pending_confirmed = False
+        pending_int: Optional[int] = None
+        client_int: Optional[int] = None
+        server_int: Optional[int] = None
+        if state.pending_sync_key:
+            try:
+                pending_int = int(state.pending_sync_key)
+            except (TypeError, ValueError):
+                pending_int = None
+            try:
+                client_int = int(client_sync_key) if client_sync_key.isdigit() else None
+            except (TypeError, ValueError):
+                client_int = None
+            try:
+                server_int = int(state.sync_key) if str(state.sync_key).isdigit() else None
+            except (TypeError, ValueError):
+                server_int = None
+
+        if state.pending_sync_key and (
+            client_sync_key == state.pending_sync_key
+            or (
+                pending_int is not None
+                and client_int is not None
+                and client_int == pending_int + 1
+                and (
+                    server_int == pending_int
+                    or server_int == client_int
+                    or server_int is None
+                )
+            )
+        ):
+            pending_confirmed = True
+
+        if pending_confirmed:
+            client_ahead_confirmation = (
+                state.pending_sync_key
+                and pending_int is not None
+                and client_int is not None
+                and client_int == pending_int + 1
+                and (
+                    server_int == pending_int
+                    or server_int == client_int
+                    or server_int is None
+                )
+            )
             # Client got the batch! Commit it now
             pending_ids = _parse_id_list(state.pending_item_ids)
             if pending_ids:
@@ -892,21 +1177,36 @@ async def eas_dispatch(
                     _store_synced_ids(state, synced_ids)
                 elif state.pending_max_email_id:
                     _store_synced_ids(state, [state.pending_max_email_id])
-            state.sync_key = state.pending_sync_key
-            state.synckey_counter = int(state.pending_sync_key) if state.pending_sync_key.isdigit() else state.synckey_counter
+            # Align server counters with the client's latest key when it is one ahead
+            if client_ahead_confirmation:
+                state.sync_key = client_sync_key
+                state.synckey_counter = client_int
+            else:
+                state.sync_key = state.pending_sync_key
+                state.synckey_counter = (
+                    int(state.pending_sync_key)
+                    if state.pending_sync_key.isdigit()
+                    else state.synckey_counter
+                )
             state.pending_sync_key = None
             state.pending_max_email_id = None
             state.pending_item_ids = None
             db.commit()
-            
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_pending_confirmed",
-                "client_sync_key": client_sync_key,
-                "committed_max_id": state.last_synced_email_id,
-                "message": "Client confirmed - committed pending batch, will send next with NEW key"
-            })
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_pending_confirmed",
+                    "client_sync_key": client_sync_key,
+                    "committed_max_id": state.last_synced_email_id,
+                    "confirmation_mode": "client_ahead"
+                    if client_ahead_confirmation
+                    else "direct",
+                    "message": "Client confirmed - committed pending batch, will send next with NEW key",
+                },
+            )
             # Fall through to compute next batch WITH A FRESH KEY
-        
+
         # 2) Client didn't get last response? (retries with old key OR sends 0 when pending exists)
         # CRITICAL FIX #26C: Check if client is one behind pending!
         # Example: client="6", server="7", pending="7" → client wants the pending batch!
@@ -914,30 +1214,42 @@ async def eas_dispatch(
             # Calculate if client is asking for the pending batch
             try:
                 client_int = int(client_sync_key) if client_sync_key.isdigit() else 0
-                pending_int = int(state.pending_sync_key) if state.pending_sync_key.isdigit() else 0
+                pending_int = (
+                    int(state.pending_sync_key)
+                    if state.pending_sync_key.isdigit()
+                    else 0
+                )
                 # CRITICAL FIX #38: DON'T treat SyncKey=0 as "asking for pending"!
                 # When client sends SyncKey=0, it's a FRESH initial sync (e.g., after account re-add).
                 # We should ONLY resend pending if client is retrying with a non-zero key.
                 # Client is asking for pending if: client==pending OR client==server OR client==pending-1
                 is_asking_for_pending = (
-                    client_sync_key == state.pending_sync_key or  # Exact match
-                    client_sync_key == state.sync_key or  # Old server key
+                    client_sync_key == state.pending_sync_key  # Exact match
+                    or client_sync_key == state.sync_key  # Old server key
+                    or
                     # client_sync_key == "0" or  # ← REMOVED! Don't treat 0 as retry!
-                    (client_int > 0 and pending_int > 0 and client_int == pending_int - 1)  # One behind
+                    (
+                        client_int > 0
+                        and pending_int > 0
+                        and client_int == pending_int - 1
+                    )  # One behind
                 )
             except:
                 is_asking_for_pending = True  # If in doubt, resend
-            
+
             if is_asking_for_pending:
                 # Re-send the exact same pending batch!
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_resend_pending",
-                    "client_sync_key": client_sync_key,
-                    "server_sync_key": state.sync_key,
-                    "pending_sync_key": state.pending_sync_key,
-                    "message": "Client retry - resending pending batch IDEMPOTENTLY with SAME key"
-                })
-                
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_resend_pending",
+                        "client_sync_key": client_sync_key,
+                        "server_sync_key": state.sync_key,
+                        "pending_sync_key": state.pending_sync_key,
+                        "message": "Client retry - resending pending batch IDEMPOTENTLY with SAME key",
+                    },
+                )
+
                 # Fetch the specific emails from pending
                 if state.pending_item_ids:
                     pending_ids = _parse_id_list(state.pending_item_ids)
@@ -946,19 +1258,33 @@ async def eas_dispatch(
                     try:
                         _fm = folder_map  # may not exist yet in this branch
                     except NameError:
-                        _fm = {"1": "inbox", "2": "drafts", "3": "deleted", "4": "sent", "5": "outbox"}
-                    all_emails_temp = email_service.get_user_emails(current_user.id, _fm.get(collection_id, "inbox"), limit=200)
-                    emails_to_resend = [e for e in all_emails_temp if e.id in pending_ids]
-                    
+                        _fm = {
+                            "1": "inbox",
+                            "2": "drafts",
+                            "3": "deleted",
+                            "4": "sent",
+                            "5": "outbox",
+                        }
+                    all_emails_temp = email_service.get_user_emails(
+                        current_user.id, _fm.get(collection_id, "inbox"), limit=200
+                    )
+                    emails_to_resend = [
+                        e for e in all_emails_temp if e.id in pending_ids
+                    ]
+
                     # Calculate has_more: are there items after the pending batch?
                     max_pending_id = max(pending_ids) if pending_ids else 0
-                    remaining_emails = [e for e in all_emails_temp if e.id > max_pending_id]
+                    remaining_emails = [
+                        e for e in all_emails_temp if e.id > max_pending_id
+                    ]
                     has_more_pending = len(remaining_emails) > 0
-                    
+
                     # Re-send with SAME SyncKey (idempotent resend!) using compliant builder
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=state.pending_sync_key,
-                        emails=[_email_payload(e, collection_id) for e in emails_to_resend],
+                        emails=[
+                            _email_payload(e, collection_id) for e in emails_to_resend
+                        ],
                         collection_id=collection_id,
                         window_size=window_size,
                         more_available=has_more_pending,
@@ -966,31 +1292,43 @@ async def eas_dispatch(
                         body_type_preference=body_type_preference,
                         truncation_size=effective_truncation,
                     )
-                    return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
-        
+                    return Response(
+                        content=wbxml_batch.payload,
+                        media_type="application/vnd.ms-sync.wbxml",
+                        headers=headers,
+                    )
+
         # Debug logging for sync key comparison
         _write_json_line(
             "activesync/activesync.log",
-            {"event": "sync_debug", "client_key": client_sync_key, "client_key_int": client_key_int, "server_key": state.sync_key, "server_key_int": server_key_int, "user_id": current_user.id, "has_pending": bool(state.pending_sync_key)},
+            {
+                "event": "sync_debug",
+                "client_key": client_sync_key,
+                "client_key_int": client_key_int,
+                "server_key": state.sync_key,
+                "server_key_int": server_key_int,
+                "user_id": current_user.id,
+                "has_pending": bool(state.pending_sync_key),
+            },
         )
-        
+
         # Get emails for the specified collection
         # Map CollectionId to folder type for simplified folder structure
         # Microsoft ActiveSync folder mapping according to MS-ASCMD specification
         folder_map = {
-            "1": "inbox",       # Inbox (Type 2)
-            "2": "drafts",       # Drafts (Type 3)
-            "3": "deleted",      # Deleted Items (Type 4)
-            "4": "sent",         # Sent Items (Type 5)
-            "5": "outbox"        # Outbox (Type 6)
+            "1": "inbox",  # Inbox (Type 2)
+            "2": "drafts",  # Drafts (Type 3)
+            "3": "deleted",  # Deleted Items (Type 4)
+            "4": "sent",  # Sent Items (Type 5)
+            "5": "outbox",  # Outbox (Type 6)
         }
         folder_type = folder_map.get(collection_id, "inbox")
-        
+
         # CRITICAL FIX #24: Query only NEW emails (proper pagination!)
         # Expert: "iOS expects every successful Sync response to return a new SyncKey"
         # We must track which emails have been sent and only send NEW ones!
         email_service = EmailService(db)
-        
+
         # Track which IDs the client already has
         synced_ids = _load_synced_ids(state)
         pending_id_list = _parse_id_list(state.pending_item_ids)
@@ -998,7 +1336,9 @@ async def eas_dispatch(
         last_id = max(synced_ids) if synced_ids else (state.last_synced_email_id or 0)
 
         # Query latest emails (ordered newest first)
-        all_emails = email_service.get_user_emails(current_user.id, folder_type, limit=100)
+        all_emails = email_service.get_user_emails(
+            current_user.id, folder_type, limit=100
+        )
 
         # Filter to only unsent emails (exclude already synced + pending)
         exclude_ids = synced_ids.union(pending_ids)
@@ -1015,21 +1355,36 @@ async def eas_dispatch(
                     n = parts[-1]
                     if n.isdigit():
                         fetch_int_ids.append(int(n))
-                fetched_emails = email_service.get_emails_by_ids(current_user.id, fetch_int_ids)
-                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_lookup", "fetch_ids": fetch_ids, "resolved": [e.id for e in fetched_emails]})
+                fetched_emails = email_service.get_emails_by_ids(
+                    current_user.id, fetch_int_ids
+                )
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_fetch_lookup",
+                        "fetch_ids": fetch_ids,
+                        "resolved": [e.id for e in fetched_emails],
+                    },
+                )
             except Exception as ex:
-                _write_json_line("activesync/activesync.log", {"event": "sync_fetch_error", "error": str(ex)})
-        
-        _write_json_line("activesync/activesync.log", {
-            "event": "sync_pagination_filter",
-            "last_synced_email_id": last_id,
-            "total_emails_in_folder": len(all_emails),
-            "new_emails_to_sync": len(emails),
-            "synced_ids_cached": len(synced_ids),
-            "pending_ids": pending_id_list,
-            "message": "Filtered to only NEW emails not yet synced"
-        })
-        
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {"event": "sync_fetch_error", "error": str(ex)},
+                )
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "sync_pagination_filter",
+                "last_synced_email_id": last_id,
+                "total_emails_in_folder": len(all_emails),
+                "new_emails_to_sync": len(emails),
+                "synced_ids_cached": len(synced_ids),
+                "pending_ids": pending_id_list,
+                "message": "Filtered to only NEW emails not yet synced",
+            },
+        )
+
         # CRITICAL FIX #59: Detect stuck state (Z-Push approach)
         # If last_synced_email_id is at or beyond the max email ID in the folder,
         # AND there are emails in the folder, it means the state is stuck.
@@ -1038,66 +1393,78 @@ async def eas_dispatch(
             # Check if we're stuck: last_id >= max_email_id in folder
             max_email_id = max(e.id for e in all_emails) if all_emails else 0
             if last_id > max_email_id:
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_stuck_state_detected",
-                    "last_synced_email_id": last_id,
-                    "max_email_id_in_folder": max_email_id,
-                    "total_emails": len(all_emails),
-                    "client_sync_key": client_sync_key,
-                    "message": "STUCK STATE: last_synced_email_id > max_email_id, forcing reset"
-                })
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_stuck_state_detected",
+                        "last_synced_email_id": last_id,
+                        "max_email_id_in_folder": max_email_id,
+                        "total_emails": len(all_emails),
+                        "client_sync_key": client_sync_key,
+                        "message": "STUCK STATE: last_synced_email_id > max_email_id, forcing reset",
+                    },
+                )
                 # Z-Push approach: Reset to 0 to force full resync
                 state.last_synced_email_id = 0
                 db.commit()
                 # Re-query emails after reset
                 emails = [e for e in all_emails if e.id > 0]
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_state_reset_auto",
-                    "new_last_synced_email_id": 0,
-                    "emails_to_sync_after_reset": len(emails),
-                    "message": "Auto-reset complete, will send all emails"
-                })
-        
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_state_reset_auto",
+                        "new_last_synced_email_id": 0,
+                        "emails_to_sync_after_reset": len(emails),
+                        "message": "Auto-reset complete, will send all emails",
+                    },
+                )
+
         # Enhanced logging with detailed email information
         email_details = []
         for email in emails:
             # Fix subject - use "No Subject" if empty
-            subject = getattr(email, 'subject', '') or 'No Subject'
+            subject = getattr(email, "subject", "") or "No Subject"
             if not subject.strip():
-                subject = 'No Subject'
-            
+                subject = "No Subject"
+
             # Fix sender - check both internal sender and external_sender
-            sender_email = 'Unknown'
-            if hasattr(email, 'sender') and email.sender:
-                sender_email = getattr(email.sender, 'email', 'Unknown')
-            elif hasattr(email, 'external_sender') and email.external_sender:
+            sender_email = "Unknown"
+            if hasattr(email, "sender") and email.sender:
+                sender_email = getattr(email.sender, "email", "Unknown")
+            elif hasattr(email, "external_sender") and email.external_sender:
                 sender_email = email.external_sender
-            
-            # Fix recipient - check both internal recipient and external_recipient  
-            recipient_email = 'Unknown'
-            if hasattr(email, 'recipient') and email.recipient:
-                recipient_email = getattr(email.recipient, 'email', 'Unknown')
-            elif hasattr(email, 'external_recipient') and email.external_recipient:
+
+            # Fix recipient - check both internal recipient and external_recipient
+            recipient_email = "Unknown"
+            if hasattr(email, "recipient") and email.recipient:
+                recipient_email = getattr(email.recipient, "email", "Unknown")
+            elif hasattr(email, "external_recipient") and email.external_recipient:
                 recipient_email = email.external_recipient
-            
-            email_details.append({
-                "id": email.id,
-                "subject": subject[:50],  # Truncate for logging
-                "sender": sender_email,
-                "recipient": recipient_email,
-                "created_at": getattr(email, 'created_at', None).isoformat() if getattr(email, 'created_at', None) else None,
-                "is_read": getattr(email, 'is_read', False),
-                "is_deleted": getattr(email, 'is_deleted', False),
-                "is_external": getattr(email, 'is_external', False),
-                "sender_id": getattr(email, 'sender_id', None),
-                "recipient_id": getattr(email, 'recipient_id', None)
-            })
-        
+
+            email_details.append(
+                {
+                    "id": email.id,
+                    "subject": subject[:50],  # Truncate for logging
+                    "sender": sender_email,
+                    "recipient": recipient_email,
+                    "created_at": (
+                        getattr(email, "created_at", None).isoformat()
+                        if getattr(email, "created_at", None)
+                        else None
+                    ),
+                    "is_read": getattr(email, "is_read", False),
+                    "is_deleted": getattr(email, "is_deleted", False),
+                    "is_external": getattr(email, "is_external", False),
+                    "sender_id": getattr(email, "sender_id", None),
+                    "recipient_id": getattr(email, "recipient_id", None),
+                }
+            )
+
         _write_json_line(
             "activesync/activesync.log",
             {
-                "event": "sync_emails_found", 
-                "count": len(emails), 
+                "event": "sync_emails_found",
+                "count": len(emails),
                 "user_id": current_user.id,
                 "user_email": current_user.email,
                 "collection_id": collection_id,
@@ -1108,11 +1475,11 @@ async def eas_dispatch(
                     "device_id": device_id,
                     "client_sync_key": client_sync_key,
                     "server_sync_key": state.sync_key,
-                    "collection_id": collection_id
-                }
+                    "collection_id": collection_id,
+                },
             },
         )
-        
+
         # Initial sync (SyncKey=0) - already handled above at line 799-813!
         if client_sync_key == "0":
             # State was already reset BEFORE email query (line 799-813)
@@ -1121,22 +1488,29 @@ async def eas_dispatch(
             # CRITICAL FIX #23-2: Send items on FIRST sync per expert!
             # Expert: "iOS is fine receiving items on the first response"
             # Previous logic sent empty response, which was WRONG!
-            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            is_wbxml_request = len(
+                request_body_bytes
+            ) > 0 and request_body_bytes.startswith(b"\x03\x01")
             if is_wbxml_request:
                 # Respect WindowSize for initial sync too!
                 emails_to_send = emails[:window_size] if window_size else emails
                 has_more = len(emails) > window_size if window_size else False
-                
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_initial_WITH_ITEMS",
-                    "reason": "Expert: iOS accepts items on first response",
-                    "window_size": window_size,
-                    "email_count_total": len(emails),
-                    "email_count_sent": len(emails_to_send),
-                    "has_more": has_more,
-                    "message": "Sending items immediately on SyncKey 0→1"
-                })
-                email_dicts = [_email_payload(email, collection_id) for email in emails_to_send]
+
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_initial_WITH_ITEMS",
+                        "reason": "Expert: iOS accepts items on first response",
+                        "window_size": window_size,
+                        "email_count_total": len(emails),
+                        "email_count_sent": len(emails_to_send),
+                        "has_more": has_more,
+                        "message": "Sending items immediately on SyncKey 0→1",
+                    },
+                )
+                email_dicts = [
+                    _email_payload(email, collection_id) for email in emails_to_send
+                ]
 
                 wbxml_batch = create_sync_response_wbxml(
                     sync_key=response_sync_key,
@@ -1149,7 +1523,7 @@ async def eas_dispatch(
                     truncation_size=effective_truncation,
                 )
                 wbxml = wbxml_batch.payload
-                
+
                 # CRITICAL FIX #26: Stage as PENDING, don't commit yet!
                 # Expert: "Only commit when client echoes back the SyncKey"
                 if emails_to_send:
@@ -1157,103 +1531,153 @@ async def eas_dispatch(
                     state.pending_sync_key = response_sync_key
                     state.pending_max_email_id = max_sent_id
                     state.pending_item_ids = json.dumps([e.id for e in emails_to_send])
-                
+
                 # Commit PENDING state (not last_synced_email_id yet!)
                 db.commit()
-                
+
                 _write_json_line(
                     "activesync/activesync.log",
                     {
-                        "event": "sync_initial_wbxml", 
-                        "sync_key": response_sync_key, 
-                        "client_key": client_sync_key, 
+                        "event": "sync_initial_wbxml",
+                        "sync_key": response_sync_key,
+                        "client_key": client_sync_key,
                         "email_count": len(emails),
                         "window_size": window_size,
-                    "collection_id": collection_id,
-                        "wbxml_length": len(wbxml), 
-                        "wbxml_first20": wbxml[:20].hex(), 
+                        "collection_id": collection_id,
+                        "wbxml_length": len(wbxml),
+                        "wbxml_first20": wbxml[:20].hex(),
                         "wbxml_analysis": {
-                            "header": wbxml[:6].hex(), 
-                            "has_emails": len(emails) > 0, 
+                            "header": wbxml[:6].hex(),
+                            "has_emails": len(emails) > 0,
                             "codepage_0_airsync": True,
                             "wbxml_structure": {
                                 "header_bytes": wbxml[:6].hex(),
                                 "switch_to_airsync": wbxml[6:8].hex(),
                                 "sync_token": wbxml[8:9].hex(),
                                 "status_token": wbxml[9:14].hex(),
-                                "top_synckey_token": wbxml[14:19].hex()
-                            }
+                                "top_synckey_token": wbxml[14:19].hex(),
+                            },
                         },
                         "user_mapping": {
                             "user_id": current_user.id,
                             "user_email": current_user.email,
                             "folder_type": folder_type,
-                            "collection_id": collection_id
+                            "collection_id": collection_id,
                         },
                         "email_summary": {
                             "total_emails": len(emails),
-                            "unread_count": sum(1 for email in emails if not getattr(email, 'is_read', False)),
-                            "read_count": sum(1 for email in emails if getattr(email, 'is_read', False))
-                        }
+                            "unread_count": sum(
+                                1
+                                for email in emails
+                                if not getattr(email, "is_read", False)
+                            ),
+                            "read_count": sum(
+                                1
+                                for email in emails
+                                if getattr(email, "is_read", False)
+                            ),
+                        },
                     },
                 )
-                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                return Response(
+                    content=wbxml,
+                    media_type="application/vnd.ms-sync.wbxml",
+                    headers=headers,
+                )
             # XML response for non-WBXML clients (with emails for initial sync)
-            xml_response = create_sync_response(emails, sync_key=response_sync_key, collection_id=collection_id)
+            xml_response = create_sync_response(
+                emails, sync_key=response_sync_key, collection_id=collection_id
+            )
             _write_json_line(
                 "activesync/activesync.log",
-                {"event": "sync_initial_complete", "sync_key": state.sync_key, "client_key": client_sync_key, "response_key": response_sync_key, "email_count": len(emails)},
+                {
+                    "event": "sync_initial_complete",
+                    "sync_key": state.sync_key,
+                    "client_key": client_sync_key,
+                    "response_key": response_sync_key,
+                    "email_count": len(emails),
+                },
             )
         # Client sends SyncKey=0 but server is ahead - sync key mismatch, need to reset
         elif client_key_int == 0 and server_key_int > 1:
             # Server is ahead, client wants to restart - send error to force client to reset
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_key_mismatch_reset_required",
-                "client_key": client_sync_key,
-                "server_key": state.sync_key,
-                "action": "Sending Status=3 to force client reset"
-            })
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_key_mismatch_reset_required",
+                    "client_key": client_sync_key,
+                    "server_key": state.sync_key,
+                    "action": "Sending Status=3 to force client reset",
+                },
+            )
             # Reset server to 0 to allow fresh start
             state.sync_key = "0"
             db.commit()
             # Send Status=3 (Invalid sync key) to tell client to restart
-            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+            is_wbxml_request = len(
+                request_body_bytes
+            ) > 0 and request_body_bytes.startswith(b"\x03\x01")
             if is_wbxml_request:
-                wbxml_batch = create_invalid_synckey_response_wbxml(collection_id=collection_id)
-                return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
-            xml_response = create_sync_response([], sync_key="0", collection_id=collection_id)
+                wbxml_batch = create_invalid_synckey_response_wbxml(
+                    collection_id=collection_id
+                )
+                return Response(
+                    content=wbxml_batch.payload,
+                    media_type="application/vnd.ms-sync.wbxml",
+                    headers=headers,
+                )
+            xml_response = create_sync_response(
+                [], sync_key="0", collection_id=collection_id
+            )
         # Client confirmed initial sync with simple integer synckey
         elif client_sync_key != "0":
             # Parse simple integer synckey
             try:
                 client_counter = int(client_sync_key)
             except ValueError:
-                _write_json_line("activesync/activesync.log", {
-                    "event": "sync_invalid_synckey_format",
-                    "client_sync_key": client_sync_key,
-                    "error": "Not a valid integer"
-                })
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_invalid_synckey_format",
+                        "client_sync_key": client_sync_key,
+                        "error": "Not a valid integer",
+                    },
+                )
                 # Send Status=3 (invalid synckey)
-                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+                is_wbxml_request = len(
+                    request_body_bytes
+                ) > 0 and request_body_bytes.startswith(b"\x03\x01")
                 if is_wbxml_request:
-                    wbxml_batch = create_invalid_synckey_response_wbxml(collection_id=collection_id)
-                    return Response(content=wbxml_batch.payload, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                    wbxml_batch = create_invalid_synckey_response_wbxml(
+                        collection_id=collection_id
+                    )
+                    return Response(
+                        content=wbxml_batch.payload,
+                        media_type="application/vnd.ms-sync.wbxml",
+                        headers=headers,
+                    )
                 return Response(status_code=400)
-            
+
             # CRITICAL FIX #61: Do NOT bump SyncKey on Fetch-only responses
             # Use the actual adds we intend to send (respecting WindowSize)
             preview_adds = emails[:window_size] if window_size else emails
             add_count = len(preview_adds)
             change_count = 0  # Not tracked yet
-            delete_count = len(delete_ids) if 'delete_ids' in locals() and delete_ids else 0
+            delete_count = (
+                len(delete_ids) if "delete_ids" in locals() and delete_ids else 0
+            )
             # Consider paging flag (MoreAvailable) as a collection change for key bumping semantics
             has_more_flag = bool(window_size) and (len(emails) > window_size)
-            has_collection_changes = ((add_count + change_count + delete_count) > 0) or has_more_flag
+            has_collection_changes = (
+                (add_count + change_count + delete_count) > 0
+            ) or has_more_flag
 
             if has_collection_changes:
                 state.synckey_counter = client_counter + 1
             else:
-                state.synckey_counter = client_counter  # Keep same key if only <Responses><Fetch>
+                state.synckey_counter = (
+                    client_counter  # Keep same key if only <Responses><Fetch>
+                )
 
             response_sync_key = str(state.synckey_counter)
             state.sync_key = response_sync_key  # Persist the chosen key
@@ -1270,19 +1694,24 @@ async def eas_dispatch(
                     },
                 )
             # NOTE: We commit this BEFORE sending, so the key is persisted!
-            
-            _write_json_line("activesync/activesync.log", {
-                "event": "sync_client_confirmed_simple",
-                "client_sync_key": client_sync_key,
-                "response_sync_key": response_sync_key,
-                "client_counter": client_counter,
-                "new_counter": state.synckey_counter,
-                "email_count": add_count,
-                "fetch_count": len(fetch_ids) if fetch_ids else 0,
-                "has_collection_changes": has_collection_changes
-            })
-            
-            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_client_confirmed_simple",
+                    "client_sync_key": client_sync_key,
+                    "response_sync_key": response_sync_key,
+                    "client_counter": client_counter,
+                    "new_counter": state.synckey_counter,
+                    "email_count": add_count,
+                    "fetch_count": len(fetch_ids) if fetch_ids else 0,
+                    "has_collection_changes": has_collection_changes,
+                },
+            )
+
+            is_wbxml_request = len(
+                request_body_bytes
+            ) > 0 and request_body_bytes.startswith(b"\x03\x01")
             if is_wbxml_request:
                 # CRITICAL FIX #13 (APPLIED TO ALL CODE PATHS): Respect WindowSize!
                 # Expert diagnosis: "you dump 19 items in one batch with WindowSize=4"
@@ -1291,7 +1720,10 @@ async def eas_dispatch(
                 has_more = len(emails) > window_size if window_size else False
 
                 # Use builder that can include both Adds and Fetch responses
-                from activesync.wbxml_builder import create_sync_response_wbxml_with_fetch
+                from activesync.wbxml_builder import (
+                    create_sync_response_wbxml_with_fetch,
+                )
+
                 wbxml_batch = create_sync_response_wbxml_with_fetch(
                     sync_key=response_sync_key,
                     emails=[_email_payload(e, collection_id) for e in emails_to_send],
@@ -1307,6 +1739,7 @@ async def eas_dispatch(
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
                 if fetched_emails:
                     from activesync.wbxml_builder import write_fetch_responses
+
                     w = activesync_w = None
                     try:
                         # Append to existing WBXML: we need a writer capable of appending; since our
@@ -1316,7 +1749,7 @@ async def eas_dispatch(
                         pass
                     except Exception:
                         pass
-                
+
                 # CRITICAL FIX #26 + #61: Stage as PENDING only when we actually send <Add> items
                 # Expert FIX #26: "Only commit last_synced_email_id when client confirms"
                 if emails_to_send and has_collection_changes:
@@ -1324,15 +1757,15 @@ async def eas_dispatch(
                     state.pending_sync_key = response_sync_key
                     state.pending_max_email_id = max_sent_id
                     state.pending_item_ids = json.dumps([e.id for e in emails_to_send])
-                
+
                 # Commit: NEW SyncKey + PENDING batch (NOT last_synced_email_id yet!)
                 # state.sync_key and state.synckey_counter were set above
                 db.commit()
-                
+
                 _write_json_line(
                     "activesync/activesync.log",
                     {
-                        "event": "sync_emails_sent_wbxml_simple", 
+                        "event": "sync_emails_sent_wbxml_simple",
                         "sync_key": response_sync_key,  # ← NEW key in response
                         "client_key": client_sync_key,  # ← Key client sent
                         "key_progression": f"{client_sync_key}→{response_sync_key}",  # ← Visual!
@@ -1340,31 +1773,43 @@ async def eas_dispatch(
                         "email_count_sent": len(emails_to_send),  # ← Actually sent
                         "window_size": window_size,  # ← Client requested
                         "has_more": has_more,  # ← MoreAvailable flag
-                        "collection_id": collection_id, 
-                        "wbxml_length": len(wbxml), 
+                        "collection_id": collection_id,
+                        "wbxml_length": len(wbxml),
                         "wbxml_first20": wbxml[:20].hex(),
                         "wbxml_full_hex": wbxml.hex(),  # ← FULL DUMP for expert analysis
                         "last_synced_email_id": state.last_synced_email_id,  # ← Pagination cursor
-                        "pending_staged": bool(state.pending_sync_key),  # ← Pending active?
-                        "fetch_only": (not has_collection_changes and bool(fetched_emails))
+                        "pending_staged": bool(
+                            state.pending_sync_key
+                        ),  # ← Pending active?
+                        "fetch_only": (
+                            not has_collection_changes and bool(fetched_emails)
+                        ),
                     },
                 )
-                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                return Response(
+                    content=wbxml,
+                    media_type="application/vnd.ms-sync.wbxml",
+                    headers=headers,
+                )
         # Client sync key matches server - check if we need to send emails
         elif client_key_int == server_key_int:
             # If we have emails to send, send them and bump sync key
             if len(emails) > 0:
                 new_sync_key = _bump_sync_key(state, db)
-                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+                is_wbxml_request = len(
+                    request_body_bytes
+                ) > 0 and request_body_bytes.startswith(b"\x03\x01")
                 if is_wbxml_request:
                     # CRITICAL FIX #13: Respect WindowSize! Only send N items at a time
                     # Expert diagnosis: "If client asked for WindowSize = N, put at most N <Add> items"
                     emails_to_send = emails[:window_size] if window_size else emails
                     has_more = len(emails) > window_size if window_size else False
-                    
+
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=new_sync_key,
-                        emails=[_email_payload(e, collection_id) for e in emails_to_send],
+                        emails=[
+                            _email_payload(e, collection_id) for e in emails_to_send
+                        ],
                         collection_id=collection_id,
                         window_size=window_size,
                         more_available=has_more,
@@ -1376,23 +1821,29 @@ async def eas_dispatch(
                     _write_json_line(
                         "activesync/activesync.log",
                         {
-                            "event": "sync_emails_sent_wbxml", 
-                            "sync_key": new_sync_key, 
-                            "client_key": client_sync_key, 
+                            "event": "sync_emails_sent_wbxml",
+                            "sync_key": new_sync_key,
+                            "client_key": client_sync_key,
                             "email_count_total": len(emails),  # ← Total available
                             "email_count_sent": len(emails_to_send),  # ← Actually sent
                             "window_size": window_size,  # ← Client requested
                             "has_more": has_more,  # ← MoreAvailable flag
-                            "collection_id": collection_id, 
-                            "wbxml_length": len(wbxml), 
+                            "collection_id": collection_id,
+                            "wbxml_length": len(wbxml),
                             "wbxml_first20": wbxml[:20].hex(),
                             "wbxml_full_hex": wbxml.hex(),  # ← Full hex dump for expert analysis
                         },
                     )
-                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                    return Response(
+                        content=wbxml,
+                        media_type="application/vnd.ms-sync.wbxml",
+                        headers=headers,
+                    )
             else:
                 # No emails to send - return no changes
-                is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+                is_wbxml_request = len(
+                    request_body_bytes
+                ) > 0 and request_body_bytes.startswith(b"\x03\x01")
                 if is_wbxml_request:
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=state.sync_key,
@@ -1407,9 +1858,20 @@ async def eas_dispatch(
                     wbxml = wbxml_batch.payload
                     _write_json_line(
                         "activesync/activesync.log",
-                        {"event": "sync_no_changes_wbxml", "sync_key": state.sync_key, "client_key": client_sync_key, "collection_id": collection_id, "wbxml_length": len(wbxml), "wbxml_first20": wbxml[:20].hex()},
+                        {
+                            "event": "sync_no_changes_wbxml",
+                            "sync_key": state.sync_key,
+                            "client_key": client_sync_key,
+                            "collection_id": collection_id,
+                            "wbxml_length": len(wbxml),
+                            "wbxml_first20": wbxml[:20].hex(),
+                        },
                     )
-                    return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
+                    return Response(
+                        content=wbxml,
+                        media_type="application/vnd.ms-sync.wbxml",
+                        headers=headers,
+                    )
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync">
     <Status>1</Status>
@@ -1417,7 +1879,12 @@ async def eas_dispatch(
 </Sync>"""
             _write_json_line(
                 "activesync/activesync.log",
-                {"event": "sync_no_changes", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "No changes - client and server in sync"},
+                {
+                    "event": "sync_no_changes",
+                    "sync_key": state.sync_key,
+                    "client_key": client_sync_key,
+                    "message": "No changes - client and server in sync",
+                },
             )
         # Client sync key is behind server - Graceful catch-up approach
         elif client_key_int < server_key_int:
@@ -1425,8 +1892,10 @@ async def eas_dispatch(
             # Don't force reset - instead, send current state to get client caught up
             sync_gap = server_key_int - client_key_int
             new_sync_key = _bump_sync_key(state, db)
-            
-            is_wbxml_request = len(request_body_bytes) > 0 and request_body_bytes.startswith(b'\x03\x01')
+
+            is_wbxml_request = len(
+                request_body_bytes
+            ) > 0 and request_body_bytes.startswith(b"\x03\x01")
             if is_wbxml_request:
                 try:
                     # Send emails respecting WindowSize to get client caught up
@@ -1447,11 +1916,13 @@ async def eas_dispatch(
                         {
                             "event": "sync_wbxml_creation_error",
                             "error": str(e),
-                            "traceback": traceback.format_exc()
-                        }
+                            "traceback": traceback.format_exc(),
+                        },
                     )
                     # Fall back to XML
-                    xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
+                    xml_response = create_sync_response(
+                        emails, sync_key=new_sync_key, collection_id=collection_id
+                    )
                 else:
                     wbxml = wbxml_batch.payload
                     # Log the successful WBXML creation
@@ -1466,16 +1937,31 @@ async def eas_dispatch(
                             "collection_id": collection_id,
                             "wbxml_length": len(wbxml),
                             "wbxml_first50": wbxml[:50].hex(),
-                            "sync_gap": sync_gap
-                        }
+                            "sync_gap": sync_gap,
+                        },
+                    )
+                return Response(
+                    content=wbxml,
+                    media_type="application/vnd.ms-sync.wbxml",
+                    headers=headers,
                 )
-                return Response(content=wbxml, media_type="application/vnd.ms-sync.wbxml", headers=headers)
             else:
-                xml_response = create_sync_response(emails, sync_key=new_sync_key, collection_id=collection_id)
-                
+                xml_response = create_sync_response(
+                    emails, sync_key=new_sync_key, collection_id=collection_id
+                )
+
                 _write_json_line(
                     "activesync/activesync.log",
-                    {"event": "sync_client_behind_graceful", "sync_key": new_sync_key, "client_key": client_sync_key, "server_key": state.sync_key, "email_count": len(emails), "collection_id": collection_id, "sync_gap": sync_gap, "approach": "graceful_catchup_all_emails"},
+                    {
+                        "event": "sync_client_behind_graceful",
+                        "sync_key": new_sync_key,
+                        "client_key": client_sync_key,
+                        "server_key": state.sync_key,
+                        "email_count": len(emails),
+                        "collection_id": collection_id,
+                        "sync_gap": sync_gap,
+                        "approach": "graceful_catchup_all_emails",
+                    },
                 )
         # Client sync key is ahead of server - this shouldn't happen, return MS-ASCMD compliant error
         else:
@@ -1492,9 +1978,14 @@ async def eas_dispatch(
 </Sync>"""
             _write_json_line(
                 "activesync/activesync.log",
-                {"event": "sync_sync_key_error", "sync_key": state.sync_key, "client_key": client_sync_key, "message": "Sync key error - client ahead of server"},
+                {
+                    "event": "sync_sync_key_error",
+                    "sync_key": state.sync_key,
+                    "client_key": client_sync_key,
+                    "message": "Sync key error - client ahead of server",
+                },
             )
-        
+
         return Response(
             content=xml_response,
             media_type="application/xml",
@@ -1503,38 +1994,43 @@ async def eas_dispatch(
     if cmd == "ping":
         # Z-Push-compliant Ping implementation with event-driven push notifications
         # MS-ASCMD 2.2.2.13: Ping command maintains long-running connection
-        import time
         import asyncio
+        import time
+
         from ..push_notifications import push_manager
-        
+
         try:
             body = await request.body()
-            
+
             # Parse Ping request to get heartbeat interval and folders to monitor
             # Default values per MS-ASCMD spec
             heartbeat_interval = 540  # 9 minutes (common iOS default)
             folders_to_monitor = ["1"]  # Default to inbox
-            
+
             # Simple WBXML parsing for Ping (codepage 0, Ping namespace)
             # Token 0x03 = HeartbeatInterval (PING), Token 0x04 = Folders (PING)
             if body and len(body) > 10:
                 try:
                     # Look for HeartbeatInterval value (STR_I = 0x03)
-                    idx = body.find(b'\x03')
+                    idx = body.find(b"\x03")
                     if idx != -1 and idx + 1 < len(body):
                         # Read the string value until null terminator
-                        end_idx = body.find(b'\x00', idx + 1)
+                        end_idx = body.find(b"\x00", idx + 1)
                         if end_idx != -1:
-                            heartbeat_str = body[idx + 1:end_idx].decode('utf-8', errors='ignore')
+                            heartbeat_str = body[idx + 1 : end_idx].decode(
+                                "utf-8", errors="ignore"
+                            )
                             try:
                                 heartbeat_interval = int(heartbeat_str)
                                 # Clamp to reasonable range (5 min to 30 min)
-                                heartbeat_interval = max(300, min(heartbeat_interval, 1800))
+                                heartbeat_interval = max(
+                                    300, min(heartbeat_interval, 1800)
+                                )
                             except ValueError:
                                 pass
                 except Exception:
                     pass
-            
+
             _write_json_line(
                 "activesync/activesync.log",
                 {
@@ -1542,22 +2038,25 @@ async def eas_dispatch(
                     "heartbeat_interval": heartbeat_interval,
                     "folders": folders_to_monitor,
                     "user_id": current_user.id,
-                    "active_connections": push_manager.get_user_connections_count(current_user.id),
-                }
+                    "active_connections": push_manager.get_user_connections_count(
+                        current_user.id
+                    ),
+                },
             )
-            
+
             # Subscribe to push notifications for this user
-            notification_event = await push_manager.subscribe(current_user.id, folders_to_monitor)
-            
+            notification_event = await push_manager.subscribe(
+                current_user.id, folders_to_monitor
+            )
+
             start_time = time.time()
             changes_detected = False
-            
+
             try:
                 # Z-Push approach: Wait for either a notification or timeout
                 # This is event-driven - we're notified immediately when new content arrives
                 await asyncio.wait_for(
-                    notification_event.wait(),
-                    timeout=heartbeat_interval
+                    notification_event.wait(), timeout=heartbeat_interval
                 )
                 # If we get here, changes were detected!
                 changes_detected = True
@@ -1567,7 +2066,7 @@ async def eas_dispatch(
                         "event": "ping_changes_detected",
                         "trigger": "push_notification",
                         "elapsed_seconds": int(time.time() - start_time),
-                    }
+                    },
                 )
             except asyncio.TimeoutError:
                 # Heartbeat expired with no changes
@@ -1576,26 +2075,26 @@ async def eas_dispatch(
                     {
                         "event": "ping_timeout",
                         "elapsed_seconds": int(time.time() - start_time),
-                    }
+                    },
                 )
             finally:
                 # Always unsubscribe when done
                 await push_manager.unsubscribe(notification_event)
-            
+
             # Build WBXML Ping response
             # Per MS-ASCMD: Status 2 = changes, Status 1 = no changes (timeout)
-            from activesync.wbxml_builder import WBXMLWriter, CP_PING
-            
+            from activesync.wbxml_builder import CP_PING, WBXMLWriter
+
             w = WBXMLWriter()
             w.header()
             w.page(1)  # Ping codepage
             w.start(0x05)  # Ping tag
-            
+
             if changes_detected:
                 w.start(0x08)  # Status tag
                 w.write_str("2")  # Status 2 = Changes detected
                 w.end()
-                
+
                 # Folders with changes
                 w.start(0x04)  # Folders tag
                 w.start(0x02)  # Folder tag
@@ -1606,31 +2105,36 @@ async def eas_dispatch(
                 w.start(0x08)  # Status tag
                 w.write_str("1")  # Status 1 = No changes (heartbeat expired)
                 w.end()
-            
+
             w.end()  # Close Ping
-            
+
             _write_json_line(
                 "activesync/activesync.log",
                 {
                     "event": "ping_complete",
                     "changes_detected": changes_detected,
                     "elapsed_seconds": int(time.time() - start_time),
-                }
+                },
             )
-            
+
             return Response(
                 content=w.bytes(),
                 media_type="application/vnd.ms-sync.wbxml",
                 headers=headers,
             )
-            
+
         except Exception as e:
             _write_json_line(
                 "activesync/activesync.log",
-                {"event": "ping_error", "error": str(e), "traceback": traceback.format_exc()}
+                {
+                    "event": "ping_error",
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                },
             )
             # Return Status 1 (no changes) on error to avoid client loop
             from activesync.wbxml_builder import WBXMLWriter
+
             w = WBXMLWriter()
             w.header()
             w.page(1)  # Ping codepage
@@ -1639,12 +2143,12 @@ async def eas_dispatch(
             w.write_str("1")  # No changes
             w.end()
             w.end()
-            
+
             return Response(
                 content=w.bytes(),
                 media_type="application/vnd.ms-sync.wbxml",
                 headers=headers,
-        )
+            )
     if cmd == "sendmail":
         # Accept request (actual SMTP send could be wired later)
         _write_json_line("activesync/activesync.log", {"event": "sendmail"})
@@ -1653,10 +2157,10 @@ async def eas_dispatch(
         # MS-ASCMD GetItemEstimate implementation
         collection_id = request.query_params.get("CollectionId", "1")
         folder_type = "inbox" if collection_id == "1" else "inbox"
-        
+
         email_service = EmailService(db)
         emails = email_service.get_user_emails(current_user.id, folder_type, limit=1000)
-        
+
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <GetItemEstimate xmlns="GetItemEstimate">
     <Status>1</Status>
@@ -1667,10 +2171,15 @@ async def eas_dispatch(
         </Collection>
     </Response>
 </GetItemEstimate>"""
-        
+
         _write_json_line(
             "activesync/activesync.log",
-            {"event": "getitemestimate", "collection_id": collection_id, "estimate": len(emails), "user_id": current_user.id},
+            {
+                "event": "getitemestimate",
+                "collection_id": collection_id,
+                "estimate": len(emails),
+                "user_id": current_user.id,
+            },
         )
     if cmd == "settings":
         # MS-ASCMD Settings implementation with comprehensive device management
@@ -1707,10 +2216,11 @@ async def eas_dispatch(
         </Get>
     </UserInformation>
 </Settings>"""
-        _write_json_line("activesync/activesync.log", {"event": "settings", "user": current_user.email})
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
+        _write_json_line(
+            "activesync/activesync.log",
+            {"event": "settings", "user": current_user.email},
         )
+        return Response(content=xml, media_type="application/xml", headers=headers)
     if cmd == "search":
         # MS-ASCMD Search implementation for GAL (Global Address List)
         query = request.query_params.get("Query", "").strip()
@@ -1758,25 +2268,26 @@ async def eas_dispatch(
                 last if last else (u.full_name or u.username)
             )
         xml = ET.tostring(root, encoding="unicode")
-        _write_json_line("activesync/activesync.log", {"event": "search", "query": query, "results": len(users)})
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
+        _write_json_line(
+            "activesync/activesync.log",
+            {"event": "search", "query": query, "results": len(users)},
         )
-    
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD ItemOperations command implementation
     if cmd == "itemoperations":
         # MS-ASCMD ItemOperations for fetching specific items
         item_id = request.query_params.get("ItemId", "")
         collection_id = request.query_params.get("CollectionId", "1")
-        
+
         if not item_id:
-            xml = f"<ItemOperations xmlns=\"ItemOperations\"><Status>2</Status></ItemOperations>"
+            xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
         else:
             # Fetch specific email item
             email_service = EmailService(db)
             emails = email_service.get_user_emails(current_user.id, "inbox", limit=1000)
             target_email = next((e for e in emails if str(e.id) == item_id), None)
-            
+
             if target_email:
                 root = ET.Element("ItemOperations")
                 root.set("xmlns", "ItemOperations")
@@ -1785,113 +2296,102 @@ async def eas_dispatch(
                 fetch = ET.SubElement(response, "Fetch")
                 ET.SubElement(fetch, "Status").text = "1"
                 properties = ET.SubElement(fetch, "Properties")
-                
+
                 # Add email properties according to MS-ASCMD
                 ET.SubElement(properties, "Subject").text = target_email.subject or ""
                 ET.SubElement(properties, "From").text = target_email.sender or ""
                 ET.SubElement(properties, "To").text = target_email.recipient or ""
-                ET.SubElement(properties, "DateReceived").text = target_email.received_at.strftime("%Y-%m-%dT%H:%M:%SZ") if target_email.received_at else ""
+                ET.SubElement(properties, "DateReceived").text = (
+                    target_email.received_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if target_email.received_at
+                    else ""
+                )
                 ET.SubElement(properties, "Body").text = target_email.body or ""
-                
+
                 xml = ET.tostring(root, encoding="unicode")
             else:
-                xml = f"<ItemOperations xmlns=\"ItemOperations\"><Status>2</Status></ItemOperations>"
-        
-        _write_json_line("activesync/activesync.log", {"event": "itemoperations", "item_id": item_id, "collection_id": collection_id})
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
+                xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "itemoperations",
+                "item_id": item_id,
+                "collection_id": collection_id,
+            },
         )
-    
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD SmartForward command implementation
     if cmd == "smartforward":
         # MS-ASCMD SmartForward for forwarding emails
         _write_json_line("activesync/activesync.log", {"event": "smartforward"})
-        xml = f"<SmartForward xmlns=\"SmartForward\"><Status>1</Status></SmartForward>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<SmartForward xmlns="SmartForward"><Status>1</Status></SmartForward>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD SmartReply command implementation
     if cmd == "smartreply":
         # MS-ASCMD SmartReply for replying to emails
         _write_json_line("activesync/activesync.log", {"event": "smartreply"})
-        xml = f"<SmartReply xmlns=\"SmartReply\"><Status>1</Status></SmartReply>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<SmartReply xmlns="SmartReply"><Status>1</Status></SmartReply>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD MoveItems command implementation
     if cmd == "moveitems":
         # MS-ASCMD MoveItems for moving emails between folders
         _write_json_line("activesync/activesync.log", {"event": "moveitems"})
-        xml = f"<MoveItems xmlns=\"MoveItems\"><Status>1</Status></MoveItems>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<MoveItems xmlns="MoveItems"><Status>1</Status></MoveItems>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD MeetingResponse command implementation
     if cmd == "meetingresponse":
         # MS-ASCMD MeetingResponse for calendar meeting responses
         _write_json_line("activesync/activesync.log", {"event": "meetingresponse"})
-        xml = f"<MeetingResponse xmlns=\"MeetingResponse\"><Status>1</Status></MeetingResponse>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<MeetingResponse xmlns="MeetingResponse"><Status>1</Status></MeetingResponse>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD Find command implementation
     if cmd == "find":
         # MS-ASCMD Find for searching within folders
         _write_json_line("activesync/activesync.log", {"event": "find"})
-        xml = f"<Find xmlns=\"Find\"><Status>1</Status></Find>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<Find xmlns="Find"><Status>1</Status></Find>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD GetAttachment command implementation
     if cmd == "getattachment":
         # MS-ASCMD GetAttachment for fetching email attachments
         _write_json_line("activesync/activesync.log", {"event": "getattachment"})
-        xml = f"<GetAttachment xmlns=\"GetAttachment\"><Status>1</Status></GetAttachment>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<GetAttachment xmlns="GetAttachment"><Status>1</Status></GetAttachment>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD Calendar command implementation
     if cmd == "calendar":
         # MS-ASCMD Calendar for calendar synchronization
         _write_json_line("activesync/activesync.log", {"event": "calendar"})
-        xml = f"<Calendar xmlns=\"Calendar\"><Status>1</Status></Calendar>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<Calendar xmlns="Calendar"><Status>1</Status></Calendar>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD FolderCreate command implementation
     if cmd == "foldercreate":
         # MS-ASCMD FolderCreate for creating new folders
         _write_json_line("activesync/activesync.log", {"event": "foldercreate"})
-        xml = f"<FolderCreate xmlns=\"FolderCreate\"><Status>1</Status></FolderCreate>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<FolderCreate xmlns="FolderCreate"><Status>1</Status></FolderCreate>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD FolderDelete command implementation
     if cmd == "folderdelete":
         # MS-ASCMD FolderDelete for deleting folders
         _write_json_line("activesync/activesync.log", {"event": "folderdelete"})
-        xml = f"<FolderDelete xmlns=\"FolderDelete\"><Status>1</Status></FolderDelete>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<FolderDelete xmlns="FolderDelete"><Status>1</Status></FolderDelete>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD FolderUpdate command implementation
     if cmd == "folderupdate":
         # MS-ASCMD FolderUpdate for updating folder properties
         _write_json_line("activesync/activesync.log", {"event": "folderupdate"})
-        xml = f"<FolderUpdate xmlns=\"FolderUpdate\"><Status>1</Status></FolderUpdate>"
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        xml = f'<FolderUpdate xmlns="FolderUpdate"><Status>1</Status></FolderUpdate>'
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD ResolveRecipients command implementation
     if cmd == "resolverecipients":
         # MS-ASCMD ResolveRecipients for resolving email addresses
@@ -1907,10 +2407,8 @@ async def eas_dispatch(
         </To>
     </Response>
 </ResolveRecipients>"""
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD ValidateCert command implementation
     if cmd == "validatecert":
         # MS-ASCMD ValidateCert for certificate validation
@@ -1925,10 +2423,8 @@ async def eas_dispatch(
         </Certificate>
     </Response>
 </ValidateCert>"""
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
-    
+        return Response(content=xml, media_type="application/xml", headers=headers)
+
     # MS-ASCMD SendMail command implementation
     if cmd == "sendmail":
         # MS-ASCMD SendMail for sending emails
@@ -1940,12 +2436,17 @@ async def eas_dispatch(
         <Status>1</Status>
     </Response>
 </SendMail>"""
-        return Response(
-            content=xml, media_type="application/xml", headers=headers
-        )
+        return Response(content=xml, media_type="application/xml", headers=headers)
     # MS-ASCMD compliant error handling for unsupported commands
-    _write_json_line("activesync/activesync.log", {"event": "unsupported_command", "command": cmd, "message": f"Unsupported ActiveSync command: {cmd}"})
-    
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "unsupported_command",
+            "command": cmd,
+            "message": f"Unsupported ActiveSync command: {cmd}",
+        },
+    )
+
     # Return MS-ASCMD compliant error response
     xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <{cmd} xmlns="{cmd}">
@@ -1957,12 +2458,12 @@ async def eas_dispatch(
         </Error>
     </Response>
 </{cmd}>"""
-    
+
     return Response(
-        content=xml, 
-        media_type="application/vnd.ms-sync.wbxml", 
+        content=xml,
+        media_type="application/vnd.ms-sync.wbxml",
         headers=headers,
-        status_code=200  # MS-ASCMD uses Status codes in XML, not HTTP status codes
+        status_code=200,  # MS-ASCMD uses Status codes in XML, not HTTP status codes
     )
 
 
@@ -1991,7 +2492,8 @@ def _calendar_to_eas_xml(events: list[CalendarEvent]) -> str:
 
 @router.get("/activesync/calendar")
 def calendar_list(
-    current_user: User = Depends(get_current_user_from_basic_auth), db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user_from_basic_auth),
+    db: Session = Depends(get_db),
 ):
     events = (
         db.query(CalendarEvent)
@@ -2046,7 +2548,8 @@ def calendar_create(
 
 @router.get("/activesync/calendar/sync")
 def calendar_sync(
-    current_user: User = Depends(get_current_user_from_basic_auth), db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user_from_basic_auth),
+    db: Session = Depends(get_db),
 ):
     events = (
         db.query(CalendarEvent)
@@ -2109,8 +2612,11 @@ async def sync_emails(
         return ActiveSyncResponse(xml_response)
 
     except Exception as e:
-        _write_json_line("activesync/activesync.log", {"event": "error", "error": str(e), "command": cmd})
-        
+        _write_json_line(
+            "activesync/activesync.log",
+            {"event": "error", "error": str(e), "command": cmd},
+        )
+
         # MS-ASCMD compliant error response for server errors
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <{cmd} xmlns="{cmd}">
@@ -2122,12 +2628,12 @@ async def sync_emails(
         </Error>
     </Response>
 </{cmd}>"""
-        
+
         return Response(
-            content=xml, 
-            media_type="application/vnd.ms-sync.wbxml", 
+            content=xml,
+            media_type="application/vnd.ms-sync.wbxml",
             headers=headers,
-            status_code=200
+            status_code=200,
         )
 
 
@@ -2137,22 +2643,14 @@ def ping():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
-@router.post("/provision")
-async def device_provisioning(
-    request: Request, current_user: User = Depends(get_current_user_from_basic_auth)
-):
-    """Device provisioning for ActiveSync"""
-    # In a real implementation, this would handle device registration
-    return {
-        "status": "provisioned",
-        "device_id": "device_123",
-        "user": current_user.username,
-    }
+# REMOVED: Duplicate provision route that was overriding the new Z-Push code
+# The provision command is now handled in the main eas_dispatch handler
 
 
 @router.get("/folders")
 def get_folders(
-    current_user: User = Depends(get_current_user_from_basic_auth), db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user_from_basic_auth),
+    db: Session = Depends(get_db),
 ):
     """Get available email folders for ActiveSync with IPM subtree compatibility"""
     folders = [
@@ -2177,11 +2675,11 @@ def get_folder_emails(
     # Microsoft ActiveSync folder mapping according to MS-ASCMD specification
     # This must match the mapping used in the sync command
     folder_map = {
-        "1": "inbox",       # Inbox (Type 2)
-        "2": "drafts",       # Drafts (Type 3)
-        "3": "deleted",      # Deleted Items (Type 4)
-        "4": "sent",         # Sent Items (Type 5)
-        "5": "outbox"        # Outbox (Type 6)
+        "1": "inbox",  # Inbox (Type 2)
+        "2": "drafts",  # Drafts (Type 3)
+        "3": "deleted",  # Deleted Items (Type 4)
+        "4": "sent",  # Sent Items (Type 5)
+        "5": "outbox",  # Outbox (Type 6)
     }
 
     folder = folder_map.get(folder_id, "inbox")

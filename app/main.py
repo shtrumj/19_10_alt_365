@@ -8,6 +8,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+# Import ActiveSync from the new top-level module
+from activesync.router import router as activesync_router
+from app.routers.activesync import eas_dispatch as eas_dispatch_handler
+from app.routers.activesync import eas_options as eas_options_handler
+
 from .config import settings
 from .database import create_tables, engine, ensure_uuid_columns_and_backfill
 from .email_queue import Base as QueueBase
@@ -30,9 +35,6 @@ from .routers import (
     shares,
     websocket_simple,
 )
-# Import ActiveSync from the new top-level module
-from activesync.router import router as activesync_router
-from activesync.router import eas_options as eas_options_handler, eas_dispatch as eas_dispatch_handler
 from .smtp_server import start_smtp_server, stop_smtp_server
 
 logger = logging.getLogger(__name__)

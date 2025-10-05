@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import email
 import html as html_unescape
 import logging
@@ -419,16 +420,19 @@ class EmailHandler:
                 if not plain_body:
                     plain_body = body or ""
                 mime_type = mime_result.get("mime_type") or "multipart/alternative"
-                raw_source = mime_result.get("raw_source") or data_content
-                
-                # CRITICAL: Base64 encode MIME content for ActiveSync compatibility
-                # The MIME content must be stored as base64 in the database
-                # so it can be decoded correctly when sent to ActiveSync clients
+                raw_source = mime_result.get("raw_source")
+                if raw_source is None:
+                    raw_source = data_content
+
                 if isinstance(raw_source, str):
-                    raw_source_bytes = raw_source.encode('utf-8', errors='ignore')
+                    raw_source_bytes = raw_source.encode("utf-8", errors="ignore")
                 else:
-                    raw_source_bytes = raw_source
-                mime_content_b64 = base64.b64encode(raw_source_bytes).decode('ascii')
+                    raw_source_bytes = raw_source or b""
+
+                if not raw_source_bytes and data_content:
+                    raw_source_bytes = data_content.encode("utf-8", errors="ignore")
+
+                mime_content_b64 = base64.b64encode(raw_source_bytes).decode("ascii")
                 
                 email_record = Email(
                     subject=safe_subject,

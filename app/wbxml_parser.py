@@ -123,6 +123,63 @@ def parse_wbxml_foldersync_request(wbxml_bytes: bytes) -> dict:
     if not wbxml_bytes or len(wbxml_bytes) < 6:
         return {"sync_key": "0"}
 
+    SWITCH_PAGE = 0x00
+    END = 0x01
+    STR_I = 0x03
+    CP_FOLDERHIERARCHY = 0x07
+    FH_SYNCKEY = 0x12
+
+    sync_key = "0"
+    cp = 0
+
+    # Skip WBXML header (version, public ID, charset, string table length + table bytes)
+    i = 0
+    if len(wbxml_bytes) >= 4:
+        i += 3  # version, public id, charset
+        strtbl_len = wbxml_bytes[i]
+        i += 1
+        if strtbl_len:
+            i += strtbl_len
+
+    if i >= len(wbxml_bytes):
+        i = 0
+
+    def read_inline_string(buf: bytes, pos: int) -> tuple[str, int]:
+        if pos >= len(buf) or buf[pos] != STR_I:
+            return "", pos
+        pos += 1
+        start = pos
+        while pos < len(buf) and buf[pos] != 0x00:
+            pos += 1
+        text = buf[start:pos].decode("utf-8", errors="ignore")
+        if pos < len(buf):
+            pos += 1
+        return text, pos
+
+    while i < len(wbxml_bytes):
+        b = wbxml_bytes[i]
+        i += 1
+
+        if b == SWITCH_PAGE:
+            if i < len(wbxml_bytes):
+                cp = wbxml_bytes[i]
+                i += 1
+            continue
+
+        if b == END:
+            continue
+
+        token = b & 0x3F
+        has_content = (b & 0x40) != 0
+
+        if cp == CP_FOLDERHIERARCHY and token == FH_SYNCKEY and has_content:
+            text, i = read_inline_string(wbxml_bytes, i)
+            if text:
+                sync_key = text
+            break
+
+    return {"sync_key": sync_key or "0"}
+
 
 def _extract_body_preferences(wbxml_bytes: bytes) -> list:
     """Best-effort parser for AirSyncBase BodyPreference blocks."""

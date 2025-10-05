@@ -1,3 +1,4 @@
+import base64
 import smtplib
 import email
 from email.mime.text import MIMEText
@@ -44,11 +45,14 @@ class EmailService:
                     body_plain,
                     body_html if body_html else None,
                 )
+                mime_content_b64 = base64.b64encode(
+                    mime_content.encode("utf-8", errors="ignore")
+                ).decode("ascii")
                 email_record = Email(
                     subject=email_data.subject,
                     body=body_plain,
                     body_html=body_html,
-                    mime_content=mime_content,
+                    mime_content=mime_content_b64,
                     mime_content_type=mime_type,
                     sender_id=sender_id,
                     recipient_id=recipient.id
@@ -91,11 +95,14 @@ class EmailService:
                     body_plain,
                     body_html if body_html else None,
                 )
+                mime_content_b64 = base64.b64encode(
+                    mime_content.encode("utf-8", errors="ignore")
+                ).decode("ascii")
                 email_record = Email(
                     subject=email_data.subject,
                     body=body_plain,
                     body_html=body_html,
-                    mime_content=mime_content,
+                    mime_content=mime_content_b64,
                     mime_content_type=mime_type,
                     sender_id=sender_id,
                     recipient_id=None,  # External recipient

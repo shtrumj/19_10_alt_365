@@ -28,6 +28,37 @@ def parse_email_content(raw_email_body):
     logger = logging.getLogger(__name__)
 
     try:
+        if isinstance(raw_email_body, bytes):
+            raw_email_body = raw_email_body.decode("utf-8", errors="ignore")
+
+        decoded_candidate = None
+        if isinstance(raw_email_body, str):
+            stripped = raw_email_body.strip()
+            if stripped:
+                normalized = re.sub(r"\s+", "", stripped)
+                if (
+                    len(normalized) % 4 == 0
+                    and re.fullmatch(r"[A-Za-z0-9+/=]+", normalized or "")
+                ):
+                    try:
+                        decoded_bytes = base64.b64decode(normalized, validate=True)
+                        if decoded_bytes and (
+                            b"Content-Type" in decoded_bytes[:4096]
+                            or b"Subject:" in decoded_bytes[:4096]
+                        ):
+                            decoded_candidate = decoded_bytes.decode(
+                                "utf-8", errors="ignore"
+                            )
+                        elif decoded_bytes and len(decoded_bytes) > 16:
+                            decoded_candidate = decoded_bytes.decode(
+                                "utf-8", errors="ignore"
+                            )
+                    except (binascii.Error, ValueError):
+                        decoded_candidate = None
+
+        if decoded_candidate:
+            raw_email_body = decoded_candidate
+
         logger.info("🔍 Starting email parsing...")
         logger.debug(f"Raw email length: {len(raw_email_body)} characters")
         logger.debug(f"Raw email preview: {raw_email_body[:200]}...")
