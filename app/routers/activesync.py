@@ -1149,12 +1149,7 @@ async def eas_dispatch(
             or (
                 pending_int is not None
                 and client_int is not None
-                and client_int == pending_int + 1
-                and (
-                    server_int == pending_int
-                    or server_int == client_int
-                    or server_int is None
-                )
+                and client_int >= pending_int
             )
         ):
             pending_confirmed = True
@@ -1164,12 +1159,7 @@ async def eas_dispatch(
                 state.pending_sync_key
                 and pending_int is not None
                 and client_int is not None
-                and client_int == pending_int + 1
-                and (
-                    server_int == pending_int
-                    or server_int == client_int
-                    or server_int is None
-                )
+                and client_int > pending_int
             )
             # Client got the batch! Commit it now
             pending_ids = _parse_id_list(state.pending_item_ids)
@@ -1216,7 +1206,7 @@ async def eas_dispatch(
         # 2) Client didn't get last response? (retries with old key OR sends 0 when pending exists)
         # CRITICAL FIX #26C: Check if client is one behind pending!
         # Example: client="6", server="7", pending="7" → client wants the pending batch!
-        elif state.pending_sync_key:
+        elif state.pending_sync_key and not fetch_ids:
             # Calculate if client is asking for the pending batch
             try:
                 client_int = int(client_sync_key) if client_sync_key.isdigit() else 0
