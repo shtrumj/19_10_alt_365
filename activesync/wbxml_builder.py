@@ -235,7 +235,6 @@ def _prepare_body_payload(
 ) -> Dict[str, str]:
     html = str(em.get('body_html') or em.get('html') or '')
     plain = str(em.get('body') or em.get('preview') or '')
-    native_body_type = '2' if html else '1'
 
     body_type = requested_type if requested_type in (1, 2, 4) else 2
 
@@ -260,7 +259,8 @@ def _prepare_body_payload(
             'data': data_text,
             'estimated_size': estimated_size,
             'truncated': truncated_flag,
-            'native_type': native,
+            'native_type': '4',
+            'content_type': 'message/rfc822',
         }
 
     preference = 1 if body_type == 1 else 2
@@ -272,12 +272,18 @@ def _prepare_body_payload(
 
     actual_type = '2' if (content and selected_native == 2 and data_text) else '1'
 
+    content_type = (
+        'text/html; charset=utf-8' if actual_type == '2' else 'text/plain; charset=utf-8'
+    )
+    native_type = '2' if selected_native == 2 else '1'
+
     return {
         'type': actual_type,
         'data': data_text,
         'estimated_size': estimated_size,
         'truncated': truncated_flag,
-        'native_type': native_body_type,
+        'native_type': native_type,
+        'content_type': content_type,
     }
 
 def write_fetch_responses(

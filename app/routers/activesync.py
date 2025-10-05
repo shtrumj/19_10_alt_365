@@ -28,7 +28,6 @@ from ..email_service import EmailService
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from activesync.adapter import sync_prepare_batch
-from activesync.state_machine import SyncStateStore
 
 # Z-Push-compliant WBXML builder imports
 from activesync.ios26_compatibility import (
@@ -36,6 +35,7 @@ from activesync.ios26_compatibility import (
     get_ios26_options_headers,
     get_ios26_response_headers,
 )
+from activesync.state_machine import SyncStateStore
 from activesync.wbxml_builder import (
     SyncBatch,
     build_foldersync_no_changes,
@@ -545,7 +545,9 @@ async def eas_dispatch(
 
     if negotiated_version is None:
         negotiated_version = (
-            DEFAULT_PROTOCOL_VERSION if is_ios26_client else LEGACY_FALLBACK_PROTOCOL_VERSION
+            DEFAULT_PROTOCOL_VERSION
+            if is_ios26_client
+            else LEGACY_FALLBACK_PROTOCOL_VERSION
         )
 
     if requested_version and requested_version not in SUPPORTED_PROTOCOL_VERSIONS:
@@ -568,7 +570,9 @@ async def eas_dispatch(
             policy_key=policy_key, protocol_version=negotiated_version
         )
     else:
-        headers = _eas_headers(policy_key=policy_key, protocol_version=negotiated_version)
+        headers = _eas_headers(
+            policy_key=policy_key, protocol_version=negotiated_version
+        )
 
     # Log version negotiation
     logger.info(
@@ -1134,7 +1138,9 @@ async def eas_dispatch(
             except (TypeError, ValueError):
                 client_int = None
             try:
-                server_int = int(state.sync_key) if str(state.sync_key).isdigit() else None
+                server_int = (
+                    int(state.sync_key) if str(state.sync_key).isdigit() else None
+                )
             except (TypeError, ValueError):
                 server_int = None
 
@@ -1199,9 +1205,9 @@ async def eas_dispatch(
                     "event": "sync_pending_confirmed",
                     "client_sync_key": client_sync_key,
                     "committed_max_id": state.last_synced_email_id,
-                    "confirmation_mode": "client_ahead"
-                    if client_ahead_confirmation
-                    else "direct",
+                    "confirmation_mode": (
+                        "client_ahead" if client_ahead_confirmation else "direct"
+                    ),
                     "message": "Client confirmed - committed pending batch, will send next with NEW key",
                 },
             )
