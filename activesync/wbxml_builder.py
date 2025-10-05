@@ -194,6 +194,43 @@ def _truncate_bytes(data: bytes, limit: Optional[int]) -> tuple[bytes, str]:
         return data, "0"
     return data[:limit_int], "1"
 
+# UTF-8 safe truncation for text payloads
+# Ensures we don't cut inside a multibyte sequence
+# Returns (bytes, truncated_flag)
+
+def _truncate_utf8_bytes(data: bytes, limit: Optional[int]) -> tuple[bytes, str]:
+    if not data:
+        return data, "0"
+    if limit is None:
+        return data, "0"
+    try:
+        n = int(limit)
+    except (ValueError, TypeError):
+        return data, "0"
+    if n <= 0 or len(data) <= n:
+        return data, "0"
+    # Backtrack from n to the start of a UTF-8 character boundary
+    end = n
+    # While byte is a continuation (10xxxxxx), move back
+    while end > 0 and (data[end - 1] & 0xC0) == 0x80:
+        end -= 1
+    # Safety: if we backed into leading bytes incorrectly, try decode fallback
+    candidate = data[:end]
+    try:
+        candidate.decode("utf-8")
+        return candidate, "1"
+    except UnicodeDecodeError:
+        # Fallback: strip a few bytes until decodable or empty
+        while end > 0:
+            end -= 1
+            candidate = data[:end]
+            try:
+                candidate.decode("utf-8")
+                return candidate, "1"
+            except UnicodeDecodeError:
+                continue
+        return b"", "1"
+
 
 def _format_email_date(value: Any) -> str:
     if isinstance(value, datetime):
@@ -304,8 +341,8 @@ def _prepare_body_payload(
     content, selected_native = _select_body_content(em, body_type_preference=preference)
     body_bytes = content.encode("utf-8") if content else b""
     estimated_size = str(len(body_bytes))
-    payload_bytes, truncated_flag = _truncate_bytes(body_bytes, truncation_size)
-    data_text = payload_bytes.decode("utf-8", errors="ignore") if payload_bytes else ""
+    payload_bytes, truncated_flag = _truncate_utf8_bytes(body_bytes, truncation_size)
+    data_text = payload_bytes.decode("utf-8", errors="strict") if payload_bytes else ""
 
     actual_type = "2" if (content and selected_native == 2 and data_text) else "1"
 

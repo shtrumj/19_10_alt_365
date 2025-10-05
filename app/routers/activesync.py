@@ -22,7 +22,7 @@ import os
 import sys
 
 from ..auth import get_current_user_from_basic_auth
-from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db
+from ..database import ActiveSyncDevice, ActiveSyncState, CalendarEvent, User, get_db, EmailAttachment
 from ..diagnostic_logger import _write_json_line
 from ..email_service import EmailService
 
@@ -1178,7 +1178,12 @@ async def eas_dispatch(
         try:
             window_size = int(window_size_str)
         except (ValueError, TypeError):
-            window_size = 5  # Default to 5 emails per sync
+            window_size = 25
+        # Cap to reasonable bounds
+        if window_size <= 0:
+            window_size = 25
+        elif window_size > 100:
+            window_size = 100
 
         body_prefs = wbxml_params.get("body_preferences", []) or []
 
@@ -1227,24 +1232,28 @@ async def eas_dispatch(
         # When client sends SyncKey=0, it means "I have nothing, start fresh"
         # We MUST reset last_synced_email_id BEFORE filtering emails!
         if client_sync_key == "0":
-            state.synckey_counter = 1
-            state.sync_key = "1"
-            state.last_synced_email_id = 0  # RESET PAGINATION!
-            state.synced_email_ids = None
-            state.pending_sync_key = None
-            state.pending_max_email_id = None
-            state.pending_item_ids = None
-            db.commit()
+            # Preserve state if we already have a non-zero server state; avoid hard resets on reconnects
+            if not state.sync_key or state.sync_key == "0":
+                state.synckey_counter = 1
+                state.sync_key = "1"
+                state.last_synced_email_id = (
+                    0  # RESET PAGINATION for first-time sync only
+                )
+                state.synced_email_ids = None
+                state.pending_sync_key = None
+                state.pending_max_email_id = None
+                state.pending_item_ids = None
+                db.commit()
 
-            _write_json_line(
-                "activesync/activesync.log",
-                {
-                    "event": "sync_initial_reset_EARLY",
-                    "device_id": device_id,
-                    "collection_id": collection_id,
-                    "message": "CRITICAL: Reset last_synced_email_id BEFORE email query",
-                },
-            )
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_initial_reset_EARLY",
+                        "device_id": device_id,
+                        "collection_id": collection_id,
+                        "message": "CRITICAL: Reset last_synced_email_id BEFORE email query",
+                    },
+                )
 
         # CRITICAL: Detect InvalidSyncKey - client and server are out of sync
         # Per expert: "When client sends stale key (e.g. 4) but server is at 190,
@@ -2455,29 +2464,32 @@ async def eas_dispatch(
     if cmd == "itemoperations":
         # Parse WBXML request to extract fetch requests
         request_body_bytes = await request.body()
-
+        
         try:
             # Parse WBXML to extract fetch requests
             fetches = _parse_itemops_fetches(request_body_bytes)
-
+            
+            # Fallback: allow simple query param fetch if WBXML parser yields nothing
+            if not fetches:
+                qp_collection = request.query_params.get("CollectionId")
+                qp_server = request.query_params.get("ServerId")
+                if qp_server:
+                    fetches = [(qp_collection or "1", qp_server, [])]
+            
             if not fetches:
                 # No valid fetch requests
                 xml = f'<ItemOperations xmlns="ItemOperations"><Status>2</Status></ItemOperations>'
-                return Response(
-                    content=xml, media_type="application/xml", headers=headers
-                )
-
+                return Response(content=xml, media_type="application/xml", headers=headers)
+            
             # Process each fetch request
             email_service = EmailService(db)
             response_items = []
-
+            
             for collection_id, server_id, body_prefs in fetches:
                 # Get the email
-                emails = email_service.get_user_emails(
-                    current_user.id, "inbox", limit=1000
-                )
+                emails = email_service.get_user_emails(current_user.id, "inbox", limit=1000)
                 target_email = next((e for e in emails if str(e.id) == server_id), None)
-
+                
                 if target_email:
                     # Convert email to dict format
                     email_dict = {
@@ -2490,26 +2502,22 @@ async def eas_dispatch(
                         "created_at": target_email.received_at,
                         "mime_content": getattr(target_email, "mime_content", None),
                     }
-
+                    
                     # Select body preference (prefer MIME for single-item fetch)
-                    body_type, truncation_size = _select_body_pref(
-                        body_prefs, is_single_item_fetch=True
-                    )
-
+                    body_type, truncation_size = _select_body_pref(body_prefs, is_single_item_fetch=True)
+                    
                     # Build response item
-                    response_items.append(
-                        {
-                            "collection_id": collection_id,
-                            "server_id": server_id,
-                            "email": email_dict,
-                            "body_type": body_type,
-                            "truncation_size": truncation_size,
-                        }
-                    )
-
+                    response_items.append({
+                        "collection_id": collection_id,
+                        "server_id": server_id,
+                        "email": email_dict,
+                        "body_type": body_type,
+                        "truncation_size": truncation_size,
+                    })
+            
             # Build WBXML ItemOperations response
             wbxml_payload = _build_itemops_wbxml_response(response_items)
-
+            
             _write_json_line(
                 "activesync/activesync.log",
                 {
@@ -2519,9 +2527,9 @@ async def eas_dispatch(
                     "body_types": [item["body_type"] for item in response_items],
                 },
             )
-
+            
             return _wbxml_response(wbxml_payload, headers)
-
+            
         except Exception as e:
             _write_json_line(
                 "activesync/activesync.log",
@@ -2571,10 +2579,34 @@ async def eas_dispatch(
 
     # MS-ASCMD GetAttachment command implementation
     if cmd == "getattachment":
-        # MS-ASCMD GetAttachment for fetching email attachments
-        _write_json_line("activesync/activesync.log", {"event": "getattachment"})
-        xml = f'<GetAttachment xmlns="GetAttachment"><Status>1</Status></GetAttachment>'
-        return Response(content=xml, media_type="application/xml", headers=headers)
+        # Stream attachment binary by FileReference (UUID or path key)
+        file_ref = request.query_params.get("FileReference")
+        if not file_ref:
+            xml = f'<GetAttachment xmlns="GetAttachment"><Status>2</Status></GetAttachment>'
+            return Response(content=xml, media_type="application/xml", headers=headers)
+        try:
+            from ..database import EmailAttachment
+            att = (
+                db.query(EmailAttachment)
+                .filter((EmailAttachment.uuid == file_ref) | (EmailAttachment.id == file_ref))
+                .first()
+            )
+            if not att or not att.file_path or not os.path.exists(att.file_path):
+                xml = f'<GetAttachment xmlns="GetAttachment"><Status>6</Status></GetAttachment>'
+                return Response(content=xml, media_type="application/xml", headers=headers, status_code=404)
+            # Stream file
+            content_type = att.content_type or "application/octet-stream"
+            with open(att.file_path, "rb") as f:
+                data = f.read()
+            # Return as raw attachment body; EAS often uses direct HTTP response
+            return Response(content=data, media_type=content_type, headers=headers)
+        except Exception as e:
+            _write_json_line(
+                "activesync/activesync.log",
+                {"event": "getattachment_error", "error": str(e), "file_ref": file_ref},
+            )
+            xml = f'<GetAttachment xmlns="GetAttachment"><Status>2</Status></GetAttachment>'
+            return Response(content=xml, media_type="application/xml", headers=headers, status_code=500)
 
     # MS-ASCMD Calendar command implementation
     if cmd == "calendar":
