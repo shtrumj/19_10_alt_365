@@ -110,6 +110,9 @@ async def autodiscover(request: Request):
     escaped_as = html.escape(activesync_url)
     escaped_mapi = html.escape(mapi_url)
     escaped_oab = html.escape(oab_url)
+    fake_org = "/o=SkyShift Dev/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)"
+    server_dn = f"{fake_org}/cn=Configuration/cn=Servers/cn={escaped_host}"
+    mailbox_dn = f"{fake_org}/cn=Recipients/cn={escaped_email.split('@')[0]}"
 
     response_ns = response_schema
 
@@ -123,6 +126,7 @@ async def autodiscover(request: Request):
     </User>
     <Account>
       <AccountType>email</AccountType>
+      <AccountDisplayName>SkyShift.Dev Exchange</AccountDisplayName>
       <Action>settings</Action>
       <Protocol>
         <Type>EXCH</Type>
@@ -130,8 +134,13 @@ async def autodiscover(request: Request):
         <Port>443</Port>
         <ServerVersion>15.01.2507.000</ServerVersion>
         <SSL>On</SSL>
+        <SPA>Off</SPA>
+        <AuthRequired>On</AuthRequired>
+        <DomainRequired>Off</DomainRequired>
         <AuthPackage>Negotiate</AuthPackage>
         <LoginName>{escaped_email}</LoginName>
+        <ServerDN>{server_dn}</ServerDN>
+        <MdbDN>{mailbox_dn}</MdbDN>
         <ASUrl>{escaped_as}</ASUrl>
         <EwsUrl>{escaped_ews}</EwsUrl>
         <OOFUrl>{escaped_ews}</OOFUrl>
@@ -163,7 +172,11 @@ async def autodiscover(request: Request):
       <Protocol>
         <Type>EXPR</Type>
         <Server>{escaped_host}</Server>
+        <Port>443</Port>
         <SSL>On</SSL>
+        <SPA>Off</SPA>
+        <AuthRequired>On</AuthRequired>
+        <DomainRequired>Off</DomainRequired>
         <AuthPackage>Basic</AuthPackage>
         <LoginName>{escaped_email}</LoginName>
         <ASUrl>{escaped_as}</ASUrl>
@@ -171,6 +184,15 @@ async def autodiscover(request: Request):
         <OOFUrl>{escaped_ews}</OOFUrl>
         <OABUrl>{escaped_oab}</OABUrl>
         <CertPrincipalName>msstd:{escaped_host}</CertPrincipalName>
+        <ServerExclusiveConnect>On</ServerExclusiveConnect>
+        <External>
+          <Server>{escaped_host}</Server>
+          <Url>{escaped_mapi}</Url>
+          <ASUrl>{escaped_as}</ASUrl>
+          <EwsUrl>{escaped_ews}</EwsUrl>
+          <OOFUrl>{escaped_ews}</OOFUrl>
+          <CertPrincipalName>msstd:{escaped_host}</CertPrincipalName>
+        </External>
       </Protocol>
       <Protocol>
         <Type>WEB</Type>
@@ -269,7 +291,11 @@ async def autodiscover_json(email_address: str, request: Request):
                 {
                     "Type": "EXCH",
                     "Server": host,
+                    "Port": 443,
                     "SSL": "On",
+                    "SPA": "Off",
+                    "AuthRequired": "On",
+                    "DomainRequired": "Off",
                     "AuthPackage": "Negotiate",
                     "ASUrl": activesync_url,
                     "EwsUrl": ews_url,
@@ -282,18 +308,33 @@ async def autodiscover_json(email_address: str, request: Request):
                     "ServerExclusiveConnect": True,
                     "PublicFolderServer": host,
                     "ActiveDirectoryServer": host,
+                    "ServerDN": server_dn,
+                    "MdbDN": mailbox_dn,
                     "CertPrincipalName": f"msstd:{host}"
                 },
                 {
                     "Type": "EXPR",
                     "Server": host,
+                    "Port": 443,
                     "SSL": "On",
+                    "SPA": "Off",
+                    "AuthRequired": "On",
+                    "DomainRequired": "Off",
                     "AuthPackage": "Basic",
                     "ASUrl": activesync_url,
                     "EwsUrl": ews_url,
                     "OOFUrl": ews_url,
                     "OABUrl": f"https://{host}/oab/default.oab",
                     "LoginName": email_address,
+                    "ServerExclusiveConnect": True,
+                    "External": {
+                        "Server": host,
+                        "Url": mapi_url,
+                        "ASUrl": activesync_url,
+                        "EwsUrl": ews_url,
+                        "OOFUrl": ews_url,
+                        "CertPrincipalName": f"msstd:{host}"
+                    },
                     "CertPrincipalName": f"msstd:{host}"
                 },
                 {
