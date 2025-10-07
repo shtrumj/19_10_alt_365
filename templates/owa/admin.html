@@ -55,6 +55,14 @@
             <button class="btn btn-outline-secondary btn-sm" onclick="adminAction('/owa/admin/actions/queue/flush')"><i class="fas fa-broom"></i> נקה/Flush retries</button>
           </div>
         </div>
+        <div class="mt-3">
+          <label class="form-label text-muted" for="resend-message-id">שליחה מחדש של הודעה</label>
+          <div class="input-group input-group-sm">
+            <input type="text" id="resend-message-id" class="form-control" placeholder="Message-ID או מזהה בתור">
+            <button class="btn btn-outline-success" type="button" onclick="resendFromAdmin()"><i class="fas fa-paper-plane"></i> שלח שוב</button>
+          </div>
+          <small class="text-muted">ניתן למצוא את ה-Message-ID בעמוד "תורים".</small>
+        </div>
         <div id="admin-action-result" class="mt-3 text-muted small"></div>
       </div>
     </div>
@@ -74,8 +82,37 @@ async function adminAction(url){
     el.classList.add('text-danger');
   }
 }
+
+async function resendFromAdmin(){
+  const input = document.getElementById('resend-message-id');
+  const value = input.value.trim();
+  const el = document.getElementById('admin-action-result');
+  if(!value){
+    input.focus();
+    el.textContent = 'נא להזין Message-ID או מזהה תור.';
+    el.classList.add('text-danger');
+    return;
+  }
+  try{
+    const res = await fetch('/owa/admin/actions/queue/resend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_id: value })
+    });
+    const data = await res.json();
+    if(res.ok){
+      el.textContent = 'הודעה הוחזרה לתור: ' + (data.subject || data.message_id || value);
+      el.classList.remove('text-danger');
+      input.value = '';
+    }else{
+      el.textContent = 'שגיאה: ' + (data.detail || JSON.stringify(data));
+      el.classList.add('text-danger');
+    }
+  }catch(err){
+    el.textContent = 'שגיאת רשת: ' + err.message;
+    el.classList.add('text-danger');
+  }
+}
 </script>
 {% endblock %}
-
-
 

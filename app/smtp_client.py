@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from email.utils import formatdate, make_msgid
 from typing import Dict, List, Optional, Tuple
 import socket
 import time
@@ -59,11 +60,18 @@ class SMTPClient:
             msg['From'] = sender
             msg['To'] = recipient
             msg['Subject'] = subject
-            
+
+            # RFC compliance headers
+            provided_headers = headers or {}
+            message_id = provided_headers.get('Message-ID') or make_msgid(domain=sender.split('@')[-1])
+            msg['Message-ID'] = message_id
+            msg['Date'] = formatdate(localtime=True)
+            msg['MIME-Version'] = '1.0'
+
             # Add custom headers
-            if headers:
-                for key, value in headers.items():
-                    if key.lower() not in ['from', 'to', 'subject']:
+            if provided_headers:
+                for key, value in provided_headers.items():
+                    if key.lower() not in ['from', 'to', 'subject', 'message-id', 'date', 'mime-version']:
                         msg[key] = value
             
             # Add body

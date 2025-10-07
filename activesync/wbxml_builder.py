@@ -29,8 +29,8 @@ STR_I = 0x03
 CP_AIRSYNC = 0
 CP_PING = 1  # Ping codepage for push notifications
 CP_EMAIL = 2
-CP_AIRSYNCBASE = 17
-CP_PROVISION = 14
+CP_AIRSYNCBASE = 14
+CP_PROVISION = 13
 
 # AirSync (CP 0)
 AS_Sync = 0x05
@@ -194,9 +194,11 @@ def _truncate_bytes(data: bytes, limit: Optional[int]) -> tuple[bytes, str]:
         return data, "0"
     return data[:limit_int], "1"
 
+
 # UTF-8 safe truncation for text payloads
 # Ensures we don't cut inside a multibyte sequence
 # Returns (bytes, truncated_flag)
+
 
 def _truncate_utf8_bytes(data: bytes, limit: Optional[int]) -> tuple[bytes, str]:
     if not data:
@@ -327,13 +329,17 @@ def _prepare_body_payload(
         estimated_size = str(len(mime_bytes))
         payload_bytes, truncated_flag = _truncate_bytes(mime_bytes, truncation_size)
 
+        # Z-Push sends NativeBodyType=1 (plain) or 2 (HTML) even when Type=4 (MIME)
+        _, native_pref = _select_body_content(em, 2)
+        native_type = "2" if native_pref == 2 else "1"
+
         # For Type=4, we need to return the raw bytes for OPAQUE writing
         return {
             "type": "4",
             "data_bytes": payload_bytes,  # Raw bytes for OPAQUE
             "estimated_size": estimated_size,
             "truncated": truncated_flag,
-            "native_type": "4",
+            "native_type": native_type,
             "content_type": "message/rfc822",
         }
 

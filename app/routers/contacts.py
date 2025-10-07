@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,7 @@ def contacts_test():
     return {"message": "Contacts router is working"}
 
 
+@router.get("/", response_class=HTMLResponse)
 @router.get("/contacts", response_class=HTMLResponse)
 def contacts_home(
     request: Request,
@@ -153,8 +154,12 @@ async def create_contact(
 ):
     if not isinstance(current_user, User):
         return current_user
-    form = await request.form()
-    data = {k: v for k, v in form.items() if v}
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        data = await request.json()
+    else:
+        form = await request.form()
+        data = {k: v for k, v in form.items() if v}
     service = _service(db, current_user)
     contact = service.create_contact(data)
     return {"status": "ok", "uuid": contact.uuid}
@@ -179,7 +184,7 @@ def get_contact(
     return contact
 
 
-@router.put("/{contact_uuid}")
+@router.put("/{contact_uuid}", response_model=ContactResponse)
 def update_contact(
     contact_uuid: str,
     payload: Dict[str, Any],
@@ -200,7 +205,7 @@ def update_contact(
     return contact
 
 
-@router.delete("/{contact_uuid}")
+@router.delete("/{contact_uuid}", status_code=204)
 def delete_contact(
     contact_uuid: str,
     current_user: Union[User, JSONResponse, RedirectResponse] = Depends(
@@ -215,4 +220,4 @@ def delete_contact(
     service = _service(db, current_user)
     if not service.delete_contact(contact_uuid):
         raise HTTPException(status_code=404, detail="Contact not found")
-    return {"status": "deleted"}
+    return Response(status_code=204)

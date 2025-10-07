@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -363,6 +364,10 @@ class Contact(Base):
 
     owner = relationship("User", back_populates="contacts")
     folder = relationship("ContactFolder", back_populates="contacts")
+
+    @property
+    def folder_uuid(self) -> Optional[str]:
+        return self.folder.uuid if self.folder else None
 
 
 class ContactFolder(Base):

@@ -276,7 +276,11 @@ class EmailDeliveryService:
         """
         try:
             # Generate unique message ID
-            message_id = f"{uuid.uuid4()}@365-email.local"
+            message_id = f"<{uuid.uuid4()}@365-email.local>"
+
+            # Ensure headers dict exists and carries Message-ID for downstream SMTP client
+            headers = dict(headers) if headers else {}
+            headers.setdefault("Message-ID", message_id)
             
             # Add to queue
             queued_email = email_queue.add_email(

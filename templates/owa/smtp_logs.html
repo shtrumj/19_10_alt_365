@@ -17,13 +17,16 @@
       </div>
       <div class="card-body">
         <form class="row g-3" onsubmit="event.preventDefault(); fetchLogs();">
+          <div class="col-md-2">
+            <label class="form-label">סוג תעבורה</label>
+            <select class="form-select" id="direction-select">
+              <option value="inbound" selected>תעבורה נכנסת</option>
+              <option value="outbound">תעבורה יוצאת</option>
+            </select>
+          </div>
           <div class="col-md-3">
             <label class="form-label">לוג</label>
-            <select class="form-select" id="log-select">
-              <option value="internal_smtp" selected>internal_smtp.log</option>
-              <option value="smtp_errors">smtp_errors.log</option>
-              <option value="email_processing">email_processing.log</option>
-            </select>
+            <select class="form-select" id="log-select"></select>
           </div>
           <div class="col-md-5">
             <label class="form-label">טקסט לחיפוש</label>
@@ -67,7 +70,37 @@
 </div>
 
 <script>
+const LOG_OPTIONS = {
+  inbound: [
+    { value: 'internal_smtp', label: 'internal_smtp.log' },
+    { value: 'smtp_errors', label: 'smtp_errors.log' },
+    { value: 'email_processing', label: 'email_processing.log' }
+  ],
+  outbound: [
+    { value: 'external_smtp', label: 'external_smtp.log' },
+    { value: 'smtp_connections', label: 'smtp_connections.log' },
+    { value: 'smtp_errors', label: 'smtp_errors.log' }
+  ]
+};
+
 let autoTimer = null;
+
+function populateLogOptions(initial = false){
+  const direction = document.getElementById('direction-select').value;
+  const logSelect = document.getElementById('log-select');
+  const previousValue = logSelect.value;
+
+  logSelect.innerHTML = '';
+  LOG_OPTIONS[direction].forEach(opt => {
+    const option = document.createElement('option');
+    option.value = opt.value;
+    option.textContent = opt.label;
+    logSelect.appendChild(option);
+  });
+
+  const fallback = LOG_OPTIONS[direction][0]?.value || '';
+  logSelect.value = LOG_OPTIONS[direction].some(opt => opt.value === previousValue) && !initial ? previousValue : fallback;
+}
 
 function toggleAuto(){
   if(autoTimer){
@@ -132,9 +165,14 @@ function highlight(line, q){
 }
 
 document.addEventListener('DOMContentLoaded', function(){
+  populateLogOptions(true);
   fetchLogs();
+
+  document.getElementById('direction-select').addEventListener('change', () => {
+    populateLogOptions();
+    fetchLogs();
+  });
 });
 </script>
 {% endblock %}
-
 

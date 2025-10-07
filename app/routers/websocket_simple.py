@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     """WebSocket endpoint for real-time email notifications - NO AUTHENTICATION"""
     try:
-        await websocket.accept()
         await manager.connect(websocket, user_id)
 
         # Send connection confirmation

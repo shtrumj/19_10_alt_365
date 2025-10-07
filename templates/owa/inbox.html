@@ -1,457 +1,565 @@
-{% extends "owa/base.html" %} {% block title %}{{ get_translation(request,
-folder) }} - {{ get_translation(request, 'title') }}{% endblock %} {% block
-content %}
-<div class="content-header">
-  <h1>
-    <i
-      class="fas fa-{% if folder == 'inbox' %}inbox{% elif folder == 'sent' %}paper-plane{% else %}trash{% endif %}"
-    ></i>
-    {{ get_translation(request, folder) }}
-  </h1>
-  <div>
-    {% if folder == "inbox" %}
-    <a href="/owa/compose" class="btn btn-primary">
-      <i class="fas fa-edit"></i> {{ get_translation(request, 'compose') }}
-    </a>
-    {% endif %}
-    <button class="btn btn-outline-secondary" onclick="refreshEmails()">
-      <i class="fas fa-sync-alt"></i> {{ get_translation(request, 'refresh') }}
-    </button>
-  </div>
-</div>
+{% extends "owa/base.html" %}
+{% block title %}{{ get_translation(request, folder) }} - {{ get_translation(request, 'title') }}{% endblock %}
 
-<!-- Filter and Search -->
-<div class="row mb-3">
-  <div class="col-md-6">
-    <div class="input-group">
-      <span class="input-group-text"><i class="fas fa-search"></i></span>
-      <input
-        type="text"
-        class="form-control"
-        id="searchInput"
-        placeholder="{{ get_translation(request, 'search') }}..."
-      />
-    </div>
-  </div>
-  <div class="col-md-6">
-    <div class="btn-group" role="group">
-      <button class="btn btn-outline-primary" onclick="filterEmails('all')">
-        {{ get_translation(request, 'all') }}
-      </button>
-      <button class="btn btn-outline-primary" onclick="filterEmails('unread')">
-        {{ get_translation(request, 'unread') }}
-      </button>
-      <button class="btn btn-outline-primary" onclick="filterEmails('read')">
-        {{ get_translation(request, 'read') }}
-      </button>
-    </div>
-  </div>
-</div>
+{% block content %}
+<style>
+  .mail-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    height: calc(100vh - var(--header-height) - 72px);
+  }
 
-<!-- Email List with Dynamic Column Widths -->
-<div id="emailList">
-  {% if emails %}
-  <div class="email-list-container">
-    <div class="email-list-header">
-      <div class="email-column" data-column="checkbox" style="width: 5%">
-        <input type="checkbox" id="selectAll" onchange="toggleSelectAll()" />
+  .mail-command-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--command-bar-bg);
+    color: var(--color-text-primary);
+  }
+
+  .focus-tabs {
+    display: inline-flex;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    overflow: hidden;
+  }
+
+  .focus-tab {
+    padding: 0.4rem 1.2rem;
+    font-size: 0.85rem;
+    border: none;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  .focus-tab.active {
+    background: var(--accent-soft);
+    color: var(--color-text-primary);
+  }
+
+  .mail-command-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .mail-command-actions .cmd-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-alt);
+    color: var(--color-text-primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+
+  .mail-command-actions .cmd-icon:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent-strong);
+  }
+
+  .mail-layout {
+    display: grid;
+    grid-template-columns: minmax(280px, 32%) 1fr;
+    gap: 1rem;
+    height: 100%;
+    min-height: 420px;
+  }
+
+  .mail-list-panel {
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    background: var(--color-surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .mail-list-toolbar {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--list-divider);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .mail-list-toolbar input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--color-text-primary);
+  }
+
+  .mail-list-toolbar input:focus {
+    outline: none;
+  }
+
+  .mail-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.35rem 0;
+  }
+
+  .mail-row {
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.6rem 1rem;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    border-bottom: 1px solid var(--list-divider);
+  }
+
+  .mail-row:last-child {
+    border-bottom: none;
+  }
+
+  .mail-row:hover {
+    background: var(--list-row-hover-bg);
+  }
+
+  .mail-row.active {
+    background: var(--list-row-selected-bg);
+    border-left-color: var(--accent-strong);
+    box-shadow: inset 0 0 0 1px var(--accent-soft);
+  }
+
+  .mail-row.unread .mail-primary {
+    font-weight: 600;
+  }
+
+  .mail-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--color-text-primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .mail-primary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--color-text-primary);
+  }
+
+  .mail-secondary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    color: var(--color-text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .mail-time {
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+    text-align: right;
+  }
+
+  .mail-reading-pane {
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    background: var(--reading-pane-bg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .reading-header {
+    padding: 1rem 1.4rem;
+    border-bottom: 1px solid var(--list-divider);
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .reading-header h2 {
+    margin: 0;
+    font-size: 1.15rem;
+    color: var(--color-text-primary);
+  }
+
+  .reading-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+  }
+
+  .reading-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 0.4rem;
+  }
+
+  .reading-actions button {
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-alt);
+    color: var(--color-text-primary);
+    border-radius: 8px;
+    padding: 0.35rem 0.85rem;
+    font-size: 0.8rem;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+
+  .reading-actions button:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent-strong);
+  }
+
+  .reading-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.25rem;
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border-top: 1px solid var(--list-divider);
+  }
+
+  .reading-placeholder {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: var(--color-text-secondary);
+    padding: 2rem;
+  }
+
+  .reading-placeholder i {
+    font-size: 2.5rem;
+    margin-bottom: 1rem;
+    display: block;
+  }
+
+  .mail-empty {
+    flex: 1;
+    border-radius: 16px;
+    border: 1px dashed var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    flex-direction: column;
+    gap: 0.75rem;
+    margin: 1rem;
+  }
+
+  .mail-loading {
+    padding: 2rem;
+    text-align: center;
+    color: var(--color-text-secondary);
+  }
+
+  @media (max-width: 992px) {
+    .mail-layout {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+
+    .mail-shell {
+      height: auto;
+    }
+  }
+</style>
+
+<div class="mail-shell">
+  <div class="mail-command-bar">
+    <div class="focus-tabs">
+      <button class="focus-tab active" type="button" onclick="focusMode='all';applyFilters();">{{ get_translation(request, 'all') }}</button>
+      <button class="focus-tab" type="button" onclick="focusMode='unread';applyFilters();">{{ get_translation(request, 'unread') }}</button>
+      <button class="focus-tab" type="button" onclick="focusMode='read';applyFilters();">{{ get_translation(request, 'read') }}</button>
+    </div>
+    <div class="mail-command-actions">
+      <div class="cmd-icon" onclick="refreshEmails()" title="{{ get_translation(request, 'refresh') }}">
+        <i class="fas fa-sync-alt"></i>
       </div>
-      <div class="email-column" data-column="status" style="width: 5%">
-        <i class="fas fa-envelope"></i>
-      </div>
-      <div
-        class="email-column resizable"
-        data-column="sender"
-        style="width: 25%"
-      >
-        <span>{{ get_translation(request, 'from') }}</span>
-        <div class="resize-handle"></div>
-      </div>
-      <div
-        class="email-column resizable"
-        data-column="subject"
-        style="width: 45%"
-      >
-        <span>{{ get_translation(request, 'subject') }}</span>
-        <div class="resize-handle"></div>
-      </div>
-      <div class="email-column resizable" data-column="time" style="width: 20%">
-        <span>{{ get_translation(request, 'date') }}</span>
-        <div class="resize-handle"></div>
+      <div class="cmd-icon" onclick="bulkDelete()" title="{{ get_translation(request, 'delete') }}">
+        <i class="fas fa-trash"></i>
       </div>
     </div>
-    {% for email in emails %}
-    <div
-      class="email-item {% if not email.is_read %}unread{% endif %}"
-      onclick="viewEmail({{ email.id }})"
-      data-email-id="{{ email.id }}"
-      data-email-uuid="{{ email.uuid if email.uuid else '' }}"
-    >
-      <div class="email-row">
-        <div class="email-cell" data-column="checkbox">
-          <input
-            class="form-check-input email-checkbox"
-            type="checkbox"
-            onclick="event.stopPropagation()"
+  </div>
+
+  <div class="mail-layout">
+    <section class="mail-list-panel">
+      <div class="mail-list-toolbar">
+        <i class="fas fa-filter text-muted"></i>
+        <input id="searchInput" type="search" placeholder="{{ get_translation(request, 'search') }}..." />
+        <div class="cmd-icon" onclick="clearSearch()" title="{{ get_translation(request, 'reset') if get_translation(request, 'reset') else 'Reset' }}">
+          <i class="fas fa-times"></i>
+        </div>
+      </div>
+      <div class="mail-list" id="mailList">
+        {% if emails %}
+          {% for email in emails %}
+          {% set sender_address = email.sender.email if email.sender else (email.external_sender or '') %}
+          {% set recipient_address = email.recipient.email if email.recipient else (email.external_recipient or '') %}
+          {% set initials = (sender_address or recipient_address or '?')[:1].upper() %}
+          {% set preview_source = email.body_html if email.body_html else email.body %}
+          {% set preview = get_email_preview(preview_source, 120) %}
+          <article
+            class="mail-row {% if not email.is_read %}unread{% endif %}"
             data-email-id="{{ email.id }}"
-          />
-        </div>
-        <div class="email-cell" data-column="status">
-          <i
-            class="fas fa-{% if not email.is_read %}envelope{% else %}envelope-open{% endif %} text-{% if not email.is_read %}primary{% else %}muted{% endif %}"
-          ></i>
-        </div>
-        <div class="email-cell" data-column="sender">
-          <strong class="email-sender">
-            {% if folder == "inbox" %} {{ email.sender.email if email.sender
-            else email.external_sender }} {% else %} {{ email.recipient.email if
-            email.recipient else email.external_recipient }} {% endif %}
-          </strong>
-        </div>
-        <div class="email-cell" data-column="subject">
-          <div class="email-subject">{{ email.subject }}</div>
-          <div class="email-preview">
-            {% set preview_source = email.body_html if email.body_html else email.body %}
-            {% set preview = get_email_preview(preview_source, 100) %}
-            {% if preview %}
-              {{ preview }}
-            {% elif email.body %}
-              {{ email.body[:100] }}{% if email.body|length > 100 %}...{% endif %}
-            {% endif %}
-          </div>
-        </div>
-        <div class="email-cell" data-column="time">
-          <div
-            class="email-time"
-            data-timestamp="{{ email.created_at.isoformat() }}"
-          ></div>
-          {% if not email.is_read and folder == "inbox" %}
-          <span class="badge bg-primary"
-            >{{ get_translation(request, 'new') }}</span
+            data-sender="{{ sender_address }}"
+            data-recipient="{{ recipient_address }}"
+            data-subject="{{ email.subject }}"
+            data-preview="{{ preview|replace('\"', '&quot;') if preview else '' }}"
           >
+            <div class="mail-avatar">{{ initials }}</div>
+            <div class="mail-secondary">
+              <div class="mail-primary">
+                <span class="mail-from">
+                  {% if folder == 'inbox' %}
+                    {{ sender_address }}
+                  {% else %}
+                    {{ recipient_address }}
+                  {% endif %}
+                </span>
+                {% if not email.is_read %}
+                <span class="badge">{{ get_translation(request, 'new') }}</span>
+                {% endif %}
+              </div>
+              <div class="mail-subject">{{ email.subject or get_translation(request, 'no_subject') }}</div>
+              <div class="mail-preview">
+                {% if preview %}
+                  {{ preview }}
+                {% elif email.body %}
+                  {{ email.body[:120] }}{% if email.body|length > 120 %}...{% endif %}
+                {% else %}
+                  &nbsp;
+                {% endif %}
+              </div>
+            </div>
+            <div class="mail-time" data-timestamp="{{ email.created_at.isoformat() }}"></div>
+          </article>
+          {% endfor %}
+        {% else %}
+        <div class="mail-empty">
+          <i class="fas fa-inbox fa-2x"></i>
+          <p>{{ get_translation(request, 'no_emails_' + folder) }}</p>
+          {% if folder == "inbox" %}
+            <a class="command-btn primary" href="/owa/compose">
+              <i class="fas fa-edit"></i> {{ get_translation(request, 'compose_new') }}
+            </a>
           {% endif %}
-          <div class="mt-2">
-            <button
-              class="btn btn-sm btn-outline-danger"
-              onclick="event.stopPropagation(); deleteEmail({{ email.id }})"
-              title="{{ get_translation(request, 'delete') }}"
-            >
-              <i class="fas fa-trash"></i>
-            </button>
-          </div>
+        </div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="mail-reading-pane" id="readingPane">
+      <div class="reading-placeholder" id="readingPlaceholder">
+        <div>
+          <i class="fas fa-envelope-open-text"></i>
+          <p>{{ get_translation(request, 'select_email') if get_translation(request, 'select_email') else 'Select an email to read' }}</p>
         </div>
       </div>
-    </div>
-    {% endfor %}
+      <div class="reading-header d-none" id="readingHeader">
+        <h2 id="readingSubject"></h2>
+        <div class="reading-meta">
+          <span><strong>{{ get_translation(request, 'from') }}:</strong> <span id="readingFrom"></span></span>
+          <span><strong>{{ get_translation(request, 'to') if get_translation(request, 'to') else 'To' }}:</strong> <span id="readingTo"></span></span>
+          <span><i class="fas fa-clock"></i> <span id="readingTime"></span></span>
+        </div>
+        <div class="reading-actions">
+          <button type="button" onclick="replySelected()"><i class="fas fa-reply"></i> {{ get_translation(request, 'reply') if get_translation(request, 'reply') else 'Reply' }}</button>
+          <button type="button" onclick="forwardSelected()"><i class="fas fa-share"></i> {{ get_translation(request, 'forward') if get_translation(request, 'forward') else 'Forward' }}</button>
+          <button type="button" onclick="deleteCurrent()"><i class="fas fa-trash"></i> {{ get_translation(request, 'delete') }}</button>
+        </div>
+      </div>
+      <div class="reading-body d-none" id="readingBody"></div>
+      <div class="mail-loading d-none" id="readingLoading">
+        <i class="fas fa-spinner fa-spin"></i> {{ get_translation(request, 'loading') }}
+      </div>
+    </section>
   </div>
-  {% else %}
-  <div class="text-center p-5">
-    <div class="mb-4">
-      <i
-        class="fas fa-{% if folder == 'inbox' %}inbox{% elif folder == 'sent' %}paper-plane{% else %}trash{% endif %} fa-4x text-muted"
-      ></i>
-    </div>
-    <h4 class="text-muted">
-      {{ get_translation(request, 'no_emails_' + folder) }}
-    </h4>
-    {% if folder == "inbox" %}
-    <p class="text-muted">
-      {{ get_translation(request, 'no_emails_inbox') }}.
-      <a href="/owa/compose" class="btn btn-primary"
-        >{{ get_translation(request, 'compose_new') }}</a
-      >
-      {{ get_translation(request, 'to_get_started') }}!
-    </p>
-    {% elif folder == "sent" %}
-    <p class="text-muted">
-      {{ get_translation(request, 'no_emails_sent') }}.
-      <a href="/owa/compose" class="btn btn-primary"
-        >{{ get_translation(request, 'compose_first_email') }}</a
-      >!
-    </p>
-    {% else %}
-    <p class="text-muted">
-      {{ get_translation(request, 'no_emails_deleted') }}. {{
-      get_translation(request, 'deleted_emails_will_appear') }}.
-    </p>
-    {% endif %}
-  </div>
-  {% endif %}
 </div>
 
-<!-- Pagination -->
-{% if emails and emails|length >= 50 %}
-<div class="row mt-4">
-  <div class="col-12">
-    <nav aria-label="Email pagination">
-      <ul class="pagination justify-content-center">
-        <li class="page-item disabled">
-          <a class="page-link" href="#" tabindex="-1">Previous</a>
-        </li>
-        <li class="page-item active">
-          <a class="page-link" href="#">1</a>
-        </li>
-        <li class="page-item">
-          <a class="page-link" href="#">2</a>
-        </li>
-        <li class="page-item">
-          <a class="page-link" href="#">Next</a>
-        </li>
-      </ul>
-    </nav>
-  </div>
-</div>
-{% endif %} {% endblock %} {% block scripts %}
 <script>
-  // Global variables
-  let userTimezone = null;
-  let columnWidths = JSON.parse(
-    localStorage.getItem("emailColumnWidths") || "{}",
-  );
-
-  // Initialize timezone detection
-  function detectTimezone() {
-    try {
-      userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      console.log("Detected timezone:", userTimezone);
-      updateAllTimestamps();
-    } catch (error) {
-      console.warn("Could not detect timezone, using UTC");
-      userTimezone = "UTC";
-      updateAllTimestamps();
-    }
-  }
-
-  // Update timestamp display with timezone
-  function updateAllTimestamps() {
-    const timeElements = document.querySelectorAll(
-      ".email-time[data-timestamp]",
-    );
-    timeElements.forEach((element) => {
-      const timestamp = element.getAttribute("data-timestamp");
-      if (timestamp) {
-        const date = new Date(timestamp);
-        const formatted = formatDateWithTimezone(date, userTimezone);
-        element.textContent = formatted;
-      }
-    });
-  }
-
-  // Format date with timezone
-  function formatDateWithTimezone(date, timezone) {
-    try {
-      // Add 3 hours to the date to convert from GMT+3 to GMT+6 (09:10:14 instead of 06:10:14)
-      const adjustedDate = new Date(date.getTime() + 3 * 60 * 60 * 1000);
-
-      const formatted = new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      }).format(adjustedDate);
-
-      // Add timezone abbreviation
-      const timezoneAbbr =
-        new Intl.DateTimeFormat("en-US", {
-          timeZone: timezone,
-          timeZoneName: "short",
-        })
-          .formatToParts(adjustedDate)
-          .find((part) => part.type === "timeZoneName")?.value || "";
-
-      return `${formatted} ${timezoneAbbr}`;
-    } catch (error) {
-      // Fallback to local time with timezone
-      return (
-        date.toLocaleString() +
-        " " +
-        Intl.DateTimeFormat().resolvedOptions().timeZone
-      );
-    }
-  }
-
-  // Dynamic column resizing
-  function initializeColumnResizing() {
-    const resizableColumns = document.querySelectorAll(
-      ".email-column.resizable",
-    );
-
-    resizableColumns.forEach((column) => {
-      const columnName = column.getAttribute("data-column");
-      const savedWidth = columnWidths[columnName];
-
-      if (savedWidth) {
-        column.style.width = savedWidth;
-        updateColumnWidths(columnName, savedWidth);
-      }
-
-      const resizeHandle = column.querySelector(".resize-handle");
-      if (resizeHandle) {
-        resizeHandle.addEventListener("mousedown", (e) => {
-          e.preventDefault();
-          startResize(column, columnName);
-        });
-      }
-    });
-  }
-
-  function startResize(column, columnName) {
-    const startX = event.clientX;
-    const startWidth = column.offsetWidth;
-
-    function doResize(e) {
-      const newWidth = startWidth + (e.clientX - startX);
-      const minWidth = 50; // Minimum column width
-      const maxWidth = 500; // Maximum column width
-
-      if (newWidth >= minWidth && newWidth <= maxWidth) {
-        column.style.width = newWidth + "px";
-        updateColumnWidths(columnName, newWidth + "px");
-      }
-    }
-
-    function stopResize() {
-      document.removeEventListener("mousemove", doResize);
-      document.removeEventListener("mouseup", stopResize);
-      document.body.style.cursor = "";
-    }
-
-    document.addEventListener("mousemove", doResize);
-    document.addEventListener("mouseup", stopResize);
-    document.body.style.cursor = "col-resize";
-  }
-
-  function updateColumnWidths(columnName, width) {
-    columnWidths[columnName] = width;
-    localStorage.setItem("emailColumnWidths", JSON.stringify(columnWidths));
-
-    // Update all cells in the same column
-    const allCells = document.querySelectorAll(
-      `.email-cell[data-column="${columnName}"]`,
-    );
-    allCells.forEach((cell) => {
-      cell.style.width = width;
-    });
-  }
-
-  // Select all functionality
-  function toggleSelectAll() {
-    const selectAllCheckbox = document.getElementById("selectAll");
-    const emailCheckboxes = document.querySelectorAll(".email-checkbox");
-
-    emailCheckboxes.forEach((checkbox) => {
-      checkbox.checked = selectAllCheckbox.checked;
-    });
-  }
-
-  function viewEmail(emailId) {
-    // Prefer data attribute with uuid when available
-    try {
-      const item = document.querySelector(
-        `.email-item[data-email-id='${emailId}']`,
-      );
-      const uuid = item && item.getAttribute("data-email-uuid");
-      const idOrUuid = uuid && uuid.length > 0 ? uuid : emailId;
-      window.location.href = "/owa/email/" + idOrUuid;
-    } catch (e) {
-      window.location.href = "/owa/email/" + emailId;
-    }
-  }
+  let focusMode = 'all';
+  let selectedEmailId = null;
 
   function refreshEmails() {
     location.reload();
   }
 
-  function deleteEmail(emailId) {
-    if (confirm("Are you sure you want to delete this email?")) {
-      fetch("/emails/" + emailId, {
-        method: "DELETE",
-        credentials: "include",
-      })
-        .then((response) => {
-          if (response.ok) {
-            location.reload();
-          } else {
-            alert("Error deleting email");
-          }
-        })
-        .catch((error) => {
-          console.error("Error:", error);
-          alert("Error deleting email");
-        });
+  function clearSearch() {
+    const input = document.getElementById('searchInput');
+    if (input) {
+      input.value = '';
+      applyFilters();
     }
   }
 
-  function filterEmails(filter) {
-    const emailItems = document.querySelectorAll(".email-item");
+  function applyFilters() {
+    const searchTerm = (document.getElementById('searchInput')?.value || '').toLowerCase();
+    document.querySelectorAll('.focus-tab').forEach((tab) => tab.classList.remove('active'));
+    const tabs = Array.from(document.querySelectorAll('.focus-tab'));
+    if (focusMode === 'all') {
+      tabs[0]?.classList.add('active');
+    } else if (focusMode === 'unread') {
+      tabs[1]?.classList.add('active');
+    } else {
+      tabs[2]?.classList.add('active');
+    }
 
-    emailItems.forEach((item) => {
-      const isUnread = item.classList.contains("unread");
-      let show = true;
-
-      if (filter === "unread" && !isUnread) show = false;
-      if (filter === "read" && isUnread) show = false;
-
-      item.style.display = show ? "block" : "none";
+    document.querySelectorAll('.mail-row').forEach((row) => {
+      const isUnread = row.classList.contains('unread');
+      const rowText = `${row.dataset.subject || ''} ${row.dataset.sender || ''} ${row.dataset.preview || ''}`.toLowerCase();
+      const matchesSearch = rowText.includes(searchTerm);
+      const matchesFocus =
+        focusMode === 'all' ||
+        (focusMode === 'unread' && isUnread) ||
+        (focusMode === 'read' && !isUnread);
+      row.style.display = matchesSearch && matchesFocus ? '' : 'none';
     });
   }
 
-  // Search functionality
-  document
-    .getElementById("searchInput")
-    .addEventListener("input", function (e) {
-      const searchTerm = e.target.value.toLowerCase();
-      const emailItems = document.querySelectorAll(".email-item");
+  function setActiveRow(row) {
+    document.querySelectorAll('.mail-row').forEach((item) => item.classList.remove('active'));
+    if (row) row.classList.add('active');
+  }
 
-      emailItems.forEach((item) => {
-        const subject = item
-          .querySelector(".email-subject")
-          .textContent.toLowerCase();
-        const sender = item
-          .querySelector(".email-sender")
-          .textContent.toLowerCase();
-        const preview = item
-          .querySelector(".email-preview")
-          .textContent.toLowerCase();
+  function setReadingPlaceholder() {
+    document.getElementById('readingPlaceholder').classList.remove('d-none');
+    document.getElementById('readingHeader').classList.add('d-none');
+    document.getElementById('readingBody').classList.add('d-none');
+    document.getElementById('readingLoading').classList.add('d-none');
+  }
 
-        if (
-          subject.includes(searchTerm) ||
-          sender.includes(searchTerm) ||
-          preview.includes(searchTerm)
-        ) {
-          item.style.display = "block";
-        } else {
-          item.style.display = "none";
+  function showReadingLoader() {
+    document.getElementById('readingPlaceholder').classList.add('d-none');
+    document.getElementById('readingHeader').classList.add('d-none');
+    document.getElementById('readingBody').classList.add('d-none');
+    document.getElementById('readingLoading').classList.remove('d-none');
+  }
+
+  function renderEmail(email) {
+    document.getElementById('readingLoading').classList.add('d-none');
+    document.getElementById('readingHeader').classList.remove('d-none');
+    document.getElementById('readingBody').classList.remove('d-none');
+
+    document.getElementById('readingSubject').textContent = email.subject || '{{ get_translation(request, 'no_subject') }}';
+    document.getElementById('readingFrom').textContent = email.sender?.email || email.external_sender || '';
+    document.getElementById('readingTo').textContent = email.recipient?.email || email.external_recipient || '';
+    document.getElementById('readingTime').textContent = new Date(email.created_at).toLocaleString(undefined, {
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    const body = document.getElementById('readingBody');
+    body.innerHTML = '';
+    if (email.body_html) {
+      body.innerHTML = email.body_html;
+    } else if (email.body) {
+      body.textContent = email.body;
+    } else {
+      body.innerHTML = '<p class="text-muted">({{ get_translation(request, 'no_content') if get_translation(request, 'no_content') else 'No content' }})</p>';
+    }
+  }
+
+  async function openEmail(emailId, row) {
+    if (!emailId) return;
+    selectedEmailId = emailId;
+    setActiveRow(row);
+    showReadingLoader();
+    try {
+      const res = await fetch(`/emails/${emailId}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to load email');
+      const email = await res.json();
+      row.classList.remove('unread');
+      renderEmail(email);
+    } catch (error) {
+      console.error('Error loading email:', error);
+      alert("{{ get_translation(request, 'error_loading_emails') or 'Failed to load email' }}");
+      setReadingPlaceholder();
+    }
+  }
+
+  function deleteEmail(emailId) {
+    if (!confirm("{{ get_translation(request, 'delete_confirm') or 'Delete this email?' }}")) return;
+    fetch(`/emails/${emailId}`, { method: 'DELETE', credentials: 'include' })
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed');
+        const row = document.querySelector(`.mail-row[data-email-id="${emailId}"]`);
+        if (row) row.remove();
+        if (selectedEmailId === emailId) {
+          selectedEmailId = null;
+          setReadingPlaceholder();
         }
+      })
+      .catch((err) => {
+        console.error(err);
+        alert("{{ get_translation(request, 'delete_failed') or 'Failed to delete email.' }}");
       });
-    });
-
-  // Initialize everything when DOM is loaded
-  document.addEventListener("DOMContentLoaded", function () {
-    detectTimezone();
-    initializeColumnResizing();
-
-    // Set up individual checkbox change handlers
-    document.querySelectorAll(".email-checkbox").forEach((checkbox) => {
-      checkbox.addEventListener("change", function () {
-        updateSelectAllState();
-      });
-    });
-  });
-
-  function updateSelectAllState() {
-    const selectAllCheckbox = document.getElementById("selectAll");
-    const emailCheckboxes = document.querySelectorAll(".email-checkbox");
-    const checkedCount = document.querySelectorAll(
-      ".email-checkbox:checked",
-    ).length;
-
-    selectAllCheckbox.checked = checkedCount === emailCheckboxes.length;
-    selectAllCheckbox.indeterminate =
-      checkedCount > 0 && checkedCount < emailCheckboxes.length;
   }
+
+  function bulkDelete() {
+    if (!selectedEmailId) {
+      alert("{{ get_translation(request, 'select_email') if get_translation(request, 'select_email') else 'Select an email first' }}");
+      return;
+    }
+    deleteEmail(selectedEmailId);
+  }
+
+  function deleteCurrent() {
+    if (selectedEmailId) {
+      deleteEmail(selectedEmailId);
+    }
+  }
+
+  function replySelected() {
+    if (!selectedEmailId) return;
+    window.location.href = `/owa/compose?reply=${selectedEmailId}`;
+  }
+
+  function forwardSelected() {
+    if (!selectedEmailId) return;
+    window.location.href = `/owa/compose?forward=${selectedEmailId}`;
+  }
+
+  function updateTimestamps() {
+    document.querySelectorAll('.mail-time').forEach((element) => {
+      const timestamp = element.dataset.timestamp;
+      if (!timestamp) return;
+      element.textContent = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    updateTimestamps();
+    applyFilters();
+
+    document.querySelectorAll('.mail-row').forEach((row) => {
+      row.addEventListener('click', () => openEmail(row.dataset.emailId, row));
+    });
+
+    const search = document.getElementById('searchInput');
+    if (search) {
+      search.addEventListener('input', applyFilters);
+    }
+  });
 </script>
 {% endblock %}

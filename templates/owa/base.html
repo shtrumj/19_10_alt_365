@@ -18,18 +18,10 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <link rel="stylesheet" href="/static/css/theme.css" />
     <style>
       :root {
-        --primary-color: #0078d4;
-        --primary-dark: #106ebe;
-        --secondary-color: #f3f2f1;
-        --accent-color: #ff6b35;
-        --text-primary: #323130;
-        --text-secondary: #605e5c;
-        --border-color: #edebe9;
-        --success-color: #107c10;
-        --warning-color: #ff8c00;
-        --danger-color: #d13438;
+        --header-height: 68px;
       }
 
       * {
@@ -72,12 +64,14 @@
         left: 50%;
         transform: translateX(-50%);
         z-index: 1000;
-        background: white;
+        background: var(--color-surface);
         border-radius: 25px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-        padding: 0.5rem;
+        box-shadow: 0 12px 24px rgba(29, 16, 44, 0.18);
+        border: 1px solid var(--color-border);
+        padding: 0.5rem 0.75rem;
         display: flex;
-        gap: 0.5rem;
+        align-items: center;
+        gap: 0.75rem;
       }
 
       .lang-btn {
@@ -89,16 +83,36 @@
         transition: all 0.3s ease;
         font-size: 0.9rem;
         font-weight: 500;
+        color: var(--color-text-secondary);
+      }
+
+      .theme-toggle-btn {
+        width: 42px;
+        height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: var(--color-surface-alt);
+        border: 1px solid var(--color-border);
+        box-shadow: 0 6px 12px rgba(29, 16, 44, 0.12);
+      }
+
+      .theme-toggle-btn:hover {
+        background: var(--button-primary-bg);
+        color: var(--button-primary-text);
+        border-color: transparent;
+        transform: translateY(-1px);
       }
 
       .lang-btn:hover {
-        background: var(--primary-color);
-        color: white;
+        background: var(--button-primary-bg);
+        color: var(--button-primary-text);
       }
 
       .lang-btn.active {
-        background: var(--primary-color);
-        color: white;
+        background: var(--button-primary-bg);
+        color: var(--button-primary-text);
       }
 
       /* Connection Status */
@@ -113,24 +127,27 @@
         display: flex;
         align-items: center;
         gap: 5px;
+        background: var(--status-warning-bg);
+        color: var(--status-warning-text);
+        border: 1px solid var(--color-border);
       }
 
       .connection-status.connected {
-        background: #d4edda;
-        color: #155724;
-        border: 1px solid #c3e6cb;
+        background: var(--status-connected-bg);
+        color: var(--status-connected-text);
+        border-color: transparent;
       }
 
       .connection-status.disconnected {
-        background: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
+        background: var(--status-error-bg);
+        color: var(--status-error-text);
+        border-color: transparent;
       }
 
       .connection-status.error {
-        background: #fff3cd;
-        color: #856404;
-        border: 1px solid #ffeaa7;
+        background: var(--status-warning-bg);
+        color: var(--status-warning-text);
+        border-color: transparent;
       }
 
       /* Hebrew Font Support */
@@ -145,25 +162,187 @@
       }
 
       body {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: var(--app-background);
+        color: var(--color-text-primary);
         min-height: 100vh;
         margin: 0;
         padding: 0;
       }
 
+      .app-header {
+        height: var(--header-height);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 24px;
+        background: var(--command-bar-bg);
+        backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--command-bar-border);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+        position: sticky;
+        top: 0;
+        z-index: 950;
+      }
+
+      .app-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-decoration: none;
+        color: var(--color-text-primary);
+        font-weight: 600;
+        font-size: 1.05rem;
+      }
+
+      .app-brand-icon {
+        background: var(--accent-strong);
+        color: var(--button-primary-text);
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+      }
+
+      .header-search {
+        flex: 1;
+        max-width: 480px;
+        margin: 0 24px;
+        position: relative;
+      }
+
+      .header-search input {
+        width: 100%;
+        padding: 0.6rem 1rem 0.6rem 2.8rem;
+        border-radius: 999px;
+        border: 1px solid var(--color-border-strong);
+        background: var(--color-surface-alt);
+        color: var(--color-text-primary);
+        transition: box-shadow 0.2s ease, border-color 0.2s ease;
+      }
+
+      .header-search input:focus {
+        outline: none;
+        border-color: var(--accent-strong);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+
+      .header-search i {
+        position: absolute;
+        top: 50%;
+        left: 1rem;
+        transform: translateY(-50%);
+        color: var(--color-text-secondary);
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .command-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        border-radius: 999px;
+        padding: 0.55rem 1.3rem;
+        font-weight: 600;
+        text-decoration: none;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        border: 1px solid transparent;
+      }
+
+      .command-btn.primary {
+        background: var(--accent-strong);
+        color: var(--button-primary-text);
+        box-shadow: 0 10px 25px rgba(255, 106, 26, 0.25);
+      }
+
+      .command-btn.primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 14px 30px rgba(255, 106, 26, 0.35);
+      }
+
+      .command-btn.secondary {
+        background: transparent;
+        border-color: var(--color-border);
+        color: var(--color-text-primary);
+      }
+
+      .header-icon-btn {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        border: 1px solid var(--color-border);
+        background: var(--color-surface-alt);
+        color: var(--color-text-primary);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+      }
+
+      .header-icon-btn:hover {
+        transform: translateY(-1px);
+        background: var(--accent-soft);
+        border-color: var(--accent-strong);
+      }
+
+      .user-chip {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        background: var(--color-text-primary);
+        color: var(--color-surface);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 600;
+      }
+
+      .lang-toggle {
+        display: inline-flex;
+        background: var(--color-surface-alt);
+        border-radius: 999px;
+        border: 1px solid var(--color-border);
+        overflow: hidden;
+      }
+
+      .lang-toggle button {
+        border: none;
+        background: transparent;
+        padding: 0.4rem 0.9rem;
+        font-size: 0.85rem;
+        cursor: pointer;
+        color: var(--color-text-secondary);
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+
+      .lang-toggle button.active {
+        background: var(--accent-soft);
+        color: var(--color-text-primary);
+        font-weight: 600;
+      }
+
       .main-container {
         position: relative;
-        background: white;
-        border-radius: 20px;
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        background: var(--color-surface);
+        border-radius: 18px;
+        box-shadow: var(--surface-shadow);
+        border: 1px solid var(--color-border);
         margin: 20px;
-        min-height: calc(100vh - 40px);
+        margin-top: 16px;
+        min-height: calc(100vh - var(--header-height) - 40px);
         overflow: hidden;
       }
 
       .sidebar {
-        background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
-        border-right: 1px solid var(--border-color);
+        background: var(--sidebar-background);
+        color: var(--sidebar-text);
+        border-right: 1px solid var(--color-border);
         min-height: 100vh;
         padding: 0;
       }
@@ -174,7 +353,7 @@
           var(--primary-color) 0%,
           var(--primary-dark) 100%
         );
-        color: white;
+        color: var(--button-primary-text);
         padding: 2rem 1.5rem;
         text-align: center;
       }
@@ -200,37 +379,39 @@
       }
 
       .nav-link {
-        color: var(--text-primary);
-        padding: 0.75rem 1.5rem;
-        border-radius: 0;
-        transition: all 0.3s ease;
+        color: var(--sidebar-text);
+        padding: 0.7rem 1.2rem;
+        border-radius: 10px;
+        margin: 0.3rem 0.9rem;
+        transition: all 0.2s ease;
         display: flex;
         align-items: center;
+        gap: 0.8rem;
         text-decoration: none;
       }
 
+      .nav-link i {
+        width: 20px;
+        text-align: center;
+      }
+
       .nav-link:hover {
-        background: var(--primary-color);
-        color: white;
-        transform: translateX(5px);
+        background: color-mix(in srgb, var(--accent-strong) 18%, transparent 82%);
+        color: var(--color-text-primary);
+        transform: translateX(4px);
       }
 
       .nav-link.active {
-        background: var(--primary-color);
-        color: white;
-        border-right: 3px solid var(--accent-color);
-      }
-
-      .nav-link i {
-        margin-right: 0.75rem;
-        width: 20px;
-        text-align: center;
-        flex-shrink: 0;
+        background: color-mix(in srgb, var(--accent-strong) 24%, transparent 76%);
+        color: var(--color-text-primary);
+        box-shadow: inset 0 0 0 1px var(--accent-strong);
       }
 
       .main-content {
-        padding: 2rem;
-        background: white;
+        padding: 1.75rem 2rem;
+        background: var(--color-surface-alt);
+        color: var(--color-text-primary);
+        min-height: calc(100vh - var(--header-height) - 40px);
       }
 
       .content-header {
@@ -239,22 +420,19 @@
         align-items: center;
         margin-bottom: 2rem;
         padding-bottom: 1rem;
-        border-bottom: 2px solid var(--border-color);
+        border-bottom: 2px solid var(--color-border-strong);
       }
 
       .content-header h1 {
-        color: var(--text-primary);
+        color: var(--color-text-primary);
         font-weight: 600;
         margin: 0;
       }
 
       .btn-primary {
-        background: linear-gradient(
-          135deg,
-          var(--primary-color) 0%,
-          var(--primary-dark) 100%
-        );
-        border: none;
+        background: var(--button-primary-bg);
+        color: var(--button-primary-text);
+        border: 1px solid transparent;
         border-radius: 8px;
         padding: 0.75rem 1.5rem;
         font-weight: 500;
@@ -263,28 +441,29 @@
 
       .btn-primary:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(0, 120, 212, 0.3);
+        box-shadow: 0 8px 25px rgba(29, 16, 44, 0.18);
+        background: var(--button-primary-bg-hover);
       }
 
       /* Dynamic Column Resizing Styles */
       .email-list-container {
-        border: 1px solid var(--border-color);
+        border: 1px solid var(--color-border);
         border-radius: 12px;
         overflow: hidden;
-        background: white;
+        background: var(--color-surface-alt);
       }
 
       .email-list-header {
         display: flex;
-        background: var(--bg-secondary);
-        border-bottom: 2px solid var(--border-color);
+        background: var(--toolbar-background);
+        border-bottom: 2px solid var(--color-border);
         font-weight: 600;
-        color: var(--text-primary);
+        color: var(--color-text-primary);
       }
 
       .email-column {
         padding: 1rem;
-        border-right: 1px solid var(--border-color);
+        border-right: 1px solid var(--color-border);
         position: relative;
         display: flex;
         align-items: center;
@@ -314,10 +493,10 @@
       }
 
       .email-item {
-        border-bottom: 1px solid var(--border-color);
+        border-bottom: 1px solid var(--color-border);
         cursor: pointer;
         transition: all 0.3s ease;
-        background: white;
+        background: var(--color-surface-alt);
       }
 
       .email-item:last-child {
@@ -325,7 +504,7 @@
       }
 
       .email-item:hover {
-        background: var(--bg-secondary);
+        background: color-mix(in srgb, var(--primary-color) 10%, var(--color-surface-alt) 90%);
       }
 
       .email-row {
@@ -336,7 +515,7 @@
 
       .email-cell {
         padding: 0.5rem;
-        border-right: 1px solid var(--border-color);
+        border-right: 1px solid var(--color-border);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -347,11 +526,8 @@
       }
 
       .email-item.unread {
-        background: linear-gradient(
-          90deg,
-          rgba(0, 120, 212, 0.05) 0%,
-          white 100%
-        );
+        border-left: 4px solid var(--primary-color);
+        background: color-mix(in srgb, var(--primary-color) 20%, var(--color-surface-alt) 80%);
       }
 
       .email-item.unread .email-cell {
@@ -360,27 +536,18 @@
 
       .email-item:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 12px 24px rgba(29, 16, 44, 0.12);
         border-color: var(--primary-color);
-      }
-
-      .email-item.unread {
-        border-left: 4px solid var(--primary-color);
-        background: linear-gradient(
-          90deg,
-          rgba(0, 120, 212, 0.05) 0%,
-          white 100%
-        );
       }
 
       .email-subject {
         font-weight: 600;
-        color: var(--text-primary);
+        color: var(--color-text-primary);
         margin-bottom: 0.5rem;
       }
 
       .email-preview {
-        color: var(--text-secondary);
+        color: var(--color-text-secondary);
         font-size: 0.9rem;
         line-height: 1.4;
       }
@@ -391,7 +558,7 @@
         align-items: center;
         margin-top: 1rem;
         font-size: 0.85rem;
-        color: var(--text-secondary);
+        color: var(--color-text-secondary);
       }
 
       .badge {
@@ -399,6 +566,8 @@
         padding: 0.25rem 0.75rem;
         font-size: 0.75rem;
         font-weight: 500;
+        background: color-mix(in srgb, var(--primary-color) 15%, transparent 85%);
+        color: var(--color-text-primary);
       }
 
       .stats-card {
@@ -407,7 +576,7 @@
           var(--primary-color) 0%,
           var(--primary-dark) 100%
         );
-        color: white;
+        color: var(--button-primary-text);
         border-radius: 12px;
         padding: 1.5rem;
         text-align: center;
@@ -434,15 +603,19 @@
       }
 
       .form-control {
-        border: 2px solid var(--border-color);
+        border: 2px solid var(--color-border);
         border-radius: 8px;
         padding: 0.75rem 1rem;
         transition: all 0.3s ease;
+        background: var(--color-surface);
+        color: var(--color-text-primary);
       }
 
       .form-control:focus {
         border-color: var(--primary-color);
-        box-shadow: 0 0 0 0.2rem rgba(0, 120, 212, 0.25);
+        box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--primary-color) 30%, transparent 70%);
+        background: var(--color-surface);
+        color: var(--color-text-primary);
       }
 
       .alert {
@@ -451,13 +624,35 @@
       }
 
       .alert-danger {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%);
-        color: white;
+        background: var(--status-error-bg);
+        color: var(--status-error-text);
       }
 
       .alert-success {
-        background: linear-gradient(135deg, #51cf66 0%, #40c057 100%);
-        color: white;
+        background: var(--status-connected-bg);
+        color: var(--status-connected-text);
+      }
+
+      .btn-outline-primary {
+        color: var(--accent-color);
+        border-color: var(--accent-color);
+      }
+
+      .btn-outline-primary:hover {
+        background: var(--accent-color);
+        color: var(--button-primary-text);
+        border-color: var(--accent-color);
+      }
+
+      .btn-outline-danger {
+        color: var(--danger-color);
+        border-color: var(--danger-color);
+      }
+
+      .btn-outline-danger:hover {
+        background: var(--danger-color);
+        color: var(--button-primary-text);
+        border-color: var(--danger-color);
       }
 
       @media (max-width: 768px) {
@@ -477,21 +672,55 @@
     </style>
   </head>
   <body>
-    <!-- Language Selector -->
-    <div class="language-selector">
-      <button
-        class="lang-btn {% if get_language(request) == 'he' %}active{% endif %}"
-        onclick="switchLanguage('he')"
-      >
-        עברית
-      </button>
-      <button
-        class="lang-btn {% if get_language(request) == 'en' %}active{% endif %}"
-        onclick="switchLanguage('en')"
-      >
-        English
-      </button>
-    </div>
+    <header class="app-header">
+      <a class="app-brand" href="/owa/">
+        <span class="app-brand-icon">
+          <i class="fas fa-envelope"></i>
+        </span>
+        <span>{{ get_translation(request, 'title') }}</span>
+      </a>
+      <div class="header-search d-none d-md-block">
+        <i class="fas fa-search"></i>
+        <input
+          type="search"
+          placeholder="{{ get_translation(request, 'search') }}..."
+          aria-label="Search mail"
+        />
+      </div>
+      <div class="header-actions">
+        <a href="/owa/compose" class="command-btn primary">
+          <i class="fas fa-plus"></i>
+          {{ get_translation(request, 'compose') }}
+        </a>
+        <div class="lang-toggle d-none d-sm-inline-flex">
+          <button
+            type="button"
+            class="{% if get_language(request) == 'he' %}active{% endif %}"
+            onclick="switchLanguage('he')"
+          >
+            עברית
+          </button>
+          <button
+            type="button"
+            class="{% if get_language(request) == 'en' %}active{% endif %}"
+            onclick="switchLanguage('en')"
+          >
+            English
+          </button>
+        </div>
+        <button
+          class="header-icon-btn theme-toggle-btn"
+          type="button"
+          onclick="toggleTheme()"
+          aria-label="Toggle theme"
+        >
+          <i class="fas fa-adjust"></i>
+        </button>
+        <div class="user-chip">
+          {{ (user.full_name or user.username)[0]|upper if user else "U" }}
+        </div>
+      </div>
+    </header>
 
     <!-- Connection Status -->
     <div id="connection-status" class="connection-status">
@@ -657,6 +886,8 @@
       window.userId = {{ user.id if user else 1 }};
       window.hostname = '{{ hostname }}';
 
+      const THEME_KEY = 'owa-theme';
+
       function switchLanguage(lang) {
           const currentUrl = new URL(window.location);
           currentUrl.searchParams.set('lang', lang);
@@ -664,7 +895,31 @@
       }
 
       // Set RTL direction for Hebrew
+      function applyTheme(theme) {
+          const body = document.body;
+          body.dataset.theme = theme === 'auto' ? 'auto' : theme;
+          if (theme === 'light') {
+              body.classList.add('theme-light');
+              body.classList.remove('theme-dark');
+          } else if (theme === 'dark') {
+              body.classList.add('theme-dark');
+              body.classList.remove('theme-light');
+          } else {
+              body.classList.remove('theme-dark', 'theme-light');
+              body.dataset.theme = 'auto';
+          }
+      }
+
+      function toggleTheme() {
+          const current = localStorage.getItem(THEME_KEY) || 'auto';
+          const next = current === 'auto' ? 'dark' : current === 'dark' ? 'light' : 'auto';
+          localStorage.setItem(THEME_KEY, next);
+          applyTheme(next);
+      }
+
       document.addEventListener('DOMContentLoaded', function() {
+          const savedTheme = localStorage.getItem(THEME_KEY) || 'auto';
+          applyTheme(savedTheme);
           const currentLang = '{{ get_language(request) }}';
           if (currentLang === 'he') {
               document.documentElement.setAttribute('dir', 'rtl');

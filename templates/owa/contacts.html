@@ -1,57 +1,165 @@
 {% extends "owa/base.html" %} {% block title %}Contacts - 365{% endblock %} {%
 block content %}
 <style>
-  /* RTL Support for Contacts */
-  [dir="rtl"] .modal-dialog {
-    text-align: right;
+  .contacts-surface {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
   }
 
-  [dir="rtl"] .form-label {
-    text-align: right;
+  .contacts-card {
+    background: var(--color-surface-alt);
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    box-shadow: 0 18px 36px rgba(29, 16, 44, 0.12);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
-  [dir="rtl"] .form-control {
-    text-align: right;
+  .contacts-card:hover {
+    border-color: var(--primary-color);
+    box-shadow: 0 20px 42px rgba(29, 16, 44, 0.18);
   }
 
-  [dir="rtl"] .btn {
-    text-align: center;
+  .folder-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0;
   }
 
-  [dir="rtl"] .table {
-    text-align: right;
+  .folder-node {
+    padding: 0.55rem 0.75rem;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: var(--color-text-secondary);
+    transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
   }
 
-  [dir="rtl"] .table th,
-  [dir="rtl"] .table td {
+  .folder-node:hover {
+    background: color-mix(in srgb, var(--primary-color) 16%, transparent 84%);
+    color: var(--color-text-primary);
+    transform: translateX(4px);
+  }
+
+  .folder-node.active {
+    background: color-mix(in srgb, var(--primary-color) 24%, transparent 76%);
+    color: var(--color-text-primary);
+    border: 1px solid var(--primary-color);
+  }
+
+  .folder-children {
+    margin-left: 1rem;
+    border-left: 1px dashed var(--color-border);
+    padding-left: 0.75rem;
+  }
+
+  .contact-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    justify-content: flex-end;
+  }
+
+  .table {
+    color: var(--color-text-primary);
+  }
+
+  .table thead {
+    background: color-mix(in srgb, var(--primary-color) 20%, transparent 80%);
+    color: var(--color-text-primary);
+  }
+
+  .table tbody tr {
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+  }
+
+  .table tbody tr:hover {
+    background: color-mix(in srgb, var(--primary-color) 15%, transparent 85%);
+    transform: translateX(2px);
+  }
+
+  .table tbody tr.active-row {
+    background: color-mix(in srgb, var(--primary-color) 20%, transparent 80%);
+    border-left: 3px solid var(--primary-color);
+  }
+
+  .table td,
+  .table th {
+    vertical-align: middle;
+  }
+
+  .contacts-empty {
+    padding: 2.5rem 1rem;
+    color: var(--color-text-secondary);
+  }
+
+  .modal-content {
+    background: var(--color-surface-alt);
+    border: 1px solid var(--color-border);
+    border-radius: 18px;
+    box-shadow: 0 24px 64px rgba(29, 16, 44, 0.28);
+  }
+
+  .modal-header,
+  .modal-footer {
+    border-color: var(--color-border);
+  }
+
+  .badge-chip {
+    background: color-mix(in srgb, var(--primary-color) 18%, transparent 82%);
+    color: var(--color-text-primary);
+    border-radius: 999px;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+  }
+
+  .contacts-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    color: var(--color-text-secondary);
+    padding: 2rem 0;
+  }
+
+  .contacts-loading .spinner-border {
+    width: 2rem;
+    height: 2rem;
+    border-width: 0.2rem;
+  }
+
+  [dir="rtl"] .modal-dialog,
+  [dir="rtl"] .form-label,
+  [dir="rtl"] .form-control,
+  [dir="rtl"] .table,
+  [dir="rtl"] .card-header,
+  [dir="rtl"] .folder-tree {
     text-align: right;
   }
 
   [dir="rtl"] .content-header {
     flex-direction: row-reverse;
-  }
-
-  [dir="rtl"] .content-header h1 {
-    text-align: right;
-  }
-
-  [dir="rtl"] .card-header {
-    text-align: right;
-  }
-
-  [dir="rtl"] .folder-tree {
-    text-align: right;
+    gap: 1rem;
   }
 
   [dir="rtl"] .folder-node {
-    text-align: right;
     padding-right: 1rem;
     padding-left: 0;
   }
 
   [dir="rtl"] .folder-node i {
-    margin-left: 0.5rem;
-    margin-right: 0;
+    margin-left: 0;
+    margin-right: 0.5rem;
+  }
+
+  @media (max-width: 991px) {
+    #folderSidebar {
+      display: none;
+    }
   }
 </style>
 <div class="content-header d-flex justify-content-between align-items-center">
@@ -65,6 +173,7 @@ block content %}
       class="btn btn-primary"
       data-bs-toggle="modal"
       data-bs-target="#newContactModal"
+      onclick="prepareNewContact()"
     >
       <i class="fas fa-user-plus"></i> {{ get_translation(request, 'add') }}
     </button>
@@ -73,11 +182,13 @@ block content %}
 
 <div class="row g-3">
   <div class="col-lg-3" id="folderSidebar">
-    <div class="card h-100">
+    <div class="contacts-card h-100">
       <div
-        class="card-header d-flex justify-content-between align-items-center"
+        class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center"
       >
-        <span>{{ get_translation(request, 'folders') }}</span>
+        <span class="fw-semibold text-uppercase small text-muted"
+          >{{ get_translation(request, 'folders') }}</span
+        >
         <button
           class="btn btn-sm btn-outline-primary"
           onclick="promptNewFolder()"
@@ -89,17 +200,25 @@ block content %}
     </div>
   </div>
   <div class="col-lg-9">
-    <div class="card">
+    <div class="contacts-card">
       <div class="card-body">
-        <div class="table-responsive">
-          <table class="table table-sm align-middle" id="contactTable">
-            <thead>
+        <div id="contactsLoading" class="contacts-loading d-none">
+          <div
+            class="spinner-border text-primary"
+            role="status"
+            aria-hidden="true"
+          ></div>
+          <span>{{ get_translation(request, 'loading') }}</span>
+        </div>
+        <div id="contactsTableWrapper" class="table-responsive">
+          <table class="table table-hover align-middle" id="contactTable">
+            <thead class="small text-uppercase">
               <tr>
-                <th>{{ get_translation(request, 'name') }}</th>
-                <th>Email</th>
-                <th>{{ get_translation(request, 'phone') }}</th>
-                <th>{{ get_translation(request, 'company') }}</th>
-                <th>{{ get_translation(request, 'title') }}</th>
+                <th scope="col">{{ get_translation(request, 'name') }}</th>
+                <th scope="col">Email</th>
+                <th scope="col">{{ get_translation(request, 'phone') }}</th>
+                <th scope="col">{{ get_translation(request, 'company') }}</th>
+                <th scope="col">{{ get_translation(request, 'title') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -112,7 +231,7 @@ block content %}
                 <td>{{ c.job_title }}</td>
               </tr>
               {% endfor %} {% else %}
-              <tr class="text-muted">
+              <tr class="text-muted contacts-empty">
                 <td colspan="5" class="text-center">
                   {{ get_translation(request, 'no_contacts') }}
                 </td>
@@ -148,6 +267,7 @@ block content %}
             id="contactFolderField"
             value="{{ active_folder_uuid }}"
           />
+          <input type="hidden" name="uuid" id="contactUuidField" />
 
           <div class="col-md-6">
             <label class="form-label"
@@ -255,10 +375,19 @@ block content %}
         </form>
       </div>
       <div class="modal-footer">
+        <button
+          class="btn btn-outline-danger me-auto d-none"
+          id="deleteContactBtn"
+          type="button"
+          onclick="deleteContact()"
+        >
+          <i class="fas fa-trash"></i>
+          {{ get_translation(request, 'delete') }}
+        </button>
         <button class="btn btn-secondary" data-bs-dismiss="modal">
           {{ get_translation(request, 'cancel') }}
         </button>
-        <button class="btn btn-primary" onclick="saveContact()">
+        <button class="btn btn-primary" type="button" onclick="saveContact()">
           {{ get_translation(request, 'save') }}
         </button>
       </div>
@@ -281,7 +410,7 @@ block content %}
         `folder-node level-${level}` +
         (node.uuid === activeFolderUuid ? " active" : "");
       item.dataset.uuid = node.uuid;
-      item.innerHTML = `<i class="fas fa-folder"></i> ${node.display_name}`;
+      item.innerHTML = `<i class="fas fa-folder"></i> <span>${node.display_name}</span>`;
       item.addEventListener("click", () => selectFolder(node.uuid));
       container.appendChild(item);
       if (node.children && node.children.length) {
@@ -308,33 +437,39 @@ block content %}
   }
 
   async function loadContacts(folderUuid) {
-    const params = new URLSearchParams();
-    if (folderUuid) params.append("folder_uuid", folderUuid);
-    const res = await fetch(`/contacts/list?${params}`, {
-      credentials: "include",
-    });
-    if (!res.ok) return;
-    const contacts = await res.json();
-    const tbody = document.querySelector("#contactTable tbody");
-    tbody.innerHTML = "";
-    if (!contacts.length) {
-      const row = document.createElement("tr");
-      row.className = "text-muted";
-      row.innerHTML = `<td colspan="5" class="text-center">${"{{ get_translation(request, 'no_contacts') }}"}</td>`;
-      tbody.appendChild(row);
-      return;
-    }
-    contacts.forEach((c) => {
-      const row = document.createElement("tr");
-      row.dataset.contact = c.uuid;
-      row.innerHTML = `
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (folderUuid) params.append("folder_uuid", folderUuid);
+      const res = await fetch(`/contacts/list?${params}`, {
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const contacts = await res.json();
+      const tbody = document.querySelector("#contactTable tbody");
+      tbody.innerHTML = "";
+      if (!contacts.length) {
+        const row = document.createElement("tr");
+        row.className = "text-muted";
+        row.innerHTML = `<td colspan="5" class="text-center">${"{{ get_translation(request, 'no_contacts') }}"}</td>`;
+        tbody.appendChild(row);
+        return;
+      }
+      contacts.forEach((c) => {
+        const row = document.createElement("tr");
+        row.dataset.contact = c.uuid;
+        row.innerHTML = `
         <td>${c.display_name || ""}</td>
         <td>${c.email_address_1 || ""}</td>
         <td>${c.mobile_phone || c.business_phone || ""}</td>
         <td>${c.company_name || ""}</td>
         <td>${c.job_title || ""}</td>`;
-      tbody.appendChild(row);
-    });
+        row.addEventListener("click", () => openContact(c.uuid));
+        tbody.appendChild(row);
+      });
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function promptNewFolder() {
@@ -362,9 +497,24 @@ block content %}
   async function saveContact() {
     const form = document.getElementById("contactForm");
     const data = new FormData(form);
-    const res = await fetch("/contacts/create", {
-      method: "POST",
-      body: data,
+    const payload = Object.fromEntries(data.entries());
+    Object.keys(payload).forEach((key) => {
+      if (payload[key] === "" || payload[key] === null || payload[key] === undefined) {
+        delete payload[key];
+      }
+    });
+    if (!payload.folder_uuid && activeFolderUuid) {
+      payload.folder_uuid = activeFolderUuid;
+    }
+    delete payload.uuid;
+    const contactUuid = document.getElementById("contactUuidField").value;
+    const contactUuid = document.getElementById("contactUuidField").value;
+    const url = contactUuid ? `/contacts/${contactUuid}` : "/contacts/create";
+    const method = contactUuid ? "PUT" : "POST";
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
       credentials: "include",
     });
     if (res.ok) {
@@ -372,13 +522,101 @@ block content %}
         document.getElementById("newContactModal"),
       );
       modal.hide();
-      form.reset();
-      document.getElementById("contactFolderField").value = activeFolderUuid;
+      resetContactForm();
+      if (activeFolderUuid) {
+        document.getElementById("contactFolderField").value = activeFolderUuid;
+      }
       await loadContacts(activeFolderUuid);
     } else {
       alert("Failed to save contact");
     }
   }
+
+  async function openContact(uuid) {
+    const rows = document.querySelectorAll("#contactTable tbody tr");
+    rows.forEach((r) => r.classList.toggle("active-row", r.dataset.contact === uuid));
+    const res = await fetch(`/contacts/${uuid}`, { credentials: "include" });
+    if (!res.ok) return;
+    const contact = await res.json();
+    populateContactForm(contact);
+    const modal = new bootstrap.Modal(
+      document.getElementById("newContactModal"),
+    );
+    modal.show();
+  }
+
+  function populateContactForm(contact) {
+    const form = document.getElementById("contactForm");
+    Object.entries(contact).forEach(([key, value]) => {
+      const field = form.elements.namedItem(key);
+      if (field) {
+        field.value = value ?? "";
+      }
+    });
+    document.getElementById("contactUuidField").value = contact.uuid;
+    document.getElementById("contactFolderField").value =
+      contact.folder_uuid || activeFolderUuid || "";
+    document
+      .getElementById("deleteContactBtn")
+      .classList.remove("d-none");
+  }
+
+  function resetContactForm() {
+    const form = document.getElementById("contactForm");
+    form.reset();
+    document.getElementById("contactUuidField").value = "";
+    document
+      .getElementById("deleteContactBtn")
+      .classList.add("d-none");
+    if (activeFolderUuid) {
+      document.getElementById("contactFolderField").value = activeFolderUuid;
+    }
+  }
+
+  async function deleteContact() {
+    const contactUuid = document.getElementById("contactUuidField").value;
+    if (!contactUuid) return;
+    if (
+      !confirm(
+        "{{ get_translation(request, 'delete_confirm') or 'Delete this contact?' }}",
+      )
+    ) {
+      return;
+    }
+    const res = await fetch(`/contacts/${contactUuid}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (res.ok) {
+      const modal = bootstrap.Modal.getInstance(
+        document.getElementById("newContactModal"),
+      );
+      modal.hide();
+      resetContactForm();
+      await loadContacts(activeFolderUuid);
+    } else {
+      alert("Failed to delete contact");
+    }
+  }
+
+  function setLoading(isLoading) {
+    document
+      .getElementById("contactsLoading")
+      .classList.toggle("d-none", !isLoading);
+    document
+      .getElementById("contactsTableWrapper")
+      .classList.toggle("d-none", isLoading);
+  }
+
+  function prepareNewContact() {
+    resetContactForm();
+    const rows = document.querySelectorAll("#contactTable tbody tr");
+    rows.forEach((r) => r.classList.remove("active-row"));
+  }
+
+  document
+    .getElementById("newContactModal")
+    .addEventListener("hidden.bs.modal", resetContactForm);
 
   document.addEventListener("DOMContentLoaded", async () => {
     await loadFolders();

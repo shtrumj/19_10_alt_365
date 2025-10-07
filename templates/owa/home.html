@@ -171,7 +171,7 @@ async function loadRecentEmails() {
         container.innerHTML = emails.map(email => `
             <div class="email-item ${email.is_read ? '' : 'unread'}" onclick="viewEmail(${email.id})">
                 <div class="email-subject">${email.subject}</div>
-                <div class="email-preview">${email.sender_email} → ${email.recipient_email}</div>
+                <div class="email-preview">${(email.sender || email.sender_email || '')} → ${(email.recipient || email.recipient_email || '')}</div>
                 <div class="email-meta">
                     <span><i class="fas fa-clock"></i> ${new Date(email.created_at).toLocaleString()}</span>
                     ${!email.is_read ? '<span class="badge bg-primary">New</span>' : ''}

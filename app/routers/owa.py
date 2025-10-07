@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import and_, or_
@@ -15,7 +15,7 @@ from ..diagnostic_logger import outlook_health
 from ..email_delivery import email_delivery
 from ..email_parser import get_email_preview, parse_email_content
 from ..mime_utils import plain_to_html
-from ..email_queue import QueuedEmail
+from ..email_queue import EmailQueueStatus, QueuedEmail
 from ..email_service import EmailService
 from ..language import (
     get_all_translations,
@@ -211,6 +211,8 @@ def owa_admin_smtp_logs_data(
         "internal_smtp": "internal_smtp.log",
         "smtp_errors": "smtp_errors.log",
         "email_processing": "email_processing.log",
+        "external_smtp": "external_smtp.log",
+        "smtp_connections": "smtp_connections.log",
     }
     filename = log_map.get(log, "internal_smtp.log")
     full_path = os.path.join(logs_dir, filename)
@@ -531,7 +533,7 @@ async def owa_admin_action_queue_flush(
     try:
         updated = (
             db.query(QueuedEmail)
-            .filter(QueuedEmail.status == "retry")
+            .filter(QueuedEmail.status == EmailQueueStatus.RETRY.value)
             .update({QueuedEmail.next_retry_at: now}, synchronize_session=False)
         )
         db.commit()
@@ -545,15 +547,79 @@ async def owa_admin_action_queue_flush(
         cycles += 1
         await email_delivery.process_queue(db)
         # Check if more work remains
-        pending = db.query(QueuedEmail).filter(QueuedEmail.status == "pending").count()
+        pending = (
+            db.query(QueuedEmail)
+            .filter(QueuedEmail.status == EmailQueueStatus.PENDING.value)
+            .count()
+        )
         retry_ready = (
             db.query(QueuedEmail)
-            .filter(QueuedEmail.status == "retry", QueuedEmail.next_retry_at <= now)
+            .filter(
+                QueuedEmail.status == EmailQueueStatus.RETRY.value,
+                QueuedEmail.next_retry_at <= now,
+            )
             .count()
         )
         if pending == 0 and retry_ready == 0:
             break
     return {"status": "flushed", "fast_forwarded": updated, "cycles": cycles}
+
+
+@router.post("/admin/actions/queue/resend")
+async def owa_admin_action_queue_resend(
+    request: Request,
+    payload: dict = Body(...),
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+):
+    """Reset a queued email back to pending and trigger processing."""
+
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, "admin", False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    message_id = payload.get("message_id")
+    queue_id = payload.get("id")
+
+    if not message_id and queue_id is None:
+        raise HTTPException(status_code=400, detail="message_id or id required")
+
+    query = db.query(QueuedEmail)
+    if message_id:
+        raw = message_id.strip()
+        candidates = {raw}
+        if not raw.startswith("<"):
+            candidates.add(f"<{raw}>")
+        if raw.startswith("<") and raw.endswith(">"):
+            candidates.add(raw.strip("<>"))
+        query = query.filter(QueuedEmail.message_id.in_(list(candidates)))
+    else:
+        try:
+            queue_id = int(queue_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid queue id")
+        query = query.filter(QueuedEmail.id == queue_id)
+
+    queued = query.first()
+    if not queued:
+        raise HTTPException(status_code=404, detail="Queued email not found")
+
+    queued.status = EmailQueueStatus.PENDING.value
+    queued.retry_count = 0
+    queued.error_message = None
+    queued.next_retry_at = None
+    queued.updated_at = datetime.utcnow()
+    db.commit()
+
+    await email_delivery.process_queue(db)
+
+    return {
+        "status": "resent",
+        "message_id": queued.message_id,
+        "subject": queued.subject,
+        "recipient": queued.recipient_email,
+    }
 
 
 @router.post("/admin/actions/queue/start")

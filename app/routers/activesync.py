@@ -162,7 +162,7 @@ def _parse_itemops_fetches(
     STR_I = 0x03
 
     CP_AIRSYNC = 0
-    CP_AIRSYNCBASE = 17
+    CP_AIRSYNCBASE = 14
 
     AS_FETCH = 0x0A
     AS_COLLECTION_ID = 0x12

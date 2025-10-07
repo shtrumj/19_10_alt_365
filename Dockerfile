@@ -1,17 +1,24 @@
+# syntax=docker/dockerfile:1.4
+
 # Use Python 3.11 slim image
 FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    libffi-dev \
-    libssl-dev \
-    libkrb5-dev \
-    krb5-user \
+# Install system dependencies (using BuildKit cache mounts to avoid disk errors)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        libffi-dev \
+        libssl-dev \
+        libkrb5-dev \
+        krb5-user \
+        ca-certificates \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

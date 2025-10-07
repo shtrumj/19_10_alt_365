@@ -1,0 +1,192 @@
+:root,
+body[data-theme="auto"] {
+  color-scheme: light dark;
+
+  /* Base swatch */
+  --swatch-50: #fbf9f9;
+  --swatch-200: #92a592;
+  --swatch-400: #7b807c;
+  --swatch-500: #9495a3;
+  --swatch-900: #1d102c;
+
+  /* Core palette tokens */
+  --color-background: var(--swatch-500);
+  --color-surface: var(--swatch-50);
+  --color-surface-alt: #ffffff;
+  --color-elevated: rgba(251, 249, 249, 0.88);
+  --color-text-primary: var(--swatch-900);
+  --color-text-secondary: var(--swatch-400);
+  --color-border: rgba(29, 16, 44, 0.12);
+  --color-border-strong: rgba(29, 16, 44, 0.24);
+  --color-bg: var(--color-background);
+  --color-text: var(--color-text-primary);
+  --accent-strong: #ff6a1a;
+  --accent-soft: color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
+  --command-bar-bg: color-mix(in srgb, var(--color-surface) 85%, var(--accent-strong) 15%);
+  --command-bar-border: rgba(29, 16, 44, 0.12);
+  --list-row-hover-bg: color-mix(in srgb, var(--accent-strong) 12%, transparent 88%);
+  --list-row-selected-bg: color-mix(in srgb, var(--accent-strong) 18%, transparent 82%);
+  --list-divider: rgba(29, 16, 44, 0.08);
+  --reading-pane-bg: var(--color-surface);
+
+  /* Accent + component aliases (legacy friendly) */
+  --primary-color: var(--swatch-200);
+  --primary-dark: var(--swatch-400);
+  --secondary-color: var(--swatch-50);
+  --accent-color: var(--swatch-900);
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --border-color: var(--color-border-strong);
+
+  /* Application surfaces */
+  --app-background: linear-gradient(135deg, var(--swatch-50) 0%, var(--swatch-500) 100%);
+  --sidebar-background: linear-gradient(180deg, var(--swatch-50) 0%, var(--swatch-200) 100%);
+  --sidebar-text: var(--swatch-900);
+  --toolbar-background: color-mix(in srgb, var(--swatch-50) 85%, var(--swatch-200) 15%);
+  --surface-shadow: 0 20px 40px rgba(29, 16, 44, 0.12);
+
+  /* Interactive tokens */
+  --link-color: var(--accent-color);
+  --link-hover-color: #2a1b42;
+  --button-primary-bg: var(--primary-color);
+  --button-primary-bg-hover: color-mix(in srgb, var(--primary-color) 70%, var(--swatch-500) 30%);
+  --button-primary-text: var(--swatch-900);
+  --button-secondary-bg: var(--swatch-400);
+  --button-secondary-text: var(--swatch-50);
+
+  /* Status + alerts */
+  --success-color: var(--swatch-200);
+  --warning-color: var(--swatch-400);
+  --danger-color: var(--swatch-900);
+  --status-connected-bg: color-mix(in srgb, var(--success-color) 20%, var(--swatch-50) 80%);
+  --status-connected-text: var(--swatch-900);
+  --status-warning-bg: color-mix(in srgb, var(--warning-color) 15%, var(--swatch-50) 85%);
+  --status-warning-text: var(--swatch-900);
+  --status-error-bg: color-mix(in srgb, var(--danger-color) 10%, var(--swatch-50) 90%);
+  --status-error-text: var(--swatch-900);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root,
+  body[data-theme="auto"] {
+    color-scheme: dark;
+    --color-background: var(--swatch-900);
+    --color-surface: #1f1430;
+    --color-surface-alt: #271a3f;
+    --color-elevated: rgba(25, 15, 38, 0.92);
+    --color-text-primary: var(--swatch-50);
+    --color-text-secondary: var(--swatch-200);
+    --color-border: rgba(251, 249, 249, 0.12);
+    --color-border-strong: rgba(251, 249, 249, 0.24);
+    --app-background: linear-gradient(135deg, #1d102c 0%, #4d4f6d 100%);
+    --sidebar-background: linear-gradient(180deg, #1d102c 0%, #4d4f6d 100%);
+    --sidebar-text: var(--swatch-50);
+    --toolbar-background: color-mix(in srgb, var(--swatch-400) 70%, var(--swatch-900) 30%);
+    --surface-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+    --link-hover-color: #c7c2d6;
+    --button-primary-text: var(--swatch-900);
+    --button-secondary-bg: var(--swatch-500);
+    --button-secondary-text: var(--swatch-50);
+    --accent-strong: #ff8a3d;
+    --accent-soft: color-mix(in srgb, var(--accent-strong) 20%, transparent 80%);
+    --command-bar-bg: color-mix(in srgb, rgba(29, 16, 44, 0.75) 70%, var(--accent-strong) 30%);
+    --command-bar-border: rgba(255, 255, 255, 0.08);
+    --list-row-hover-bg: color-mix(in srgb, var(--accent-strong) 20%, transparent 80%);
+    --list-row-selected-bg: color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
+    --list-divider: rgba(255, 255, 255, 0.08);
+    --reading-pane-bg: rgba(25, 15, 38, 0.92);
+    --status-connected-bg: color-mix(in srgb, var(--success-color) 35%, transparent 65%);
+    --status-connected-text: var(--swatch-50);
+    --status-warning-bg: color-mix(in srgb, var(--warning-color) 30%, transparent 70%);
+    --status-warning-text: var(--swatch-50);
+    --status-error-bg: color-mix(in srgb, var(--danger-color) 25%, transparent 75%);
+    --status-error-text: var(--swatch-50);
+  }
+}
+
+body {
+  background: var(--app-background);
+  color: var(--color-text-primary);
+  transition:
+    background 0.3s ease,
+    color 0.3s ease;
+}
+
+body.theme-light,
+body[data-theme="light"] {
+  color-scheme: light;
+  --app-background: linear-gradient(135deg, var(--swatch-50) 0%, var(--swatch-500) 100%);
+  --color-surface: var(--swatch-50);
+  --color-surface-alt: #ffffff;
+  --color-text-primary: var(--swatch-900);
+  --color-text-secondary: var(--swatch-400);
+  --color-border: rgba(29, 16, 44, 0.12);
+  --color-border-strong: rgba(29, 16, 44, 0.24);
+}
+
+body.theme-dark,
+body[data-theme="dark"] {
+  color-scheme: dark;
+  background: linear-gradient(135deg, #1d102c 0%, #4d4f6d 100%);
+  color: var(--color-text-primary);
+}
+
+.surface-card {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--surface-shadow);
+  transition:
+    background 0.3s ease,
+    color 0.3s ease,
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+.surface-muted {
+  background: var(--color-surface-alt);
+}
+
+.btn-primary-theme {
+  background: var(--button-primary-bg);
+  color: var(--button-primary-text);
+  border: 1px solid transparent;
+}
+
+.btn-primary-theme:hover {
+  background: var(--button-primary-bg-hover);
+}
+
+.btn-secondary-theme {
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-text);
+  border: 1px solid transparent;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.status-pill.connected {
+  background: var(--status-connected-bg);
+  color: var(--status-connected-text);
+}
+
+.status-pill.warning {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+}
+
+.status-pill.error {
+  background: var(--status-error-bg);
+  color: var(--status-error-text);
+}
+
+/* Placeholder for future per-user palette overrides.
+   Example: body[data-palette="custom-name"] { --primary-color: ...; } */

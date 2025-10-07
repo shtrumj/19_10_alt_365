@@ -80,20 +80,28 @@ class ConnectionManager:
     
     async def send_email_notification(self, user_id: int, email_data: dict):
         """Send new email notification to specific user"""
+        # Keep payload aligned with front-end expectations (id, subject, sender, preview, created_at)
+        payload = {
+            "id": email_data.get("id"),
+            "subject": email_data.get("subject"),
+            "sender": email_data.get("sender"),
+            "preview": email_data.get("preview", ""),
+            "is_read": email_data.get("is_read", False),
+            "created_at": email_data.get("created_at"),
+        }
+
         message = {
             "type": "new_email",
             "timestamp": datetime.utcnow().isoformat(),
-            "data": {
-                "email_id": email_data.get("id"),
-                "subject": email_data.get("subject"),
-                "sender": email_data.get("sender"),
-                "preview": email_data.get("preview", ""),
-                "is_read": email_data.get("is_read", False)
-            }
+            "data": payload,
         }
-        
+
         await self.send_personal_message(message, user_id)
-        logger.info(f"📧 Email notification sent to user {user_id}: {email_data.get('subject')}")
+        logger.info(
+            "📧 Email notification sent to user %s: %s",
+            user_id,
+            payload.get("subject"),
+        )
     
     async def send_email_update(self, user_id: int, email_data: dict):
         """Send email update notification (mark as read, delete, etc.)"""

@@ -116,6 +116,8 @@ class ContactService:
         for field, value in data.items():
             if not hasattr(contact, field):
                 continue
+            if field in {"id", "uuid", "owner_id", "created_at", "updated_at"}:
+                continue
             if field == "children" and value is not None:
                 value = self._normalize_children(value)
             setattr(contact, field, value)

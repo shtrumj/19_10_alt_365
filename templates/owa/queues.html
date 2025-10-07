@@ -47,6 +47,7 @@
               <th>נמען</th>
               <th>נושא</th>
               <th>סטטוס</th>
+              <th>פעולות</th>
             </tr>
           </thead>
           <tbody>
@@ -56,7 +57,23 @@
               <td>{{ e.sender_email }}</td>
               <td>{{ e.recipient_email }}</td>
               <td>{{ e.subject }}</td>
-              <td>{{ e.status }}</td>
+              <td>
+                <span class="badge bg-{{ 'success' if e.status == 'sent' else 'warning' if e.status in ['pending', 'retry', 'processing'] else 'danger' }}">{{ e.status }}</span>
+                {% if e.retry_count %}
+                <div class="small text-muted">ניסיונות: {{ e.retry_count }} / {{ e.max_retries }}</div>
+                {% endif %}
+                {% if e.error_message %}
+                <div class="small text-danger" style="max-width:260px; white-space:normal;">{{ e.error_message }}</div>
+                {% endif %}
+              </td>
+              <td>
+                <div class="d-flex flex-column gap-1">
+                  <button class="btn btn-outline-success btn-sm" onclick='resendQueuedEmail({{ e.message_id|tojson }})'>
+                    <i class="fas fa-paper-plane"></i> שלח שוב
+                  </button>
+                  <small class="text-muted">{{ e.message_id }}</small>
+                </div>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
@@ -98,6 +115,28 @@
     </div>
   </div>
 </div>
+<script>
+async function resendQueuedEmail(messageId){
+  if(!messageId){
+    return;
+  }
+  try{
+    const res = await fetch('/owa/admin/actions/queue/resend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_id: messageId })
+    });
+    const data = await res.json();
+    if(res.ok){
+      const subject = data.subject || '';
+      alert('הודעה הוחזרה לתור: ' + (subject || messageId));
+      window.location.reload();
+    } else {
+      alert('שגיאה בהחזרה לתור: ' + (data.detail || JSON.stringify(data)));
+    }
+  } catch (err){
+    alert('שגיאת רשת: ' + err.message);
+  }
+}
+</script>
 {% endblock %}
-
-
