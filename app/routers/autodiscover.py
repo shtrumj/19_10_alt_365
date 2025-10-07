@@ -102,6 +102,11 @@ async def autodiscover(request: Request):
     oab_url = f"https://{host}/oab/default.oab"
 
     effective_email = requested_email or f"user@{host}"
+    local_part = effective_email.split("@")[0]
+    fake_org = "/o=SkyShift Dev/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)"
+    server_dn_raw = f"{fake_org}/cn=Configuration/cn=Servers/cn={host}"
+    mailbox_dn_raw = f"{fake_org}/cn=Recipients/cn={local_part}"
+
     escaped_display = html.escape(display_name)
     escaped_email = html.escape(effective_email)
     escaped_host = html.escape(host)
@@ -110,11 +115,12 @@ async def autodiscover(request: Request):
     escaped_as = html.escape(activesync_url)
     escaped_mapi = html.escape(mapi_url)
     escaped_oab = html.escape(oab_url)
-    fake_org = "/o=SkyShift Dev/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)"
-    server_dn = f"{fake_org}/cn=Configuration/cn=Servers/cn={escaped_host}"
-    mailbox_dn = f"{fake_org}/cn=Recipients/cn={escaped_email.split('@')[0]}"
+    server_dn = html.escape(server_dn_raw)
+    mailbox_dn = html.escape(mailbox_dn_raw)
 
     response_ns = response_schema
+    if not requested_email:
+        requested_email = request.query_params.get("email") or request.query_params.get("EmailAddress") or request.query_params.get("Email")
 
     xml = f"""<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -214,6 +220,33 @@ async def autodiscover(request: Request):
         <InternalUrl>{escaped_as}</InternalUrl>
         <ExternalUrl>{escaped_as}</ExternalUrl>
       </Protocol>
+      <Protocol>
+        <Type>IMAP</Type>
+        <Server>{escaped_host}</Server>
+        <Port>993</Port>
+        <SSL>On</SSL>
+        <SPA>Off</SPA>
+        <AuthPackage>Basic</AuthPackage>
+        <LoginName>{escaped_email}</LoginName>
+      </Protocol>
+      <Protocol>
+        <Type>POP3</Type>
+        <Server>{escaped_host}</Server>
+        <Port>995</Port>
+        <SSL>On</SSL>
+        <SPA>Off</SPA>
+        <AuthPackage>Basic</AuthPackage>
+        <LoginName>{escaped_email}</LoginName>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type>
+        <Server>{escaped_host}</Server>
+        <Port>587</Port>
+        <SSL>On</SSL>
+        <SPA>Off</SPA>
+        <AuthPackage>Basic</AuthPackage>
+        <LoginName>{escaped_email}</LoginName>
+      </Protocol>
     </Account>
   </Response>
 </Autodiscover>
@@ -308,8 +341,8 @@ async def autodiscover_json(email_address: str, request: Request):
                     "ServerExclusiveConnect": True,
                     "PublicFolderServer": host,
                     "ActiveDirectoryServer": host,
-                    "ServerDN": server_dn,
-                    "MdbDN": mailbox_dn,
+                    "ServerDN": server_dn_raw,
+                    "MdbDN": mailbox_dn_raw,
                     "CertPrincipalName": f"msstd:{host}"
                 },
                 {
@@ -349,6 +382,33 @@ async def autodiscover_json(email_address: str, request: Request):
                     "Type": "WEB",
                     "OWAUrl": f"https://{host}/owa/",
                     "OOFUrl": f"https://{host}/owa/?path=/options/automaticreply"
+                },
+                {
+                    "Type": "IMAP",
+                    "Server": host,
+                    "Port": 993,
+                    "SSL": "On",
+                    "SPA": "Off",
+                    "AuthPackage": "Basic",
+                    "LoginName": email_address
+                },
+                {
+                    "Type": "POP3",
+                    "Server": host,
+                    "Port": 995,
+                    "SSL": "On",
+                    "SPA": "Off",
+                    "AuthPackage": "Basic",
+                    "LoginName": email_address
+                },
+                {
+                    "Type": "SMTP",
+                    "Server": host,
+                    "Port": 587,
+                    "SSL": "On",
+                    "SPA": "Off",
+                    "AuthPackage": "Basic",
+                    "LoginName": email_address
                 }
             ]
         }
