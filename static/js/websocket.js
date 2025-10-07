@@ -284,59 +284,46 @@ class EmailWebSocket {
   }
 
   addEmailToInbox(emailData) {
-    // Check if we're on the inbox page
-    const emailList = document.getElementById("emailList");
-    if (!emailList) return;
+    const mailList = document.getElementById("mailList");
+    if (!mailList) return;
 
-    // Create new email item
-    const emailItem = document.createElement("div");
-    emailItem.className = "email-item unread";
-    emailItem.setAttribute("data-email-id", emailData.id);
-    emailItem.onclick = () => viewEmail(emailData.id);
+    const row = document.createElement("article");
+    row.className = "mail-row unread";
+    row.dataset.emailId = emailData.id;
+    row.dataset.sender = emailData.sender || "";
+    row.dataset.recipient = emailData.recipient || "";
+    row.dataset.subject = emailData.subject || "";
+    row.dataset.preview = emailData.preview || "";
 
-    emailItem.innerHTML = `
-            <div class="email-row">
-                <div class="email-cell" data-column="checkbox">
-                    <input class="form-check-input email-checkbox" type="checkbox" onclick="event.stopPropagation()" data-email-id="${
-                      emailData.id
-                    }">
-                </div>
-                <div class="email-cell" data-column="status">
-                    <i class="fas fa-envelope text-primary"></i>
-                </div>
-                <div class="email-cell" data-column="sender">
-                    <strong class="email-sender">${emailData.sender}</strong>
-                </div>
-                <div class="email-cell" data-column="subject">
-                    <div class="email-subject">${emailData.subject}</div>
-                    <div class="email-preview">${emailData.preview}</div>
-                </div>
-                <div class="email-cell" data-column="time">
-                    <div class="email-time">${new Date(
-                      emailData.created_at
-                    ).toLocaleString()}</div>
-                    <span class="badge bg-primary">New</span>
-                    <div class="mt-2">
-                        <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteEmail(${
-                          emailData.id
-                        })" title="Delete">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
+    const initials = (emailData.sender || emailData.recipient || "?")
+      .trim()
+      .charAt(0)
+      .toUpperCase();
 
-    // Insert at the top of the email list
-    const firstEmail = emailList.querySelector(".email-item");
-    if (firstEmail) {
-      emailList.insertBefore(emailItem, firstEmail);
+    row.innerHTML = `
+      <div class="mail-avatar">${initials}</div>
+      <div class="mail-secondary">
+        <div class="mail-primary">
+          <span class="mail-from">${emailData.sender || ""}</span>
+          <span class="badge">${window.__translations?.new || "New"}</span>
+        </div>
+        <div class="mail-subject">${emailData.subject || ""}</div>
+        <div class="mail-preview">${emailData.preview || ""}</div>
+      </div>
+      <div class="mail-time" data-timestamp="${emailData.created_at}"></div>
+    `;
+
+    row.addEventListener("click", () => openEmail(emailData.id, row));
+
+    const firstRow = mailList.querySelector(".mail-row");
+    if (firstRow) {
+      mailList.insertBefore(row, firstRow);
     } else {
-      emailList.appendChild(emailItem);
+      mailList.appendChild(row);
     }
 
-    // Add highlight effect
-    emailItem.style.animation = "highlight 2s ease-in-out";
+    updateTimestamps?.();
+    applyFilters?.();
   }
 
   updateEmailInInbox(updateData) {

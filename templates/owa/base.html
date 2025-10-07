@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>
-      {% block title %}{{ get_translation(request, 'title') }}{% endblock %}
+      {% block title %}{{ get_translation(request, 'app_name') }}{% endblock %}
     </title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
@@ -131,7 +131,7 @@
         align-items: center;
         gap: 12px;
         text-decoration: none;
-        color: var(--color-text-primary);
+        color: #f8fafc;
         font-weight: 600;
         font-size: 1.05rem;
       }
@@ -683,7 +683,7 @@
         <span class="app-brand-icon">
           <i class="fas fa-envelope"></i>
         </span>
-        <span>SkyShift.Dev</span>
+        <span>{{ get_translation(request, 'app_name') }}</span>
       </a>
       <div class="header-search d-none d-md-block">
         <i class="fas fa-search"></i>
@@ -892,6 +892,7 @@
       // Set user ID and hostname for WebSocket connection
       window.userId = {{ user.id if user else 1 }};
       window.hostname = '{{ hostname }}';
+      window.__translations = {{ {"new": get_translation(request, "new")} | tojson | safe }};
 
       const THEME_KEY = 'owa-theme';
 

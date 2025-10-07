@@ -1,0 +1,108 @@
+---
+config:
+  theme: mc
+  layout: dagre
+---
+flowchart TD
+ subgraph P["Protocol Services - stateless"]
+    direction LR
+        P1["ActiveSync or OWA\nFastAPI or Axum"]
+        P2["MAPI or EWS Gateway\nFastAPI or Rust"]
+        P3["SMTP server\nPostfix or OpenSMTPD"]
+        P4["IMAP server\nDovecot"]
+  end
+ subgraph B["Async Bus and Cache"]
+    direction TB
+        V1["Valkey cluster\ncache and rate limits"]
+        V2["Valkey streams\nmail_ingest index notify"]
+  end
+ subgraph C["Core gRPC API - typed and versioned"]
+    direction TB
+        C1["gRPC API\nauthz tracing task registry"]
+  end
+ subgraph W["Async Workers"]
+    direction LR
+        W1["Ingest worker\nparse and normalize MIME"]
+        W2["Index worker\nsearch and threading"]
+        W3["Notify worker\npush WS APNs FCM"]
+        W4["Retention and GC worker"]
+  end
+ subgraph D["Storage"]
+    direction LR
+        D1[("PostgreSQL mail_state\nfolders flags ACLs")]
+        D2[("PostgreSQL audit and telemetry")]
+        D3[("MinIO or S3\nmail blobs and attachments")]
+        D4[("OpenSearch or Meilisearch\nfull text index")]
+  end
+ subgraph O["Observability"]
+    direction LR
+        Prom["Prometheus"]
+        Graf["Grafana"]
+        Loki["Loki logs"]
+        Tempo["Tempo or Jaeger traces"]
+  end
+    A1["iOS or Android\nActiveSync"] --> G["NGINX\nTLS + HTTP2 or 3\nRate limit\ngRPC web proxy"]
+    A2["Web OWA"] --> G
+    A3["Desktop MAPI or EWS\nIMAP or SMTP"] --> G
+    A4["Admin UI"] --> G
+    G --> K["Keycloak\nOIDC or SAML"] & P1 & P2 & P3 & P4
+    P1 -- publish or consume --> V2
+    P2 -- publish or consume --> V2
+    P3 -- publish or consume --> V2
+    P4 -- publish or consume --> V2
+    P1 --- V1 & Prom & Loki
+    P2 --- V1 & Prom
+    P3 --- V1 & Prom
+    P4 --- V1 & Prom
+    P1 --> C1
+    P2 --> C1
+    P3 --> C1
+    P4 --> C1
+    C1 <--> V1 & V2 & D1 & D2
+    V2 --> W1 & W2 & W3 & W4
+    W1 --> C1 & D3
+    W2 --> C1 & D4
+    W3 --> C1
+    V1 --- D1
+    C1 --- Prom & Tempo
+    W1 --- Prom & Tempo
+    W2 --- Prom & Tempo
+    W3 --- Prom & Tempo
+    W4 --- Prom
+     P1:::svc
+     P2:::svc
+     P3:::svc
+     P4:::svc
+     V1:::cache
+     V2:::queue
+     C1:::core
+     W1:::worker
+     W2:::worker
+     W3:::worker
+     W4:::worker
+     D1:::db
+     D2:::db
+     D3:::obj
+     D4:::index
+     Prom:::obs
+     Graf:::obs
+     Loki:::obs
+     Tempo:::obs
+     A1:::client
+     G:::edge
+     A2:::client
+     A3:::client
+     A4:::client
+     K:::security
+    classDef client fill:#eef,stroke:#779
+    classDef edge fill:#e5f7ff,stroke:#09c,stroke-width:2px
+    classDef security fill:#efe,stroke:#2a2
+    classDef svc fill:#f6f2ff,stroke:#7a52c1
+    classDef cache fill:#fff4e5,stroke:#c77d00
+    classDef queue fill:#ffe8cc,stroke:#c77d00,stroke-dasharray:4 2
+    classDef core fill:#f0fff4,stroke:#2a7
+    classDef worker fill:#fff,stroke:#555
+    classDef db fill:#eaf7ea,stroke:#2a7
+    classDef obj fill:#eaf7ea,stroke:#2a7,stroke-dasharray:4 2
+    classDef index fill:#eaf7ea,stroke:#2a7
+    classDef obs fill:#f0f0f0,stroke:#666

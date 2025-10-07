@@ -1,6 +1,6 @@
 {% extends "owa/base.html" %}
 
-{% block title %}{{ get_translation(request, 'dashboard') }} - {{ get_translation(request, 'title') }}{% endblock %}
+{% block title %}{{ get_translation(request, 'dashboard') }} - {{ get_translation(request, 'app_name') }}{% endblock %}
 
 {% block content %}
 <div class="content-header">
@@ -16,7 +16,7 @@
 <div class="row mb-4">
     <div class="col-12">
         <div class="alert alert-info" role="alert">
-            <h4 class="alert-heading"><i class="fas fa-info-circle"></i> {{ get_translation(request, 'welcome') }} {{ get_translation(request, 'title') }}!</h4>
+            <h4 class="alert-heading"><i class="fas fa-info-circle"></i> {{ get_translation(request, 'welcome') }} {{ get_translation(request, 'app_name') }}!</h4>
             <p>{{ get_translation(request, 'welcome_message') }} <strong>{{ user.full_name or user.username }}</strong>. {{ get_translation(request, 'welcome_instructions') }}</p>
         </div>
     </div>
