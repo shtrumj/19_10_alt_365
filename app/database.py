@@ -136,6 +136,18 @@ class Email(Base):
         "User", foreign_keys=[recipient_id], back_populates="received_emails"
     )
 
+    @property
+    def sender_email(self) -> Optional[str]:
+        if self.sender:
+            return self.sender.email
+        return self.external_sender
+
+    @property
+    def recipient_email(self) -> Optional[str]:
+        if self.recipient:
+            return self.recipient.email
+        return self.external_recipient
+
 
 class EmailAttachment(Base):
     __tablename__ = "email_attachments"

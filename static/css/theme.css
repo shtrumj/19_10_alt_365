@@ -3,11 +3,11 @@ body[data-theme="auto"] {
   color-scheme: light dark;
 
   /* Base swatch */
-  --swatch-50: #fbf9f9;
-  --swatch-200: #92a592;
-  --swatch-400: #7b807c;
-  --swatch-500: #9495a3;
-  --swatch-900: #1d102c;
+  --swatch-50: #f5f7fb;
+  --swatch-200: #d6e4ff;
+  --swatch-400: #4b5a70;
+  --swatch-500: #1f2a37;
+  --swatch-900: #0f172a;
 
   /* Core palette tokens */
   --color-background: var(--swatch-500);
@@ -16,53 +16,53 @@ body[data-theme="auto"] {
   --color-elevated: rgba(251, 249, 249, 0.88);
   --color-text-primary: var(--swatch-900);
   --color-text-secondary: var(--swatch-400);
-  --color-border: rgba(29, 16, 44, 0.12);
-  --color-border-strong: rgba(29, 16, 44, 0.24);
+  --color-border: rgba(15, 23, 42, 0.08);
+  --color-border-strong: rgba(15, 23, 42, 0.18);
   --color-bg: var(--color-background);
   --color-text: var(--color-text-primary);
-  --accent-strong: #ff6a1a;
-  --accent-soft: color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
+  --accent-strong: #2563eb;
+  --accent-soft: color-mix(in srgb, var(--accent-strong) 24%, transparent 76%);
   --command-bar-bg: color-mix(in srgb, var(--color-surface) 85%, var(--accent-strong) 15%);
-  --command-bar-border: rgba(29, 16, 44, 0.12);
-  --list-row-hover-bg: color-mix(in srgb, var(--accent-strong) 12%, transparent 88%);
-  --list-row-selected-bg: color-mix(in srgb, var(--accent-strong) 18%, transparent 82%);
-  --list-divider: rgba(29, 16, 44, 0.08);
+  --command-bar-border: rgba(37, 99, 235, 0.18);
+  --list-row-hover-bg: color-mix(in srgb, var(--accent-strong) 15%, transparent 85%);
+  --list-row-selected-bg: color-mix(in srgb, var(--accent-strong) 22%, transparent 78%);
+  --list-divider: rgba(15, 23, 42, 0.08);
   --reading-pane-bg: var(--color-surface);
 
   /* Accent + component aliases (legacy friendly) */
-  --primary-color: var(--swatch-200);
-  --primary-dark: var(--swatch-400);
+  --primary-color: var(--accent-strong);
+  --primary-dark: #1e4fd3;
   --secondary-color: var(--swatch-50);
-  --accent-color: var(--swatch-900);
+  --accent-color: var(--accent-strong);
   --text-primary: var(--color-text-primary);
   --text-secondary: var(--color-text-secondary);
   --border-color: var(--color-border-strong);
 
   /* Application surfaces */
   --app-background: linear-gradient(135deg, var(--swatch-50) 0%, var(--swatch-500) 100%);
-  --sidebar-background: linear-gradient(180deg, var(--swatch-50) 0%, var(--swatch-200) 100%);
-  --sidebar-text: var(--swatch-900);
-  --toolbar-background: color-mix(in srgb, var(--swatch-50) 85%, var(--swatch-200) 15%);
-  --surface-shadow: 0 20px 40px rgba(29, 16, 44, 0.12);
+  --sidebar-background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
+  --sidebar-text: #ecf2ff;
+  --toolbar-background: color-mix(in srgb, var(--swatch-50) 78%, var(--accent-strong) 22%);
+  --surface-shadow: 0 20px 40px rgba(15, 23, 42, 0.12);
 
   /* Interactive tokens */
-  --link-color: var(--accent-color);
-  --link-hover-color: #2a1b42;
-  --button-primary-bg: var(--primary-color);
-  --button-primary-bg-hover: color-mix(in srgb, var(--primary-color) 70%, var(--swatch-500) 30%);
-  --button-primary-text: var(--swatch-900);
-  --button-secondary-bg: var(--swatch-400);
-  --button-secondary-text: var(--swatch-50);
+  --link-color: var(--accent-strong);
+  --link-hover-color: #1746a2;
+  --button-primary-bg: var(--accent-strong);
+  --button-primary-bg-hover: color-mix(in srgb, var(--accent-strong) 82%, #1e40af 18%);
+  --button-primary-text: #ffffff;
+  --button-secondary-bg: #e2e8f0;
+  --button-secondary-text: var(--swatch-900);
 
   /* Status + alerts */
-  --success-color: var(--swatch-200);
-  --warning-color: var(--swatch-400);
-  --danger-color: var(--swatch-900);
-  --status-connected-bg: color-mix(in srgb, var(--success-color) 20%, var(--swatch-50) 80%);
+  --success-color: #16a34a;
+  --warning-color: #f59e0b;
+  --danger-color: #dc2626;
+  --status-connected-bg: color-mix(in srgb, var(--success-color) 18%, var(--swatch-50) 82%);
   --status-connected-text: var(--swatch-900);
-  --status-warning-bg: color-mix(in srgb, var(--warning-color) 15%, var(--swatch-50) 85%);
+  --status-warning-bg: color-mix(in srgb, var(--warning-color) 16%, var(--swatch-50) 84%);
   --status-warning-text: var(--swatch-900);
-  --status-error-bg: color-mix(in srgb, var(--danger-color) 10%, var(--swatch-50) 90%);
+  --status-error-bg: color-mix(in srgb, var(--danger-color) 12%, var(--swatch-50) 88%);
   --status-error-text: var(--swatch-900);
 }
 
@@ -70,37 +70,37 @@ body[data-theme="auto"] {
   :root,
   body[data-theme="auto"] {
     color-scheme: dark;
-    --color-background: var(--swatch-900);
-    --color-surface: #1f1430;
-    --color-surface-alt: #271a3f;
-    --color-elevated: rgba(25, 15, 38, 0.92);
-    --color-text-primary: var(--swatch-50);
-    --color-text-secondary: var(--swatch-200);
-    --color-border: rgba(251, 249, 249, 0.12);
-    --color-border-strong: rgba(251, 249, 249, 0.24);
-    --app-background: linear-gradient(135deg, #1d102c 0%, #4d4f6d 100%);
-    --sidebar-background: linear-gradient(180deg, #1d102c 0%, #4d4f6d 100%);
-    --sidebar-text: var(--swatch-50);
-    --toolbar-background: color-mix(in srgb, var(--swatch-400) 70%, var(--swatch-900) 30%);
-    --surface-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
-    --link-hover-color: #c7c2d6;
-    --button-primary-text: var(--swatch-900);
-    --button-secondary-bg: var(--swatch-500);
-    --button-secondary-text: var(--swatch-50);
-    --accent-strong: #ff8a3d;
-    --accent-soft: color-mix(in srgb, var(--accent-strong) 20%, transparent 80%);
-    --command-bar-bg: color-mix(in srgb, rgba(29, 16, 44, 0.75) 70%, var(--accent-strong) 30%);
-    --command-bar-border: rgba(255, 255, 255, 0.08);
+    --color-background: #0b1220;
+    --color-surface: #101828;
+    --color-surface-alt: #111827;
+    --color-elevated: rgba(17, 24, 39, 0.95);
+    --color-text-primary: #f8fafc;
+    --color-text-secondary: #94a3b8;
+    --color-border: rgba(148, 163, 184, 0.18);
+    --color-border-strong: rgba(148, 163, 184, 0.28);
+    --app-background: linear-gradient(135deg, #0b1220 0%, #111827 100%);
+    --sidebar-background: linear-gradient(180deg, #111c2f 0%, #0b1220 100%);
+    --sidebar-text: #ecfeff;
+    --toolbar-background: color-mix(in srgb, rgba(15, 23, 42, 0.85) 70%, var(--accent-strong) 30%);
+    --surface-shadow: 0 24px 48px rgba(2, 6, 23, 0.55);
+    --link-hover-color: #93c5fd;
+    --button-primary-text: #ffffff;
+    --button-secondary-bg: #1f2937;
+    --button-secondary-text: #e2e8f0;
+    --accent-strong: #60a5fa;
+    --accent-soft: color-mix(in srgb, var(--accent-strong) 28%, transparent 72%);
+    --command-bar-bg: color-mix(in srgb, rgba(15, 23, 42, 0.85) 70%, var(--accent-strong) 30%);
+    --command-bar-border: rgba(96, 165, 250, 0.25);
     --list-row-hover-bg: color-mix(in srgb, var(--accent-strong) 20%, transparent 80%);
-    --list-row-selected-bg: color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
-    --list-divider: rgba(255, 255, 255, 0.08);
-    --reading-pane-bg: rgba(25, 15, 38, 0.92);
+    --list-row-selected-bg: color-mix(in srgb, var(--accent-strong) 32%, transparent 68%);
+    --list-divider: rgba(148, 163, 184, 0.18);
+    --reading-pane-bg: rgba(17, 24, 39, 0.92);
     --status-connected-bg: color-mix(in srgb, var(--success-color) 35%, transparent 65%);
-    --status-connected-text: var(--swatch-50);
+    --status-connected-text: #d1fae5;
     --status-warning-bg: color-mix(in srgb, var(--warning-color) 30%, transparent 70%);
-    --status-warning-text: var(--swatch-50);
+    --status-warning-text: #fffbeb;
     --status-error-bg: color-mix(in srgb, var(--danger-color) 25%, transparent 75%);
-    --status-error-text: var(--swatch-50);
+    --status-error-text: #fee2e2;
   }
 }
 
@@ -120,8 +120,8 @@ body[data-theme="light"] {
   --color-surface-alt: #ffffff;
   --color-text-primary: var(--swatch-900);
   --color-text-secondary: var(--swatch-400);
-  --color-border: rgba(29, 16, 44, 0.12);
-  --color-border-strong: rgba(29, 16, 44, 0.24);
+  --color-border: rgba(15, 23, 42, 0.08);
+  --color-border-strong: rgba(15, 23, 42, 0.18);
 }
 
 body.theme-dark,

@@ -33,24 +33,28 @@ class UserLogin(BaseModel):
 class EmailBase(BaseModel):
     subject: str
     body: Optional[str] = None
-    recipient_email: str
     body_html: Optional[str] = None
 
 
 class EmailCreate(EmailBase):
-    pass
+    recipient_email: EmailStr
 
 
 class EmailResponse(EmailBase):
     id: int
-    sender_id: int
-    recipient_id: int
+    sender_id: Optional[int] = None
+    recipient_id: Optional[int] = None
     is_read: bool
     is_deleted: bool
+    is_external: bool = False
     created_at: datetime
     updated_at: datetime
-    sender: UserResponse
-    recipient: UserResponse
+    sender: Optional[UserResponse] = None
+    recipient: Optional[UserResponse] = None
+    sender_email: Optional[str] = None
+    recipient_email: Optional[str] = None
+    external_sender: Optional[str] = None
+    external_recipient: Optional[str] = None
     mime_content: Optional[str] = None
     mime_content_type: Optional[str] = None
 

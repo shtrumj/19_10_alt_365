@@ -57,64 +57,6 @@
         margin-left: 0.5rem;
       }
 
-      /* Language Selector */
-      .language-selector {
-        position: absolute;
-        top: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 1000;
-        background: var(--color-surface);
-        border-radius: 25px;
-        box-shadow: 0 12px 24px rgba(29, 16, 44, 0.18);
-        border: 1px solid var(--color-border);
-        padding: 0.5rem 0.75rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-      }
-
-      .lang-btn {
-        padding: 0.5rem 1rem;
-        border: none;
-        background: transparent;
-        border-radius: 20px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        font-size: 0.9rem;
-        font-weight: 500;
-        color: var(--color-text-secondary);
-      }
-
-      .theme-toggle-btn {
-        width: 42px;
-        height: 42px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-        background: var(--color-surface-alt);
-        border: 1px solid var(--color-border);
-        box-shadow: 0 6px 12px rgba(29, 16, 44, 0.12);
-      }
-
-      .theme-toggle-btn:hover {
-        background: var(--button-primary-bg);
-        color: var(--button-primary-text);
-        border-color: transparent;
-        transform: translateY(-1px);
-      }
-
-      .lang-btn:hover {
-        background: var(--button-primary-bg);
-        color: var(--button-primary-text);
-      }
-
-      .lang-btn.active {
-        background: var(--button-primary-bg);
-        color: var(--button-primary-text);
-      }
-
       /* Connection Status */
       .connection-status {
         position: fixed;
@@ -258,12 +200,12 @@
       .command-btn.primary {
         background: var(--accent-strong);
         color: var(--button-primary-text);
-        box-shadow: 0 10px 25px rgba(255, 106, 26, 0.25);
+        box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
       }
 
       .command-btn.primary:hover {
         transform: translateY(-1px);
-        box-shadow: 0 14px 30px rgba(255, 106, 26, 0.35);
+        box-shadow: 0 16px 34px color-mix(in srgb, var(--accent-strong) 40%, transparent 60%);
       }
 
       .command-btn.secondary {
@@ -295,8 +237,8 @@
         width: 38px;
         height: 38px;
         border-radius: 50%;
-        background: var(--color-text-primary);
-        color: var(--color-surface);
+        background: var(--accent-strong);
+        color: var(--button-primary-text);
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -323,7 +265,7 @@
 
       .lang-toggle button.active {
         background: var(--accent-soft);
-        color: var(--color-text-primary);
+        color: var(--accent-strong);
         font-weight: 600;
       }
 
@@ -340,7 +282,11 @@
       }
 
       .sidebar {
-        background: var(--sidebar-background);
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--accent-strong) 30%, #1f2937 70%) 0%,
+          #0b1220 100%
+        );
         color: var(--sidebar-text);
         border-right: 1px solid var(--color-border);
         min-height: 100vh;
@@ -379,15 +325,30 @@
       }
 
       .nav-link {
-        color: var(--sidebar-text);
-        padding: 0.7rem 1.2rem;
-        border-radius: 10px;
+        position: relative;
+        color: rgba(236, 242, 255, 0.88);
+        padding: 0.7rem 1.4rem 0.7rem 1.6rem;
+        border-radius: 12px;
         margin: 0.3rem 0.9rem;
         transition: all 0.2s ease;
         display: flex;
         align-items: center;
         gap: 0.8rem;
         text-decoration: none;
+        font-weight: 500;
+      }
+
+      .nav-link::before {
+        content: "";
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 4px;
+        height: 24px;
+        border-radius: 999px;
+        background: transparent;
+        transition: background 0.2s ease, height 0.2s ease;
       }
 
       .nav-link i {
@@ -396,15 +357,25 @@
       }
 
       .nav-link:hover {
-        background: color-mix(in srgb, var(--accent-strong) 18%, transparent 82%);
-        color: var(--color-text-primary);
+        background: color-mix(in srgb, var(--accent-strong) 28%, transparent 72%);
+        color: #ffffff;
         transform: translateX(4px);
       }
 
+      .nav-link:hover::before {
+        background: var(--button-primary-text);
+        height: 28px;
+      }
+
       .nav-link.active {
-        background: color-mix(in srgb, var(--accent-strong) 24%, transparent 76%);
-        color: var(--color-text-primary);
-        box-shadow: inset 0 0 0 1px var(--accent-strong);
+        background: color-mix(in srgb, var(--accent-strong) 36%, transparent 64%);
+        color: #ffffff;
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong) 50%, transparent 50%);
+      }
+
+      .nav-link.active::before {
+        background: var(--button-primary-text);
+        height: 32px;
       }
 
       .main-content {

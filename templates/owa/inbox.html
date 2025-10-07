@@ -312,6 +312,9 @@
         </div>
       </div>
       <div class="mail-list" id="mailList">
+        {% set no_subject_text = get_translation(request, 'no_subject') if get_translation(request, 'no_subject') else 'No subject' %}
+        {% set no_content_text = get_translation(request, 'no_content') if get_translation(request, 'no_content') else 'No content' %}
+        {% set select_email_text = get_translation(request, 'select_email') if get_translation(request, 'select_email') else 'Select an email to read' %}
         {% if emails %}
           {% for email in emails %}
           {% set sender_address = email.sender.email if email.sender else (email.external_sender or '') %}
@@ -341,7 +344,7 @@
                 <span class="badge">{{ get_translation(request, 'new') }}</span>
                 {% endif %}
               </div>
-              <div class="mail-subject">{{ email.subject or get_translation(request, 'no_subject') }}</div>
+              <div class="mail-subject">{{ email.subject or no_subject_text }}</div>
               <div class="mail-preview">
                 {% if preview %}
                   {{ preview }}
@@ -373,7 +376,7 @@
       <div class="reading-placeholder" id="readingPlaceholder">
         <div>
           <i class="fas fa-envelope-open-text"></i>
-          <p>{{ get_translation(request, 'select_email') if get_translation(request, 'select_email') else 'Select an email to read' }}</p>
+          <p>{{ select_email_text }}</p>
         </div>
       </div>
       <div class="reading-header d-none" id="readingHeader">
@@ -476,7 +479,7 @@
     } else if (email.body) {
       body.textContent = email.body;
     } else {
-      body.innerHTML = '<p class="text-muted">({{ get_translation(request, 'no_content') if get_translation(request, 'no_content') else 'No content' }})</p>';
+      body.innerHTML = '<p class="text-muted">({{ no_content_text }})</p>';
     }
   }
 
@@ -518,7 +521,7 @@
 
   function bulkDelete() {
     if (!selectedEmailId) {
-      alert("{{ get_translation(request, 'select_email') if get_translation(request, 'select_email') else 'Select an email first' }}");
+      alert('{{ select_email_text }}');
       return;
     }
     deleteEmail(selectedEmailId);
