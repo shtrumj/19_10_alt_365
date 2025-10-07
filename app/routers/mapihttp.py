@@ -20,7 +20,7 @@ import base64
 import struct
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
     import gssapi  # Kerberos (Negotiate) acceptor
@@ -74,6 +74,28 @@ def log_outlook_debug(request: Request, event: str, details: dict = None):
     # Log to both MAPI log and debug log
     _write_json_line("web/mapi/mapi.log", debug_details)
     _write_json_line("outlook_debug/communication.log", debug_details)
+
+
+def _extract_auth_info(auth_header: Optional[str]) -> Tuple[str, Optional[str], bytes]:
+    """Return normalized scheme, token string, and decoded bytes for NTLM detection."""
+    if not auth_header:
+        return "", None, b""
+
+    scheme, _, token = auth_header.partition(" ")
+    scheme_lower = scheme.lower()
+    token = token.strip() if token else ""
+    raw = b""
+    if token:
+        try:
+            raw = base64.b64decode(token + "==")
+        except Exception:
+            raw = b""
+
+    # When Outlook uses Negotiate but offers NTLM inside, treat it as NTLM
+    if scheme_lower == "negotiate" and raw.startswith(b"NTLMSSP\x00"):
+        return "ntlm", token or None, raw
+
+    return scheme_lower, token or None, raw
 
 # Initialize RPC processor
 rpc_processor = None
@@ -191,7 +213,8 @@ async def mapi_emsmdb(request: Request):
     body = await request.body()
     ua = request.headers.get("User-Agent", "")
     content_type = request.headers.get("Content-Type", "")
-    auth_header = request.headers.get("Authorization", "")
+    auth_header = request.headers.get("Authorization")
+    auth_scheme, auth_token, auth_raw = _extract_auth_info(auth_header)
     
     # Start enhanced diagnostic logging
     request_id = str(uuid.uuid4())
@@ -206,7 +229,7 @@ async def mapi_emsmdb(request: Request):
         "headers": dict(request.headers),
         "client_ip": request.client.host if request.client else "unknown",
         "has_auth": bool(auth_header),
-        "auth_type": auth_header.split(" ")[0] if " " in auth_header else auth_header[:10] if auth_header else "none"
+        "auth_type": auth_scheme or "none"
     })
     
     # Log this as an Outlook phase
@@ -220,24 +243,22 @@ async def mapi_emsmdb(request: Request):
     try:
         # Enhanced authentication handling
         if auth_header:
-            auth_type = auth_header.split(" ")[0] if " " in auth_header else "unknown"
             log_mapi("auth_received", {
                 "request_id": request_id,
-                "auth_type": auth_type,
-                "has_credentials": len(auth_header) > 10
+                "auth_type": auth_scheme or "unknown",
+                "has_credentials": len(auth_header or "") > 10
             })
-            
+
             # Log authentication attempt
-            outlook_diagnostics.log_authentication_flow(auth_type, "credentials_received", True, {
+            outlook_diagnostics.log_authentication_flow(auth_scheme or "unknown", "credentials_received", True, {
                 "request_id": request_id,
                 "user_agent": ua
             })
-            
+
             # Decode Basic auth for logging (without exposing password)
-            if auth_type.lower() == "basic" and " " in auth_header:
+            if auth_scheme == "basic" and auth_token:
                 try:
-                    encoded = auth_header.split(" ")[1]
-                    decoded = base64.b64decode(encoded).decode('utf-8')
+                    decoded = base64.b64decode(auth_token).decode('utf-8')
                     username = decoded.split(":")[0] if ":" in decoded else "unknown"
                     log_mapi("basic_auth_user", {"request_id": request_id, "username": username})
                 except:
@@ -274,7 +295,7 @@ async def mapi_emsmdb(request: Request):
         log_mapi("raw_request", {
             "length": len(body),
             "hex_preview": body[:32].hex() if len(body) > 0 else "",
-            "auth_type": auth_header.split(" ")[0] if " " in auth_header else "none"
+            "auth_type": auth_scheme or "none"
         })
         
         # For now, accept any request with body without full authentication validation
@@ -282,8 +303,8 @@ async def mapi_emsmdb(request: Request):
         
         # Handle NTLM authentication flow properly
         # Handle Kerberos/Negotiate (GSSAPI) if presented
-        if auth_header and auth_header.startswith("Negotiate "):
-            token_b64 = auth_header.split(" ", 1)[1]
+        if auth_scheme == "negotiate":
+            token_b64 = auth_token or ""
             try:
                 in_token = base64.b64decode(token_b64)
                 if gssapi is not None:
@@ -322,10 +343,23 @@ async def mapi_emsmdb(request: Request):
                 # If gssapi not available or failed, fallthrough to NTLM path
             except Exception as gss_err:
                 log_mapi("gss_error", {"request_id": request_id, "error": str(gss_err)})
+            else:
+                if gssapi is None:
+                    log_mapi("gss_not_available", {"request_id": request_id})
+            # If we've reached here, force NTLM fallback
+            return Response(
+                status_code=401,
+                headers={
+                    "WWW-Authenticate": "NTLM",
+                    "Content-Type": "application/mapi-http",
+                    "Persistent-Auth": "true",
+                    "Connection": "close"
+                }
+            )
 
-        if auth_header and auth_header.startswith("NTLM") and len(body) == 0:
+        if auth_scheme == "ntlm" and len(body) == 0:
             # Distinguish NTLM Type1 (negotiate) vs Type3 (authenticate) by token length
-            token = auth_header.split(" ", 1)[1] if " " in auth_header else ""
+            token = auth_token or ""
             if token and len(token) <= 64:
                 # NTLM Type 1 negotiate received -> send Type 2 challenge
                 log_mapi("ntlm_negotiation", {
@@ -361,7 +395,7 @@ async def mapi_emsmdb(request: Request):
             else:
                 # Detect NTLM Type 3 by message type field
                 try:
-                    raw = base64.b64decode(token + "==")  # tolerate padding
+                    raw = auth_raw or base64.b64decode(token + "==")  # tolerate padding
                     is_ntlm = raw.startswith(b"NTLMSSP\x00")
                     msg_type = struct.unpack('<I', raw[8:12])[0] if len(raw) >= 12 else 0
                 except Exception:
@@ -378,18 +412,21 @@ async def mapi_emsmdb(request: Request):
                         "request_id": request_id
                     })
                 return Response(
-                        status_code=200,
-                        headers={
-                            "Content-Type": "application/mapi-http",
-                            "X-RequestType": "Connect",
-                            "X-ClientInfo": "365-Email-System/1.0",
-                            "X-RequestId": request_id,
-                            "X-ResponseCode": "0",
+                    status_code=200,
+                    headers={
+                        "Content-Type": "application/mapi-http",
+                        "X-RequestType": "Connect",
+                        "X-ClientInfo": "365-Email-System/1.0",
+                        "X-RequestId": request_id,
+                        "X-ResponseCode": "0",
                         "Cache-Control": "private",
                         "Persistent-Auth": "true",
-                        "X-ServerApplication": "365-Email-System/1.0"
-                        }
-                    )
+                        "X-ServerApplication": "365-Email-System/1.0",
+                        "X-ServerVersion": "15.01.2507.000",
+                        "X-ClientApplication": "SkyShift-Exchange/1.0",
+                        "Content-Length": "0"
+                    }
+                )
         
         # Parse MAPI/HTTP request with improved error handling
         if len(body) > 0:
@@ -407,7 +444,7 @@ async def mapi_emsmdb(request: Request):
                 outlook_diagnostics.log_error_with_context("mapi_parse_error", str(parse_error), {
                     "request_id": request_id,
                     "body_length": len(body),
-                    "auth_type": auth_header.split(" ")[0] if " " in auth_header else auth_header[:10] if auth_header else "none"
+                    "auth_type": auth_scheme or "none"
                 })
                 
                 # For Connect requests, try a simplified approach
@@ -445,7 +482,9 @@ async def mapi_emsmdb(request: Request):
                                 "Cache-Control": "private",
                                 "Connection": "close",
                                 "Persistent-Auth": "true",
-                                "X-ServerApplication": "365-Email-System/1.0"
+                                "X-ServerApplication": "365-Email-System/1.0",
+                                "X-ServerVersion": "15.01.2507.000",
+                                "X-ClientApplication": "SkyShift-Exchange/1.0"
                             },
                             content=b'\x00\x00\x00\x00'  # Empty MAPI response
                         )
@@ -505,7 +544,9 @@ async def mapi_emsmdb(request: Request):
                 "Cache-Control": "private",
                 "X-SessionCookie": session_cookie,
                 "X-ServerApplication": "365-Email-System/1.0",
-                "X-ResponseCode": "0"
+                "X-ResponseCode": "0",
+                "X-ServerVersion": "15.01.2507.000",
+                "X-ClientApplication": "SkyShift-Exchange/1.0"
             }
             
             log_mapi("connect_success", {"session": session_cookie, "user_dn": user_dn})
@@ -799,5 +840,3 @@ async def root_mapi_emsmdb(request: Request):
 async def root_mapi_nspi(request: Request):
     """Root-level MAPI/HTTP NSPI endpoint"""
     return await mapi_nspi(request)
-
-

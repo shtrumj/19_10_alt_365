@@ -930,6 +930,29 @@ async def eas_dispatch(
     # iOS requires X-MS-PolicyKey header on ALL commands after provisioning
     # Without it, iOS won't commit sync state and keeps reverting to SyncKey=0
     device = _get_or_create_device(db, current_user.id, device_id, device_type)
+
+    # Outlook on Windows (DeviceType=WindowsOutlook15) ignores provisioning and expects
+    # the server to assume success. Mark these devices as provisioned automatically so
+    # we do not loop forever with HTTP 449 responses.
+    if (
+        device.device_type
+        and device.device_type.lower().startswith("windowsoutlook")
+        and device.is_provisioned != 1
+    ):
+        device.is_provisioned = 1
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "auto_provision_override",
+                "device_id": device_id,
+                "device_type": device.device_type,
+                "message": "Auto-marked Outlook Windows device as provisioned to satisfy ActiveSync",
+            },
+        )
     # MS-ASPROV: PolicyKey must be 10-digit number after provisioning handshake
     policy_key = "1234567890" if device.is_provisioned == 1 else "0"
 
