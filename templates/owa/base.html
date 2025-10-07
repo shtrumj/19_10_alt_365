@@ -162,7 +162,9 @@
         border: 1px solid var(--color-border-strong);
         background: var(--color-surface-alt);
         color: var(--color-text-primary);
-        transition: box-shadow 0.2s ease, border-color 0.2s ease;
+        transition:
+          box-shadow 0.2s ease,
+          border-color 0.2s ease;
       }
 
       .header-search input:focus {
@@ -193,19 +195,23 @@
         padding: 0.55rem 1.3rem;
         font-weight: 600;
         text-decoration: none;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        transition:
+          transform 0.2s ease,
+          box-shadow 0.2s ease;
         border: 1px solid transparent;
       }
 
       .command-btn.primary {
         background: var(--accent-strong);
         color: var(--button-primary-text);
-        box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
+        box-shadow: 0 10px 24px
+          color-mix(in srgb, var(--accent-strong) 30%, transparent 70%);
       }
 
       .command-btn.primary:hover {
         transform: translateY(-1px);
-        box-shadow: 0 16px 34px color-mix(in srgb, var(--accent-strong) 40%, transparent 60%);
+        box-shadow: 0 16px 34px
+          color-mix(in srgb, var(--accent-strong) 40%, transparent 60%);
       }
 
       .command-btn.secondary {
@@ -224,7 +230,10 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+        transition:
+          transform 0.2s ease,
+          background 0.2s ease,
+          border-color 0.2s ease;
       }
 
       .header-icon-btn:hover {
@@ -260,7 +269,9 @@
         font-size: 0.85rem;
         cursor: pointer;
         color: var(--color-text-secondary);
-        transition: background 0.2s ease, color 0.2s ease;
+        transition:
+          background 0.2s ease,
+          color 0.2s ease;
       }
 
       .lang-toggle button.active {
@@ -348,7 +359,9 @@
         height: 24px;
         border-radius: 999px;
         background: transparent;
-        transition: background 0.2s ease, height 0.2s ease;
+        transition:
+          background 0.2s ease,
+          height 0.2s ease;
       }
 
       .nav-link i {
@@ -357,7 +370,11 @@
       }
 
       .nav-link:hover {
-        background: color-mix(in srgb, var(--accent-strong) 28%, transparent 72%);
+        background: color-mix(
+          in srgb,
+          var(--accent-strong) 28%,
+          transparent 72%
+        );
         color: #ffffff;
         transform: translateX(4px);
       }
@@ -368,9 +385,14 @@
       }
 
       .nav-link.active {
-        background: color-mix(in srgb, var(--accent-strong) 36%, transparent 64%);
+        background: color-mix(
+          in srgb,
+          var(--accent-strong) 36%,
+          transparent 64%
+        );
         color: #ffffff;
-        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong) 50%, transparent 50%);
+        box-shadow: inset 0 0 0 1px
+          color-mix(in srgb, var(--accent-strong) 50%, transparent 50%);
       }
 
       .nav-link.active::before {
@@ -475,7 +497,11 @@
       }
 
       .email-item:hover {
-        background: color-mix(in srgb, var(--primary-color) 10%, var(--color-surface-alt) 90%);
+        background: color-mix(
+          in srgb,
+          var(--primary-color) 10%,
+          var(--color-surface-alt) 90%
+        );
       }
 
       .email-row {
@@ -498,7 +524,11 @@
 
       .email-item.unread {
         border-left: 4px solid var(--primary-color);
-        background: color-mix(in srgb, var(--primary-color) 20%, var(--color-surface-alt) 80%);
+        background: color-mix(
+          in srgb,
+          var(--primary-color) 20%,
+          var(--color-surface-alt) 80%
+        );
       }
 
       .email-item.unread .email-cell {
@@ -537,7 +567,11 @@
         padding: 0.25rem 0.75rem;
         font-size: 0.75rem;
         font-weight: 500;
-        background: color-mix(in srgb, var(--primary-color) 15%, transparent 85%);
+        background: color-mix(
+          in srgb,
+          var(--primary-color) 15%,
+          transparent 85%
+        );
         color: var(--color-text-primary);
       }
 
@@ -584,7 +618,8 @@
 
       .form-control:focus {
         border-color: var(--primary-color);
-        box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--primary-color) 30%, transparent 70%);
+        box-shadow: 0 0 0 0.25rem
+          color-mix(in srgb, var(--primary-color) 30%, transparent 70%);
         background: var(--color-surface);
         color: var(--color-text-primary);
       }
@@ -648,7 +683,7 @@
         <span class="app-brand-icon">
           <i class="fas fa-envelope"></i>
         </span>
-        <span>{{ get_translation(request, 'title') }}</span>
+        <span>SkyShift.Dev</span>
       </a>
       <div class="header-search d-none d-md-block">
         <i class="fas fa-search"></i>
@@ -763,7 +798,8 @@
                 class="nav-link {% if request.url.path.startswith('/calendar') %}active{% endif %}"
                 href="/calendar/?lang={{ get_language(request) }}"
               >
-                <i class="fas fa-calendar"></i> {{ get_translation(request, 'calendar') }}
+                <i class="fas fa-calendar"></i> {{ get_translation(request,
+                'calendar') }}
               </a>
             </div>
             <div class="nav-item">
