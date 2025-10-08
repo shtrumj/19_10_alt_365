@@ -87,7 +87,8 @@ _HTML_PATTERN = re.compile(
 WBXML_MEDIA_TYPE = "application/vnd.ms-sync.wbxml"
 
 DEFAULT_SYSTEM_FOLDERS = [
-    {"server_id": "0", "display_name": "Root", "type": "0", "parent_id": "0"},
+    # NOTE: No Root folder - ActiveSync clients (especially Outlook) don't need/want it
+    # parent_id="0" means "top level" for all folders
     {"server_id": "1", "display_name": "Inbox", "type": "2", "parent_id": "0"},
     {"server_id": "2", "display_name": "Drafts", "type": "3", "parent_id": "0"},
     {"server_id": "3", "display_name": "Deleted Items", "type": "4", "parent_id": "0"},
@@ -1161,7 +1162,10 @@ async def eas_dispatch(
                 xml_body = request_body_bytes.decode("utf-8", errors="ignore")
             except Exception:
                 xml_body = ""
-            if "<PolicyKey>0</PolicyKey>" in xml_body and "<Status>1</Status>" in xml_body:
+            if (
+                "<PolicyKey>0</PolicyKey>" in xml_body
+                and "<Status>1</Status>" in xml_body
+            ):
                 provision_fields["policy_key"] = "0"
                 provision_fields["status"] = "1"
                 provision_fields["is_acknowledgement"] = True

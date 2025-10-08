@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
 from email.message import Message
-from email.parser import BytesParser
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.parser import BytesParser
 from email.utils import format_datetime, formatdate, make_msgid
 from typing import Any, Dict, List, Optional
 
@@ -741,6 +741,7 @@ def build_foldersync_with_folders(
     FH_SERVERID = 0x08
     FH_PARENTID = 0x09
     FH_TYPE = 0x0A
+    FH_CLASS = 0x06  # CRITICAL: Outlook needs Class to know content type!
 
     w.page(CP_FOLDER)
 
@@ -770,6 +771,21 @@ def build_foldersync_with_folders(
         display_name = folder.get("display_name") or folder.get("name") or ""
         folder_type = folder.get("type") or "2"
         parent_id = folder.get("parent_id") or "0"
+
+        # Map folder type to class (CRITICAL for Outlook)
+        # Types: 0=User, 2=Inbox, 3=Drafts, 4=Deleted, 5=Sent, 6=Outbox, 8=Calendar, 9=Contacts
+        folder_class_map = {
+            "0": "Email",  # Root/User folders default to Email
+            "2": "Email",  # Inbox
+            "3": "Email",  # Drafts
+            "4": "Email",  # Deleted Items
+            "5": "Email",  # Sent Items
+            "6": "Email",  # Outbox
+            "8": "Calendar",
+            "9": "Contacts",
+            "14": "Email",  # User-created email folders
+        }
+        folder_class = folder_class_map.get(str(folder_type), "Email")
 
         # <Add>
         w.start(FH_ADD)
