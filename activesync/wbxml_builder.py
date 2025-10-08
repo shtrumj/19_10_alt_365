@@ -29,8 +29,8 @@ STR_I = 0x03
 CP_AIRSYNC = 0
 CP_PING = 1  # Ping codepage for push notifications
 CP_EMAIL = 2
-CP_AIRSYNCBASE = 14
-CP_PROVISION = 13
+CP_AIRSYNCBASE = 17
+CP_PROVISION = 14
 
 # AirSync (CP 0)
 AS_Sync = 0x05
@@ -811,7 +811,13 @@ def build_foldersync_no_changes(sync_key: str = "1") -> bytes:
     return w.bytes()
 
 
-def build_provision_response(*, policy_key: str, include_policy_data: bool) -> bytes:
+def build_provision_response(
+    *,
+    policy_key: str,
+    include_policy_data: bool,
+    provision_status: str = "1",
+    policy_status: str = "1",
+) -> bytes:
     """Build WBXML Provision response.
 
     When ``include_policy_data`` is True (phase 1), an ``EASProvisionDoc`` is emitted with
@@ -825,7 +831,7 @@ def build_provision_response(*, policy_key: str, include_policy_data: bool) -> b
     w.start(PR_Provision)
 
     w.start(PR_Status)
-    w.write_str("1")
+    w.write_str(str(provision_status))
     w.end()
 
     w.start(PR_Policies)
@@ -835,7 +841,7 @@ def build_provision_response(*, policy_key: str, include_policy_data: bool) -> b
     w.write_str("MS-EAS-Provisioning-WBXML")
     w.end()
     w.start(PR_Status)
-    w.write_str("1")
+    w.write_str(str(policy_status))
     w.end()
     w.start(PR_PolicyKey)
     w.write_str(policy_key)

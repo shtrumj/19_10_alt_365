@@ -1,7 +1,10 @@
 """
-WBXML Parser for ActiveSync requests
-Parses WBXML request bodies to extract SyncKey and other parameters
+WBXML Parser for ActiveSync requests.
+Parses WBXML request bodies to extract SyncKey, provisioning details, and other parameters.
 """
+
+# Code page identifiers used by minimal parsers below
+CP_PROVISION = 0x0E
 
 
 def parse_wbxml_sync_request(wbxml_bytes: bytes) -> dict:
@@ -191,6 +194,94 @@ def parse_wbxml_foldersync_request(wbxml_bytes: bytes) -> dict:
     return {"sync_key": sync_key or "0"}
 
 
+def parse_wbxml_provision_request(wbxml_bytes: bytes) -> dict:
+    """
+    Parse WBXML Provision request to extract PolicyKey, Status, and whether the client
+    echoed previously sent policy data.
+    """
+    result = {
+        "policy_key": None,
+        "status": None,
+        "policy_type": None,
+        "has_policy_data": False,
+    }
+
+    if not wbxml_bytes:
+        return result
+
+    SWITCH_PAGE = 0x00
+    END = 0x01
+    STR_I = 0x03
+    cp = 0
+
+    # Skip WBXML header (version, public ID, charset, string table length + data)
+    i = 0
+    if len(wbxml_bytes) >= 4:
+        strtbl_len = wbxml_bytes[3]
+        i = 4 + strtbl_len
+        if i > len(wbxml_bytes):
+            i = 4
+
+    def read_inline_string(buf: bytes, pos: int) -> tuple[str, int]:
+        if pos >= len(buf) or buf[pos] != STR_I:
+            return "", pos
+        pos += 1
+        start = pos
+        while pos < len(buf) and buf[pos] != 0x00:
+            pos += 1
+        text = buf[start:pos].decode("utf-8", errors="ignore")
+        if pos < len(buf):
+            pos += 1
+        return text, pos
+
+    while i < len(wbxml_bytes):
+        b = wbxml_bytes[i]
+        i += 1
+
+        if b == SWITCH_PAGE:
+            if i < len(wbxml_bytes):
+                cp = wbxml_bytes[i]
+                i += 1
+            continue
+
+        if b == END:
+            continue
+
+        token = b & 0x3F
+        has_content = (b & 0x40) != 0
+
+        if cp == CP_PROVISION:
+            if token == 0x09 and has_content:  # PolicyKey
+                text, i = read_inline_string(wbxml_bytes, i)
+                if text:
+                    result["policy_key"] = text
+                continue
+            if token == 0x0B and has_content:  # Status
+                text, i = read_inline_string(wbxml_bytes, i)
+                if text:
+                    result["status"] = text
+                continue
+            if token == 0x08 and has_content:  # PolicyType
+                text, i = read_inline_string(wbxml_bytes, i)
+                if text:
+                    result["policy_type"] = text
+                continue
+            if token == 0x0A and has_content:  # Data element contains policy blob
+                result["has_policy_data"] = True
+                continue
+
+        # Skip inline strings not explicitly handled above
+        if has_content and i < len(wbxml_bytes) and wbxml_bytes[i] == STR_I:
+            _, i = read_inline_string(wbxml_bytes, i)
+
+    policy_key = (result.get("policy_key") or "").strip()
+    status = (result.get("status") or "").strip()
+    result["is_acknowledgement"] = (
+        policy_key == "0" and status == "1" and not result["has_policy_data"]
+    )
+    return result
+
+
 def _extract_body_preferences(wbxml_bytes: bytes) -> list:
     """Best-effort parser for AirSyncBase BodyPreference blocks."""
     if not wbxml_bytes:
@@ -200,7 +291,7 @@ def _extract_body_preferences(wbxml_bytes: bytes) -> list:
     END = 0x01
     STR_I = 0x03
 
-    CP_AIRSYNCBASE = 14
+    CP_AIRSYNCBASE = 17
 
     ASB_BODYPREFERENCE = 0x05
     ASB_TYPE = 0x06

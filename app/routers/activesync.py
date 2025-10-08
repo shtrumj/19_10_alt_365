@@ -56,6 +56,7 @@ from activesync.wbxml_builder import (
 from ..synckey_utils import bump_synckey, generate_synckey, has_synckey, parse_synckey
 from ..wbxml_parser import (
     parse_wbxml_foldersync_request,
+    parse_wbxml_provision_request,
     parse_wbxml_sync_fetch_and_delete,
     parse_wbxml_sync_request,
 )
@@ -209,7 +210,7 @@ def _parse_itemops_fetches(
     STR_I = 0x03
 
     CP_AIRSYNC = 0
-    CP_AIRSYNCBASE = 14
+    CP_AIRSYNCBASE = 17
 
     AS_FETCH = 0x0A
     AS_COLLECTION_ID = 0x12
@@ -991,40 +992,75 @@ async def eas_dispatch(
     device = _get_or_create_device(db, current_user.id, device_id, device_type)
 
     device_type_lower = (device.device_type or "").lower()
-    prefer_uuid_synckey = device_type_lower.startswith("windowsoutlook")
-    requires_pending_confirmation = True
-    if prefer_uuid_synckey:
-        requires_pending_confirmation = False
+    is_windows_outlook = device_type_lower.startswith("windowsoutlook")
+    prefer_uuid_synckey = not is_windows_outlook
+    requires_pending_confirmation = not is_windows_outlook
 
-    # Outlook on Windows (DeviceType=WindowsOutlook15) ignores provisioning and expects
-    # the server to assume success. Mark these devices as provisioned automatically so
-    # we do not loop forever with HTTP 449 responses.
-    if device_type_lower.startswith("windowsoutlook") and device.is_provisioned != 1:
+    if not device.policy_key:
+        device.policy_key = "0"
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        else:
+            db.refresh(device)
+
+    if is_windows_outlook and device.is_provisioned != 1:
+        device.policy_key = (
+            device.policy_key
+            if device.policy_key not in (None, "", "0")
+            else "1234567890"
+        )
         device.is_provisioned = 1
         try:
             db.commit()
         except Exception:
             db.rollback()
+        else:
+            db.refresh(device)
+            try:
+                (
+                    db.query(ActiveSyncState)
+                    .filter(
+                        ActiveSyncState.user_id == current_user.id,
+                        ActiveSyncState.device_id == device_id,
+                    )
+                    .update(
+                        {
+                            ActiveSyncState.synckey_uuid: None,
+                            ActiveSyncState.synckey_counter: 0,
+                            ActiveSyncState.sync_key: "0",
+                        }
+                    )
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
         _write_json_line(
             "activesync/activesync.log",
             {
-                "event": "auto_provision_override",
+                "event": "windowsoutlook_auto_provision",
                 "device_id": device_id,
-                "device_type": device.device_type,
-                "message": "Auto-marked Outlook Windows device as provisioned to satisfy ActiveSync",
+                "policy_key": device.policy_key,
+                "message": "Auto-marked Windows Outlook device as provisioned (client does not initiate MS-ASPROV).",
             },
         )
-    # MS-ASPROV: PolicyKey must be 10-digit number after provisioning handshake
-    policy_key = "1234567890" if device.is_provisioned == 1 else "0"
+
+    # MS-ASPROV: Follow stored device policy key (final key after provisioning)
+    policy_key_header = (
+        device.policy_key
+        if device.policy_key is not None
+        else ("1234567890" if device.is_provisioned == 1 else "0")
+    )
 
     # CRITICAL FIX #31: Pass protocol_version to echo client's request!
     if is_ios26_client:
         headers = get_ios26_response_headers(
-            policy_key=policy_key, protocol_version=negotiated_version
+            policy_key=policy_key_header, protocol_version=negotiated_version
         )
     else:
         headers = _eas_headers(
-            policy_key=policy_key, protocol_version=negotiated_version
+            policy_key=policy_key_header, protocol_version=negotiated_version
         )
 
     # Log version negotiation
@@ -1083,148 +1119,100 @@ async def eas_dispatch(
     # FULL MS-ASPROV COMPLIANT PROVISION HANDLER
     # The client MUST be allowed to Provision itself at any time.
     if cmd == "provision":
-        # Z-Push compliant provisioning implementation
-        print(f"DEBUG: Z-Push provision handler called for device {device_id}")
-        _write_json_line(
-            "activesync/activesync.log",
-            {
-                "event": "provision_handler_entry_zpush",
-                "device_id": device_id,
-                "message": "Entering Z-Push compliant provision handler",
-                "timestamp": datetime.utcnow().isoformat(),
-            },
-        )
-
-        # Z-Push MS-ASPROV Implementation:
-        # The key insight from Z-Push is that we need to properly handle the
-        # two-step handshake and detect acknowledgment correctly
-
-        # Parse the WBXML request to understand what the client is sending
         is_wbxml = len(request_body_bytes) > 0 and request_body_bytes.startswith(
             b"\x03\x01"
         )
+        provision_fields = (
+            parse_wbxml_provision_request(request_body_bytes) if is_wbxml else {}
+        )
 
-        # Z-Push approach: Check if this is an acknowledgment by looking for
-        # the specific WBXML structure that indicates the client is acknowledging
-        is_acknowledgment = False
-        client_policy_key = None
-
-        if is_wbxml and len(request_body_bytes) > 20:
-            # Z-Push method: Look for the specific WBXML pattern that indicates acknowledgment
-            # The client sends back the same PolicyKey=0 to acknowledge
+        if not is_wbxml and request_body_bytes:
             try:
-                # Decode the WBXML to check for acknowledgment patterns
-                body_str = request_body_bytes.decode("utf-8", errors="ignore")
+                xml_body = request_body_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                xml_body = ""
+            if "<PolicyKey>0</PolicyKey>" in xml_body and "<Status>1</Status>" in xml_body:
+                provision_fields["policy_key"] = "0"
+                provision_fields["status"] = "1"
+                provision_fields["is_acknowledgement"] = True
 
-                print(f"DEBUG: WBXML body content: {body_str[:200]}")
+        is_acknowledgment = bool(provision_fields.get("is_acknowledgement"))
+        client_policy_key = provision_fields.get("policy_key")
 
-                # Z-Push checks for specific patterns in the WBXML
-                # Look for the specific WBXML structure that indicates acknowledgment
-                # The acknowledgment request has a different structure than the initial request
-                # Initial request: Contains device info + MS-EAS-Provisioning-WBXML
-                # Acknowledgment: Contains only MS-EAS-Provisioning-WBXML + PolicyKey=0
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "provision_request_parsed",
+                "device_id": device_id,
+                "is_wbxml": is_wbxml,
+                "parsed_policy_key": client_policy_key,
+                "parsed_status": provision_fields.get("status"),
+                "has_policy_data": provision_fields.get("has_policy_data", False),
+                "is_acknowledgment": is_acknowledgment,
+            },
+        )
 
-                # Check if this is an acknowledgment by looking for the specific pattern
-                # Acknowledgment requests are shorter and contain specific WBXML tokens
-                is_acknowledgment = False
-
-                # Method 1: Check for the specific WBXML token pattern that indicates acknowledgment
-                # The acknowledgment contains specific WBXML tokens in a specific order
-                if (
-                    b"\x03\x01j\x00\x00\x0eEFGH\x03MS-EAS-Provisioning-WBXML\x00\x01I\x030\x00\x01K\x031\x00\x01\x01\x01\x01"
-                    in request_body_bytes
-                    or b"MS-EAS-Provisioning-WBXML" in request_body_bytes
-                    and b"\x030\x00" in request_body_bytes
-                ):
-                    is_acknowledgment = True
-                    client_policy_key = "0"
-
-                    print(f"DEBUG: Acknowledgment detected for device {device_id}")
-
-                    _write_json_line(
-                        "activesync/activesync.log",
-                        {
-                            "event": "provision_acknowledgment_detected_zpush",
-                            "device_id": device_id,
-                            "body_content": body_str[:200],
-                            "message": "Detected acknowledgment via WBXML pattern analysis",
-                        },
-                    )
-                else:
-                    print(f"DEBUG: Initial request detected for device {device_id}")
-
-                    _write_json_line(
-                        "activesync/activesync.log",
-                        {
-                            "event": "provision_initial_detected_zpush",
-                            "device_id": device_id,
-                            "body_content": body_str[:200],
-                            "message": "Detected initial provision request",
-                        },
-                    )
-            except Exception as e:
-                print(f"DEBUG: Error parsing WBXML: {e}")
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {
-                        "event": "provision_parse_error_zpush",
-                        "device_id": device_id,
-                        "error": str(e),
-                        "message": "Error parsing WBXML request",
-                    },
-                )
-
-        # Z-Push logic: Determine the response based on acknowledgment detection
         if is_acknowledgment:
-            # Step 2: Client acknowledged the policy, send final PolicyKey
-            policy_key = "1234567890"  # Z-Push uses 10-digit PolicyKey
-
-            # Mark device as provisioned
+            final_policy_key = (
+                device.policy_key
+                if device.policy_key not in (None, "", "0")
+                else "1234567890"
+            )
+            device.policy_key = final_policy_key
             device.is_provisioned = 1
-            db.commit()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+            else:
+                db.refresh(device)
+
+            wbxml_payload = build_provision_response(
+                policy_key=final_policy_key,
+                include_policy_data=False,
+            )
 
             _write_json_line(
                 "activesync/activesync.log",
                 {
                     "event": "provision_acknowledgment_final",
                     "device_id": device_id,
-                    "step": 2,
-                    "policy_key": policy_key,
-                    "message": "Client acknowledged policy, sending final PolicyKey and marking device as provisioned",
+                    "policy_key": final_policy_key,
+                    "message": "Client acknowledged policy; device marked as provisioned.",
                 },
             )
+
+            headers = dict(headers)
+            headers["X-MS-PolicyKey"] = final_policy_key
+            return _wbxml_response(wbxml_payload, headers)
+
+        # Initial provisioning request: send policy with temporary key 0
+        device.policy_key = "0"
+        device.is_provisioned = 0
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
         else:
-            # Step 1: Initial request, send policy with temporary PolicyKey=0
-            policy_key = "0"
+            db.refresh(device)
 
-            _write_json_line(
-                "activesync/activesync.log",
-                {
-                    "event": "provision_initial_request",
-                    "device_id": device_id,
-                    "step": 1,
-                    "policy_key": policy_key,
-                    "message": "Sending initial policy with temporary PolicyKey=0",
-                },
-            )
-
-        # Build the WBXML response using Z-Push compatible structure
         wbxml_payload = build_provision_response(
-            policy_key=policy_key,
-            include_policy_data=not is_acknowledgment,
+            policy_key="0",
+            include_policy_data=True,
         )
 
         _write_json_line(
             "activesync/activesync.log",
             {
-                "event": "provision_response",
-                "step": 2 if is_acknowledgment else 1,
-                "policy_key": policy_key,
-                "payload_length": len(wbxml_payload),
-                "device_provisioned": device.is_provisioned,
+                "event": "provision_initial_request",
+                "device_id": device_id,
+                "policy_key": "0",
+                "message": "Sending initial policy with temporary PolicyKey=0.",
             },
         )
 
+        headers = dict(headers)
+        headers["X-MS-PolicyKey"] = "0"
         return _wbxml_response(wbxml_payload, headers)
 
     # All other commands require that the device has completed the provisioning step above.
@@ -1238,7 +1226,19 @@ async def eas_dispatch(
                 "message": "Device not provisioned. Sending HTTP 449.",
             },
         )
-        return Response(status_code=449)
+        headers_449 = dict(headers)
+        policy_key_449 = device.policy_key or "0"
+        headers_449["X-MS-PolicyKey"] = policy_key_449
+        headers_449["Retry-After"] = "1"
+        headers_449["MS-ASProtocolError"] = "1"
+        headers_449["MS-ASProtocolError-Code"] = "DeviceNotProvisioned"
+        headers_449["MS-ASProtocolCommand"] = "Provision"
+        if negotiated_version:
+            headers_449["MS-ASProtocolError-MS-ASProtocolVersion"] = negotiated_version
+        return Response(
+            status_code=449,
+            headers=headers_449,
+        )
 
     if cmd == "foldersync":
         # Microsoft ActiveSync FolderSync implementation according to MS-ASCMD specification
@@ -1301,16 +1301,30 @@ async def eas_dispatch(
             # Z-Push Fix: ALWAYS reset to 1 when client sends 0, regardless of server state
             # This allows recovery from desync situations where server is ahead
             old_sync_key = state.sync_key
-            state.sync_key = "1"
-            db.commit()
+            new_sync_key, resolved_uuid = _format_synckey(
+                counter=1,
+                existing_uuid=state.synckey_uuid,
+                prefer_uuid=prefer_uuid_synckey,
+            )
+            state.sync_key = new_sync_key
+            state.synckey_uuid = resolved_uuid
+            state.synckey_counter = 1
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            else:
+                db.refresh(state)
             _write_json_line(
                 "activesync/activesync.log",
                 {
                     "event": "foldersync_initial_sync_key_updated",
                     "device_id": device_id,
                     "old_sync_key": old_sync_key,
-                    "new_sync_key": "1",
+                    "new_sync_key": new_sync_key,
                     "zpush_recovery": old_sync_key != "0",
+                    "synckey_uuid": resolved_uuid,
                 },
             )
 
