@@ -4,17 +4,29 @@ import json
 import os
 import sqlite3
 import sys
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Union
 
 # Ensure app modules are importable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _read_latest_wbxml_hex_from_log(log_path: str) -> Optional[str]:
+@dataclass
+class SyncLogRecord:
+    wbxml_hex: str
+    ts: Optional[str]
+    email_ids_sent: List[int]
+    mime_lengths: List[int]
+    fetched_ids: List[int]
+
+
+def _read_latest_sync_event(log_path: str) -> Optional[SyncLogRecord]:
     if not os.path.exists(log_path):
         return None
-    latest_hex = None
-    latest_ts = None
+    latest: Optional[SyncLogRecord] = None
+    latest_with_ids: Optional[SyncLogRecord] = None
+    latest_with_mime: Optional[SyncLogRecord] = None
+    last_fetch_ids: List[int] = []
     try:
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -25,14 +37,40 @@ def _read_latest_wbxml_hex_from_log(log_path: str) -> Optional[str]:
                     obj = json.loads(line)
                 except Exception:
                     continue
+                if obj.get("event") == "sync_fetch_lookup":
+                    resolved = obj.get("resolved") or []
+                    try:
+                        last_fetch_ids = [int(v) for v in resolved if v is not None]
+                    except Exception:
+                        last_fetch_ids = []
+                    continue
                 if obj.get("event") == "sync_emails_sent_wbxml_simple" and obj.get(
                     "wbxml_full_hex"
                 ):
-                    latest_hex = obj.get("wbxml_full_hex")
-                    latest_ts = obj.get("ts")
+                    ids_raw = obj.get("email_ids_sent") or []
+                    lengths_raw = obj.get("mime_lengths_bytes") or []
+                    try:
+                        email_ids = [int(v) for v in ids_raw if v is not None]
+                    except Exception:
+                        email_ids = []
+                    try:
+                        mime_lengths = [int(v) for v in lengths_raw if v is not None]
+                    except Exception:
+                        mime_lengths = []
+                    latest = SyncLogRecord(
+                        wbxml_hex=str(obj.get("wbxml_full_hex")),
+                        ts=str(obj.get("ts")),
+                        email_ids_sent=email_ids,
+                        mime_lengths=mime_lengths,
+                        fetched_ids=list(last_fetch_ids),
+                    )
+                    if "c3" in latest.wbxml_hex.lower():
+                        latest_with_mime = latest
+                    if email_ids or obj.get("email_count_sent") or last_fetch_ids:
+                        latest_with_ids = latest
     except Exception:
         return None
-    return latest_hex
+    return latest_with_mime or latest_with_ids or latest
 
 
 def _decode_mb_uint32(data: bytes, pos: int) -> Tuple[int, int]:
@@ -91,12 +129,14 @@ def _resolve_db_path() -> Optional[str]:
     db_url = os.environ.get("DATABASE_URL")
     candidates = []
     if db_url and db_url.startswith("sqlite:"):
-        path = db_url.split("sqlite:///")[-1]
         if db_url.startswith("sqlite:////"):
+            # Absolute path
             path = db_url[len("sqlite:////") :]
-            candidates.append("/" + path if not path.startswith("/") else path)
+            if not path.startswith("/"):
+                path = "/" + path
         else:
-            candidates.append(path)
+            path = db_url.split("sqlite:///")[-1]
+        candidates.append(path)
     # Common defaults
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     candidates.extend(
@@ -109,6 +149,30 @@ def _resolve_db_path() -> Optional[str]:
         if p and os.path.exists(p):
             return p
     return None
+
+
+def _get_email_mime_b64_sqlite_by_id(
+    db_path: str, email_id: int
+) -> Optional[Tuple[str, str]]:
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT subject, mime_content FROM emails WHERE id=? AND IFNULL(is_deleted,0)=0",
+            (email_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row or not row[1]:
+            return None
+        subject, mime_content = row
+        try:
+            raw = base64.b64decode(mime_content)
+        except Exception:
+            raw = str(mime_content).encode("utf-8", errors="ignore")
+        return subject or "", base64.b64encode(raw).decode("ascii")
+    except Exception:
+        return None
 
 
 def _get_latest_email_b64_sqlite(db_path: str) -> Optional[str]:
@@ -145,22 +209,28 @@ def main():
             os.path.dirname(os.path.dirname(__file__)), "activesync", "activesync.log"
         ),
     )
-    wbxml_hex = None
+    log_record: Optional[SyncLogRecord] = None
 
     # If provided via stdin, prefer that
     if not sys.stdin.isatty():
         stdin_data = sys.stdin.read().strip()
         if stdin_data:
-            wbxml_hex = stdin_data
+            log_record = SyncLogRecord(
+                wbxml_hex=stdin_data,
+                ts=None,
+                email_ids_sent=[],
+                mime_lengths=[],
+                fetched_ids=[],
+            )
 
-    if not wbxml_hex:
-        wbxml_hex = _read_latest_wbxml_hex_from_log(log_path)
+    if not log_record:
+        log_record = _read_latest_sync_event(log_path)
 
-    if not wbxml_hex:
+    if not log_record:
         print("ERROR: Could not find wbxml_full_hex in log and no input provided.")
         sys.exit(2)
 
-    cleaned_hex = _sanitize_hex(wbxml_hex)
+    cleaned_hex = _sanitize_hex(log_record.wbxml_hex)
     try:
         wbxml_bytes = bytes.fromhex(cleaned_hex)
     except Exception as e:
@@ -184,7 +254,43 @@ def main():
                 "ERROR: Could not locate database file. Set DATABASE_URL or place DB under ./data/email_system.db"
             )
             sys.exit(5)
-    db_b64 = _get_latest_email_b64_sqlite(db_path)
+
+    # Determine which email to compare against
+    db_b64: Optional[str] = None
+    target_subject: Optional[str] = None
+
+    target_email_id: Optional[int] = None
+    if log_record.email_ids_sent:
+        # Prefer an email that actually carried MIME bytes (>0)
+        chosen: Optional[int] = None
+        for idx, email_id in enumerate(log_record.email_ids_sent):
+            length = (
+                log_record.mime_lengths[idx]
+                if idx < len(log_record.mime_lengths)
+                else None
+            )
+            if length is None or length > 0:
+                chosen = email_id
+                break
+        if chosen is None:
+            chosen = log_record.email_ids_sent[0]
+        target_email_id = chosen
+
+    if target_email_id is not None:
+        result = _get_email_mime_b64_sqlite_by_id(db_path, target_email_id)
+        if result:
+            target_subject, db_b64 = result
+
+    if not db_b64 and log_record.fetched_ids:
+        for email_id in log_record.fetched_ids:
+            result = _get_email_mime_b64_sqlite_by_id(db_path, email_id)
+            if result:
+                target_subject, db_b64 = result
+                target_email_id = email_id
+                break
+
+    if not db_b64:
+        db_b64 = _get_latest_email_b64_sqlite(db_path)
 
     if not db_b64:
         print("ERROR: No email with MIME content found in database.")
@@ -194,6 +300,8 @@ def main():
     if wbxml_mime_b64 == db_b64:
         print("OK: WBXML MIME matches DB last email MIME (base64 identical).")
         print(f"MIME size: {len(mime_bytes)} bytes")
+        if target_email_id is not None:
+            print(f"Matched DB email id: {target_email_id} subject: {target_subject}")
         sys.exit(0)
     else:
         # Provide brief diagnostics
@@ -204,6 +312,10 @@ def main():
         except Exception:
             db_raw = b""
         print(f"DB MIME size: {len(db_raw)} bytes")
+        if target_email_id is not None:
+            print(f"Compared DB email id: {target_email_id} subject: {target_subject}")
+        else:
+            print("Compared against: latest email in DB (no specific id in log).")
 
         # Show small diff windows
         def head_tail(b: bytes, n: int = 64) -> str:

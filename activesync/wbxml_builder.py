@@ -15,6 +15,8 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
+from email.message import Message
+from email.parser import BytesParser
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import format_datetime, formatdate, make_msgid
@@ -326,6 +328,24 @@ def _prepare_body_payload(
         else:
             mime_bytes = _build_mime_message(em, html, plain)
 
+        detected_mime_header = ""
+        parsed_message: Message | None = None
+        try:
+            parsed_message = BytesParser(policy=policy.default).parsebytes(mime_bytes)
+            detected_mime_header = parsed_message.get("Content-Type") or ""
+        except Exception:
+            parsed_message = None
+
+        mime_content_type = str(em.get("mime_content_type") or "").strip()
+        if not mime_content_type:
+            if detected_mime_header:
+                mime_content_type = detected_mime_header
+            elif parsed_message:
+                try:
+                    mime_content_type = parsed_message.get_content_type() or ""
+                except Exception:
+                    mime_content_type = ""
+
         estimated_size = str(len(mime_bytes))
         payload_bytes, truncated_flag = _truncate_bytes(mime_bytes, truncation_size)
 
@@ -341,6 +361,7 @@ def _prepare_body_payload(
             "truncated": truncated_flag,
             "native_type": native_type,
             "content_type": "message/rfc822",
+            "detected_mime_type": mime_content_type or detected_mime_header,
         }
 
     preference = 1 if body_type == 1 else 2
@@ -710,37 +731,37 @@ def build_foldersync_with_folders(
 
     # FolderHierarchy codepage (CP 7)
     CP_FOLDER = 0x07
-    TAG_FOLDERSYNC = 0x16
-    TAG_STATUS = 0x0C
-    TAG_SYNCKEY = 0x12
-    TAG_CHANGES = 0x0E
-    TAG_COUNT = 0x17
-    TAG_ADD = 0x0F
-    TAG_DISPLAYNAME = 0x07
-    TAG_SERVERID = 0x08
-    TAG_PARENTID = 0x09
-    TAG_TYPE = 0x0A
+    FH_FOLDERSYNC = 0x16
+    FH_STATUS = 0x0C
+    FH_SYNCKEY = 0x12
+    FH_CHANGES = 0x0E
+    FH_COUNT = 0x17
+    FH_ADD = 0x0F
+    FH_DISPLAYNAME = 0x07
+    FH_SERVERID = 0x08
+    FH_PARENTID = 0x09
+    FH_TYPE = 0x0A
 
     w.page(CP_FOLDER)
 
     # <FolderSync>
-    w.start(TAG_FOLDERSYNC)
+    w.start(FH_FOLDERSYNC)
 
     # <Status>1</Status>
-    w.start(TAG_STATUS)
+    w.start(FH_STATUS)
     w.write_str("1")
     w.end()
 
     # <SyncKey>1</SyncKey>
-    w.start(TAG_SYNCKEY)
+    w.start(FH_SYNCKEY)
     w.write_str(sync_key)
     w.end()
 
     # <Changes>
-    w.start(TAG_CHANGES)
+    w.start(FH_CHANGES)
 
     # <Count>N</Count>
-    w.start(TAG_COUNT)
+    w.start(FH_COUNT)
     w.write_str(str(len(folders)))
     w.end()
 
@@ -751,25 +772,26 @@ def build_foldersync_with_folders(
         parent_id = folder.get("parent_id") or "0"
 
         # <Add>
-        w.start(TAG_ADD)
+        w.start(FH_ADD)
 
         # <ServerId>
-        w.start(TAG_SERVERID)
+        w.start(FH_SERVERID)
         w.write_str(str(server_id))
         w.end()
 
         # <ParentId>
-        w.start(TAG_PARENTID)
-        w.write_str(str(parent_id))
-        w.end()
+        if parent_id is not None:
+            w.start(FH_PARENTID)
+            w.write_str(str(parent_id))
+            w.end()
 
         # <DisplayName>
-        w.start(TAG_DISPLAYNAME)
+        w.start(FH_DISPLAYNAME)
         w.write_str(display_name)
         w.end()
 
         # <Type>
-        w.start(TAG_TYPE)
+        w.start(FH_TYPE)
         w.write_str(str(folder_type))
         w.end()
 
@@ -780,30 +802,31 @@ def build_foldersync_with_folders(
     return w.bytes()
 
 
-def build_foldersync_no_changes(sync_key: str = "1") -> bytes:
+def build_foldersync_no_changes(sync_key: str = "1", status: str = "1") -> bytes:
     """
-    Minimal FolderSync 'no changes' WBXML (keeps the device happy).
+    Minimal FolderSync 'no changes' WBXML using FolderHierarchy code page tokens
+    aligned with Z-Push/Grommunio.
     """
     w = WBXMLWriter()
     w.header()
 
-    CP_FOLDER = 0x07
-    TAG_FOLDERSYNC = 0x16
-    TAG_STATUS = 0x0C
-    TAG_SYNCKEY = 0x12
-    TAG_CHANGES = 0x0E
-    TAG_COUNT = 0x17
+    CP_FOLDER = 0x07  # FolderHierarchy
+    FH_FOLDERSYNC = 0x16
+    FH_STATUS = 0x0C
+    FH_SYNCKEY = 0x12
+    FH_CHANGES = 0x0E
+    FH_COUNT = 0x17
 
     w.page(CP_FOLDER)
-    w.start(TAG_FOLDERSYNC)
-    w.start(TAG_STATUS)
-    w.write_str("1")
+    w.start(FH_FOLDERSYNC)
+    w.start(FH_STATUS)
+    w.write_str(status)
     w.end()
-    w.start(TAG_SYNCKEY)
+    w.start(FH_SYNCKEY)
     w.write_str(sync_key)
     w.end()
-    w.start(TAG_CHANGES)
-    w.start(TAG_COUNT)
+    w.start(FH_CHANGES)
+    w.start(FH_COUNT)
     w.write_str("0")
     w.end()
     w.end()  # </Changes>

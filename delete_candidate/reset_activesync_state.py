@@ -15,8 +15,10 @@ import sys
 import argparse
 from pathlib import Path
 
-# Add app to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add repo root to PYTHONPATH so `app` imports resolve
+CURRENT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = CURRENT_DIR.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from app.database import SessionLocal, ActiveSyncState, User
 from sqlalchemy import func
@@ -218,4 +220,3 @@ Examples:
 
 if __name__ == "__main__":
     sys.exit(main())
-

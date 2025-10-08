@@ -1,3 +1,4 @@
+import base64
 import html as html_module
 import json
 import logging
@@ -511,10 +512,37 @@ def _build_itemops_wbxml_response(response_items: List[Dict]) -> bytes:
     return w.bytes()
 
 
-def _wbxml_response(payload: bytes, headers: dict) -> Response:
+def _wbxml_response(
+    payload: bytes,
+    headers: dict,
+    *,
+    cmd: str | None = None,
+    status_code: int = 200,
+    log_meta: dict | None = None,
+) -> Response:
     hdrs = dict(headers or {})
     hdrs["Content-Type"] = WBXML_MEDIA_TYPE
-    return Response(content=payload, media_type=WBXML_MEDIA_TYPE, headers=hdrs)
+    response = Response(
+        content=payload,
+        media_type=WBXML_MEDIA_TYPE,
+        headers=hdrs,
+        status_code=status_code,
+    )
+    log_entry: dict[str, Any] = {
+        "event": "wbxml_response",
+        "cmd": cmd,
+        "status_code": status_code,
+        "content_length": len(payload),
+        "content_preview_hex": payload[:40].hex(),
+        "headers": {
+            k: ("<redacted>" if k.lower() == "authorization" else v)
+            for k, v in hdrs.items()
+        },
+    }
+    if log_meta:
+        log_entry.update(log_meta)
+    _write_json_line("activesync/activesync.log", log_entry)
+    return response
 
 
 _MAX_SYNC_HISTORY_IDS = 2000  # Cap cached server IDs per device/collection
@@ -993,8 +1021,10 @@ async def eas_dispatch(
 
     device_type_lower = (device.device_type or "").lower()
     is_windows_outlook = device_type_lower.startswith("windowsoutlook")
-    prefer_uuid_synckey = not is_windows_outlook
-    requires_pending_confirmation = not is_windows_outlook
+    prefer_uuid_synckey = False
+    requires_pending_confirmation = True
+    if is_windows_outlook:
+        requires_pending_confirmation = False
 
     if not device.policy_key:
         device.policy_key = "0"
@@ -1184,7 +1214,16 @@ async def eas_dispatch(
 
             headers = dict(headers)
             headers["X-MS-PolicyKey"] = final_policy_key
-            return _wbxml_response(wbxml_payload, headers)
+            return _wbxml_response(
+                wbxml_payload,
+                headers,
+                cmd="provision",
+                log_meta={
+                    "device_id": device_id,
+                    "stage": "acknowledgment",
+                    "policy_key": final_policy_key,
+                },
+            )
 
         # Initial provisioning request: send policy with temporary key 0
         device.policy_key = "0"
@@ -1213,7 +1252,16 @@ async def eas_dispatch(
 
         headers = dict(headers)
         headers["X-MS-PolicyKey"] = "0"
-        return _wbxml_response(wbxml_payload, headers)
+        return _wbxml_response(
+            wbxml_payload,
+            headers,
+            cmd="provision",
+            log_meta={
+                "device_id": device_id,
+                "stage": "initial",
+                "policy_key": "0",
+            },
+        )
 
     # All other commands require that the device has completed the provisioning step above.
     if device.is_provisioned != 1:
@@ -1352,7 +1400,16 @@ async def eas_dispatch(
                     },
                 )
 
-                return _wbxml_response(wbxml_content, headers)
+                return _wbxml_response(
+                    wbxml_content,
+                    headers,
+                    cmd="foldersync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": "0",
+                        "response_sync_key": state.sync_key,
+                    },
+                )
             else:
                 folder_entries = []
                 for folder in DEFAULT_SYSTEM_FOLDERS:
@@ -1397,7 +1454,16 @@ async def eas_dispatch(
                         "client_key": client_sync_key,
                     },
                 )
-                return _wbxml_response(wbxml_content, headers)
+                return _wbxml_response(
+                    wbxml_content,
+                    headers,
+                    cmd="foldersync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": "0",
+                        "response_sync_key": state.sync_key,
+                    },
+                )
             else:
                 xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <FolderSync xmlns="FolderHierarchy">
@@ -1416,10 +1482,14 @@ async def eas_dispatch(
 
         # CASE 3: Client is out of sync. Force it to start over.
         else:
+            # Per MS-ASCMD, return Status=9 (SyncKeyMismatch) with SyncKey=0 to force full resync
+            state.sync_key = "0"
+            state.synckey_counter = 0
+            state.synckey_uuid = None
+            db.commit()
+
             if is_wbxml_request:
-                wbxml_content = build_foldersync_no_changes(
-                    state.sync_key
-                )  # Simplified error response
+                wbxml_content = build_foldersync_no_changes(sync_key="0", status="9")
                 _write_json_line(
                     "activesync/activesync.log",
                     {
@@ -1428,11 +1498,23 @@ async def eas_dispatch(
                         "client_key": client_sync_key,
                     },
                 )
-                return _wbxml_response(wbxml_content, headers)
+                return _wbxml_response(
+                    wbxml_content,
+                    headers,
+                    cmd="foldersync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": "0",
+                        "response_sync_key": state.sync_key,
+                        "sync_key_reset": True,
+                        "status": "synckey_mismatch",
+                    },
+                )
             else:
                 xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <FolderSync xmlns="FolderHierarchy">
-    <Status>8</Status>
+    <Status>9</Status>
+    <SyncKey>0</SyncKey>
 </FolderSync>"""
                 _write_json_line(
                     "activesync/activesync.log",
@@ -1616,10 +1698,17 @@ async def eas_dispatch(
                 wbxml_batch = create_invalid_synckey_response_wbxml(
                     collection_id=collection_id
                 )
-                return Response(
-                    content=wbxml_batch.payload,
-                    media_type="application/vnd.ms-sync.wbxml",
-                    headers=headers,
+                return _wbxml_response(
+                    wbxml_batch.payload,
+                    headers,
+                    cmd="sync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": collection_id,
+                        "status": "invalid_synckey",
+                        "client_sync_key": client_sync_key,
+                        "server_sync_key": state.sync_key,
+                    },
                 )
             else:
                 # XML fallback
@@ -1808,10 +1897,16 @@ async def eas_dispatch(
                         body_type_preference=body_type_preference,
                         truncation_size=effective_truncation,
                     )
-                    return Response(
-                        content=wbxml_batch.payload,
-                        media_type="application/vnd.ms-sync.wbxml",
-                        headers=headers,
+                    return _wbxml_response(
+                        wbxml_batch.payload,
+                        headers,
+                        cmd="sync",
+                        log_meta={
+                            "device_id": device_id,
+                            "collection_id": collection_id,
+                            "response_sync_key": state.pending_sync_key,
+                            "resend_pending": True,
+                        },
                     )
 
         # Debug logging for sync key comparison
@@ -2120,10 +2215,17 @@ async def eas_dispatch(
                         },
                     },
                 )
-                return Response(
-                    content=wbxml,
-                    media_type="application/vnd.ms-sync.wbxml",
-                    headers=headers,
+                return _wbxml_response(
+                    wbxml,
+                    headers,
+                    cmd="sync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": collection_id,
+                        "response_sync_key": response_sync_key,
+                        "email_count_sent": len(emails_to_send),
+                        "pending_staged": bool(state.pending_sync_key),
+                    },
                 )
             # XML response for non-WBXML clients (with emails for initial sync)
             xml_response = create_sync_response(
@@ -2164,10 +2266,15 @@ async def eas_dispatch(
                 wbxml_batch = create_invalid_synckey_response_wbxml(
                     collection_id=collection_id
                 )
-                return Response(
-                    content=wbxml_batch.payload,
-                    media_type="application/vnd.ms-sync.wbxml",
-                    headers=headers,
+                return _wbxml_response(
+                    wbxml_batch.payload,
+                    headers,
+                    cmd="sync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": collection_id,
+                        "status": "sync_key_mismatch_reset_required",
+                    },
                 )
             xml_response = create_sync_response(
                 [], sync_key="0", collection_id=collection_id
@@ -2192,10 +2299,15 @@ async def eas_dispatch(
                     wbxml_batch = create_invalid_synckey_response_wbxml(
                         collection_id=collection_id
                     )
-                    return Response(
-                        content=wbxml_batch.payload,
-                        media_type="application/vnd.ms-sync.wbxml",
-                        headers=headers,
+                    return _wbxml_response(
+                        wbxml_batch.payload,
+                        headers,
+                        cmd="sync",
+                        log_meta={
+                            "device_id": device_id,
+                            "collection_id": collection_id,
+                            "status": "invalid_synckey_format",
+                        },
                     )
                 return Response(status_code=400)
 
@@ -2328,6 +2440,28 @@ async def eas_dispatch(
                 # state.sync_key and state.synckey_counter were set above
                 db.commit()
 
+                email_id_list = [getattr(email, "id", None) for email in emails_to_send]
+                mime_types_sent: List[Optional[str]] = []
+                mime_lengths_sent: List[int] = []
+                for email_obj in emails_to_send:
+                    mime_types_sent.append(
+                        getattr(email_obj, "mime_content_type", None)
+                    )
+                    mime_value = getattr(email_obj, "mime_content", None)
+                    if not mime_value:
+                        mime_lengths_sent.append(0)
+                        continue
+                    try:
+                        if isinstance(mime_value, str):
+                            decoded_len = len(
+                                base64.b64decode(mime_value, validate=False)
+                            )
+                        else:
+                            decoded_len = len(mime_value)
+                    except Exception:
+                        decoded_len = len(mime_value) if mime_value else 0
+                    mime_lengths_sent.append(decoded_len)
+
                 _write_json_line(
                     "activesync/activesync.log",
                     {
@@ -2350,12 +2484,22 @@ async def eas_dispatch(
                         "fetch_only": (
                             not has_collection_changes and bool(fetched_emails)
                         ),
+                        "email_ids_sent": email_id_list,
+                        "mime_types_sent": mime_types_sent,
+                        "mime_lengths_bytes": mime_lengths_sent,
                     },
                 )
-                return Response(
-                    content=wbxml,
-                    media_type="application/vnd.ms-sync.wbxml",
-                    headers=headers,
+                return _wbxml_response(
+                    wbxml,
+                    headers,
+                    cmd="sync",
+                    log_meta={
+                        "device_id": device_id,
+                        "collection_id": collection_id,
+                        "response_sync_key": response_sync_key,
+                        "email_count_sent": len(emails_to_send),
+                        "pending_staged": bool(state.pending_sync_key),
+                    },
                 )
         # Client sync key matches server - check if we need to send emails
         elif client_key_int == server_key_int:
@@ -2400,10 +2544,17 @@ async def eas_dispatch(
                             "wbxml_full_hex": wbxml.hex(),  # ← Full hex dump for expert analysis
                         },
                     )
-                    return Response(
-                        content=wbxml,
-                        media_type="application/vnd.ms-sync.wbxml",
-                        headers=headers,
+                    return _wbxml_response(
+                        wbxml,
+                        headers,
+                        cmd="sync",
+                        log_meta={
+                            "device_id": device_id,
+                            "collection_id": collection_id,
+                            "response_sync_key": new_sync_key,
+                            "email_count_sent": len(emails_to_send),
+                            "has_more": has_more,
+                        },
                     )
             else:
                 # No emails to send - return no changes
@@ -2433,10 +2584,17 @@ async def eas_dispatch(
                             "wbxml_first20": wbxml[:20].hex(),
                         },
                     )
-                    return Response(
-                        content=wbxml,
-                        media_type="application/vnd.ms-sync.wbxml",
-                        headers=headers,
+                    return _wbxml_response(
+                        wbxml,
+                        headers,
+                        cmd="sync",
+                        log_meta={
+                            "device_id": device_id,
+                            "collection_id": collection_id,
+                            "response_sync_key": state.sync_key,
+                            "email_count_sent": 0,
+                            "has_more": False,
+                        },
                     )
             xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync">
@@ -2932,7 +3090,16 @@ async def eas_dispatch(
                 },
             )
 
-            return _wbxml_response(wbxml_payload, headers)
+            return _wbxml_response(
+                wbxml_payload,
+                headers,
+                cmd="itemoperations",
+                log_meta={
+                    "device_id": device_id,
+                    "fetch_count": len(fetches),
+                    "response_count": len(response_items),
+                },
+            )
 
         except Exception as e:
             _write_json_line(
