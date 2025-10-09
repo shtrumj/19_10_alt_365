@@ -37,12 +37,13 @@ def parse_wbxml_sync_request(wbxml_bytes: bytes) -> dict:
         collection_id = "1"
         window_size = "5"  # Default to 5 emails per sync
 
-        # Look for WindowSize pattern: 0x52 0x03 [value] 0x00 0x01
-        # WindowSize token is 0x52 (0x12 + 0x40 content flag) in AirSync codepage
+        # Look for WindowSize pattern: 0x55 0x03 [value] 0x00 0x01
+        # CRITICAL FIX: WindowSize token is 0x15 (AS_WindowSize) | 0x40 = 0x55, NOT 0x52!
+        # 0x52 is CollectionId (0x12 | 0x40), which was causing window_size to be parsed as "1"
         pos = 0
         while pos < len(wbxml_bytes) - 4:
             if (
-                wbxml_bytes[pos] == 0x52  # WindowSize tag
+                wbxml_bytes[pos] == 0x55  # WindowSize tag (FIXED: was 0x52!)
                 and pos + 1 < len(wbxml_bytes)
                 and wbxml_bytes[pos + 1] == 0x03
             ):  # STR_I

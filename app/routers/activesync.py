@@ -1023,9 +1023,9 @@ async def eas_dispatch(
     device_type_lower = (device.device_type or "").lower()
     is_windows_outlook = device_type_lower.startswith("windowsoutlook")
     prefer_uuid_synckey = False
+    # FIXED: Always require confirmation from ALL clients (including Outlook)
+    # Outlook MUST send a follow-up sync to confirm receipt before we mark items as synced
     requires_pending_confirmation = True
-    if is_windows_outlook:
-        requires_pending_confirmation = False
 
     if not device.policy_key:
         device.policy_key = "0"
@@ -1562,11 +1562,26 @@ async def eas_dispatch(
             window_size = int(window_size_str)
         except (ValueError, TypeError):
             window_size = 25
+
+        # CRITICAL FIX: Enforce server-side maximum WindowSize (Z-Push/Grommunio best practice)
+        # This prevents large, fragile payloads that can cause client hangs
+        # Recommendation: 25-50 items max for resilience across unstable networks
+        MAX_WINDOW_SIZE = 25  # Conservative limit for maximum reliability
+
         # Cap to reasonable bounds
         if window_size <= 0:
             window_size = 25
-        elif window_size > 100:
-            window_size = 100
+        elif window_size > MAX_WINDOW_SIZE:
+            window_size = MAX_WINDOW_SIZE
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "window_size_capped",
+                    "client_requested": int(window_size_str),
+                    "server_enforced": MAX_WINDOW_SIZE,
+                    "message": "Server enforced maximum WindowSize for resilience",
+                },
+            )
 
         body_prefs = wbxml_params.get("body_preferences", []) or []
 
@@ -1586,12 +1601,25 @@ async def eas_dispatch(
         if body_type_preference != 4 and fetch_ids:
             body_type_preference = 4
 
+        # SMART TRUNCATION: For initial syncs with many items, enforce smaller body previews
+        # This dramatically reduces payload size and speeds up initial sync
+        # Full bodies can be fetched via ItemOperations when user opens the email
+        is_initial_sync = client_sync_key == "0"
+
         if body_type_preference == 4:
+            # MIME type - respect client's truncation request
             effective_truncation = truncation_size
         else:
-            effective_truncation = (
-                truncation_size if truncation_size is not None else 8192
-            )
+            # HTML or Plain text
+            if truncation_size is not None:
+                effective_truncation = truncation_size
+            elif is_initial_sync:
+                # CRITICAL: For initial sync, use aggressive truncation (4KB preview)
+                # Z-Push/Grommunio best practice: Small previews, fast sync
+                effective_truncation = 4096  # 4KB preview for initial sync
+            else:
+                # Normal sync: moderate truncation (8KB)
+                effective_truncation = 8192
 
         _write_json_line(
             "activesync/activesync.log",
@@ -1739,6 +1767,30 @@ async def eas_dispatch(
         #  the same SyncKey, iOS treats the state as inconsistent and restarts."
         #
         # NEW LOGIC:
+        # PROACTIVE VALIDATION: Detect and resolve stale pending states
+        # Z-Push/Grommunio best practice: Don't let clients get stuck indefinitely
+        PENDING_TIMEOUT_MINUTES = 15
+        if state.pending_sync_key and state.last_sync:
+            time_since_pending = datetime.utcnow() - state.last_sync
+            if time_since_pending > timedelta(minutes=PENDING_TIMEOUT_MINUTES):
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "pending_state_timeout",
+                        "device_id": device_id,
+                        "collection_id": collection_id,
+                        "pending_sync_key": state.pending_sync_key,
+                        "minutes_stale": int(time_since_pending.total_seconds() / 60),
+                        "action": "clearing_stale_pending_state",
+                        "message": "Pending state timed out, clearing to allow fresh sync",
+                    },
+                )
+                # Clear stale pending state to allow client to recover
+                state.pending_sync_key = None
+                state.pending_max_email_id = None
+                state.pending_item_ids = None
+                db.commit()
+
         # 1) Client confirms last batch? → Clear pending, advance to next batch
         pending_confirmed = False
         pending_int: Optional[int] = None
@@ -2105,29 +2157,49 @@ async def eas_dispatch(
             # State was already reset BEFORE email query (line 799-813)
             # This ensures last_synced_email_id=0 BEFORE we filter emails
             response_sync_key = state.sync_key
-            # CRITICAL FIX #23-2: Send items on FIRST sync per expert!
-            # Expert: "iOS is fine receiving items on the first response"
-            # Previous logic sent empty response, which was WRONG!
             is_wbxml_request = len(
                 request_body_bytes
             ) > 0 and request_body_bytes.startswith(b"\x03\x01")
-            if is_wbxml_request:
-                # Respect WindowSize for initial sync too!
-                emails_to_send = emails[:window_size] if window_size else emails
-                has_more = len(emails) > window_size if window_size else False
 
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {
-                        "event": "sync_initial_WITH_ITEMS",
-                        "reason": "Expert: iOS accepts items on first response",
-                        "window_size": window_size,
-                        "email_count_total": len(emails),
-                        "email_count_sent": len(emails_to_send),
-                        "has_more": has_more,
-                        "message": "Sending items immediately on SyncKey 0→1",
-                    },
-                )
+            # CRITICAL: Outlook expects EMPTY response on initial sync (0→1)
+            # Only iOS can handle items on first response!
+            is_outlook = "Outlook" in user_agent or "WindowsOutlook" in device_type
+            send_items_on_initial = not is_outlook  # iOS=True, Outlook=False
+
+            if is_wbxml_request:
+                if send_items_on_initial:
+                    # iOS behavior: Send items immediately
+                    emails_to_send = emails[:window_size] if window_size else emails
+                    has_more = len(emails) > window_size if window_size else False
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "sync_initial_WITH_ITEMS",
+                            "reason": "iOS accepts items on first response",
+                            "window_size": window_size,
+                            "email_count_total": len(emails),
+                            "email_count_sent": len(emails_to_send),
+                            "has_more": has_more,
+                            "message": "Sending items immediately on SyncKey 0→1",
+                        },
+                    )
+                else:
+                    # Outlook behavior: Send EMPTY response, items come on next request
+                    emails_to_send = []
+                    has_more = False
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "sync_initial_EMPTY",
+                            "reason": "Outlook requires empty initial response",
+                            "device_type": device_type,
+                            "user_agent": user_agent,
+                            "email_count_available": len(emails),
+                            "message": "Sending EMPTY response on SyncKey 0→1, items will come on next sync",
+                        },
+                    )
                 email_dicts = [
                     _email_payload(email, collection_id) for email in emails_to_send
                 ]
