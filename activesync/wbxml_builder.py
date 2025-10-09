@@ -304,14 +304,229 @@ def _build_mime_message(em: Dict[str, Any], html_body: str, plain_body: str) -> 
     return msg.as_bytes(policy=policy.SMTP)
 
 
+def _extract_text_from_mime_with_charset(
+    mime_bytes: bytes, prefer_html: bool = False
+) -> tuple[str, str, dict]:
+    """
+    Z-Push/Grommunio-style robust MIME body extraction with charset transcoding.
+
+    Returns:
+        (plain_text, html_text, debug_info)
+    """
+    import email
+    from email import policy
+
+    debug_info = {
+        "mime_parsed": False,
+        "parts_found": 0,
+        "charsets_detected": [],
+        "content_types": [],
+        "transcoding_errors": [],
+    }
+
+    try:
+        msg = email.message_from_bytes(mime_bytes, policy=policy.default)
+        debug_info["mime_parsed"] = True
+
+        plain_parts = []
+        html_parts = []
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.is_multipart():
+                    continue
+                content_type = part.get_content_type()
+                charset = part.get_content_charset() or "utf-8"
+
+                debug_info["parts_found"] += 1
+                debug_info["content_types"].append(content_type)
+                debug_info["charsets_detected"].append(charset)
+
+                # Skip attachments
+                disposition = str(part.get("Content-Disposition") or "").lower()
+                if "attachment" in disposition:
+                    continue
+
+                if content_type == "text/plain":
+                    try:
+                        # Get raw payload bytes (handles base64, quoted-printable, etc.)
+                        payload_bytes = part.get_payload(decode=True)
+                        if not payload_bytes:
+                            continue
+
+                        # CRITICAL: Transcode from source charset to UTF-8
+                        try:
+                            decoded_text = payload_bytes.decode(
+                                charset, errors="replace"
+                            )
+                        except (UnicodeDecodeError, LookupError):
+                            # Fallback charsets for broken/incorrect declarations
+                            for fallback_charset in [
+                                "utf-8",
+                                "latin-1",
+                                "windows-1252",
+                                "windows-1255",
+                            ]:
+                                try:
+                                    decoded_text = payload_bytes.decode(
+                                        fallback_charset, errors="replace"
+                                    )
+                                    debug_info["transcoding_errors"].append(
+                                        f"Fallback to {fallback_charset} for {charset}"
+                                    )
+                                    break
+                                except (UnicodeDecodeError, LookupError):
+                                    continue
+                            else:
+                                decoded_text = payload_bytes.decode(
+                                    "utf-8", errors="replace"
+                                )
+
+                        plain_parts.append(decoded_text)
+                    except Exception as e:
+                        debug_info["transcoding_errors"].append(f"text/plain: {str(e)}")
+
+                elif content_type == "text/html":
+                    try:
+                        payload_bytes = part.get_payload(decode=True)
+                        if not payload_bytes:
+                            continue
+
+                        # CRITICAL: Transcode from source charset to UTF-8
+                        try:
+                            decoded_text = payload_bytes.decode(
+                                charset, errors="replace"
+                            )
+                        except (UnicodeDecodeError, LookupError):
+                            for fallback_charset in [
+                                "utf-8",
+                                "latin-1",
+                                "windows-1252",
+                                "windows-1255",
+                            ]:
+                                try:
+                                    decoded_text = payload_bytes.decode(
+                                        fallback_charset, errors="replace"
+                                    )
+                                    debug_info["transcoding_errors"].append(
+                                        f"Fallback to {fallback_charset} for {charset}"
+                                    )
+                                    break
+                                except (UnicodeDecodeError, LookupError):
+                                    continue
+                            else:
+                                decoded_text = payload_bytes.decode(
+                                    "utf-8", errors="replace"
+                                )
+
+                        html_parts.append(decoded_text)
+                    except Exception as e:
+                        debug_info["transcoding_errors"].append(f"text/html: {str(e)}")
+        else:
+            # Single-part message
+            content_type = msg.get_content_type()
+            charset = msg.get_content_charset() or "utf-8"
+
+            debug_info["parts_found"] = 1
+            debug_info["content_types"].append(content_type)
+            debug_info["charsets_detected"].append(charset)
+
+            try:
+                payload_bytes = msg.get_payload(decode=True)
+                if payload_bytes:
+                    try:
+                        decoded_text = payload_bytes.decode(charset, errors="replace")
+                    except (UnicodeDecodeError, LookupError):
+                        decoded_text = payload_bytes.decode("utf-8", errors="replace")
+
+                    if content_type == "text/plain":
+                        plain_parts.append(decoded_text)
+                    elif content_type == "text/html":
+                        html_parts.append(decoded_text)
+            except Exception as e:
+                debug_info["transcoding_errors"].append(f"single-part: {str(e)}")
+
+        plain_text = "\n\n".join(plain_parts) if plain_parts else ""
+        html_text = "\n\n".join(html_parts) if html_parts else ""
+
+        return plain_text, html_text, debug_info
+
+    except Exception as e:
+        debug_info["transcoding_errors"].append(f"parse_failed: {str(e)}")
+        return "", "", debug_info
+
+
 def _prepare_body_payload(
     em: Dict[str, Any],
     *,
     requested_type: int = 2,
     truncation_size: Optional[int] = None,
 ) -> Dict[str, str]:
-    html = str(em.get("body_html") or em.get("html") or "")
-    plain = str(em.get("body") or em.get("preview") or "")
+    # CRITICAL FIX: If MIME content is available, parse it with proper charset handling
+    # This prevents "Loading..." issues on iPhone caused by encoding mismatches
+    mime_bytes = em.get("mime_content")
+
+    # DEBUG: Log MIME availability
+    from app.diagnostic_logger import _write_json_line
+
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "body_payload_prep_start",
+            "email_id": em.get("id"),
+            "requested_type": requested_type,
+            "truncation_size_param": truncation_size,  # DEBUG: Log the parameter value!
+            "has_mime_content": bool(mime_bytes),
+            "mime_content_type": type(mime_bytes).__name__ if mime_bytes else None,
+            "mime_length": len(mime_bytes) if mime_bytes else 0,
+        },
+    )
+
+    if mime_bytes and requested_type in (1, 2):
+        # We have MIME content and client wants text/HTML (not raw MIME)
+        # Parse with robust charset transcoding
+        if isinstance(mime_bytes, str):
+            try:
+                mime_bytes = base64.b64decode(mime_bytes)
+            except Exception:
+                mime_bytes = mime_bytes.encode("utf-8", errors="ignore")
+
+        plain_from_mime, html_from_mime, debug_info = (
+            _extract_text_from_mime_with_charset(
+                mime_bytes, prefer_html=(requested_type == 2)
+            )
+        )
+
+        # Log charset transcoding for debugging
+        from app.diagnostic_logger import _write_json_line
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "mime_charset_transcoding",
+                "requested_type": requested_type,
+                "mime_parsed": debug_info["mime_parsed"],
+                "parts_found": debug_info["parts_found"],
+                "charsets_detected": debug_info["charsets_detected"],
+                "content_types": debug_info["content_types"],
+                "transcoding_errors": debug_info["transcoding_errors"],
+                "plain_length": len(plain_from_mime),
+                "html_length": len(html_from_mime),
+            },
+        )
+
+        # Use the transcoded content
+        if plain_from_mime or html_from_mime:
+            html = html_from_mime
+            plain = plain_from_mime
+        else:
+            # Fallback to pre-stored fields if MIME parsing failed
+            html = str(em.get("body_html") or em.get("html") or "")
+            plain = str(em.get("body") or em.get("preview") or "")
+    else:
+        # No MIME content or Type 4 request - use pre-stored fields
+        html = str(em.get("body_html") or em.get("html") or "")
+        plain = str(em.get("body") or em.get("preview") or "")
 
     body_type = requested_type if requested_type in (1, 2, 4) else 2
 
@@ -365,10 +580,62 @@ def _prepare_body_payload(
         }
 
     preference = 1 if body_type == 1 else 2
-    content, selected_native = _select_body_content(em, body_type_preference=preference)
+
+    # CRITICAL FIX: Use the transcoded MIME content, not pre-stored fields!
+    # The html/plain variables were populated by MIME transcoding above
+    if preference == 1:
+        # Client wants plain text
+        content = plain or html
+        selected_native = 1 if plain else 2 if html else 1
+    else:
+        # Client wants HTML
+        content = html or plain
+        selected_native = 2 if html else 1 if plain else 1
+
+    # CRITICAL FIX: Character-aware truncation (Z-Push/Grommunio best practice)
+    # Truncate string first (by character count), THEN encode to UTF-8
+    # This prevents cutting multi-byte UTF-8 characters (Hebrew, emojis, etc.) in half
+
+    # CRITICAL FIX: Calculate EstimatedDataSize BEFORE truncation (MS-ASCMD § 2.2.2.17)
+    # EstimatedDataSize MUST be the size of the FULL (untruncated) body!
+    original_body_bytes = content.encode("utf-8") if content else b""
+    estimated_size = str(len(original_body_bytes))  # ✅ FULL size, not truncated!
+
+    # DEBUG: Log truncation decision
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "truncation_check",
+            "truncation_size": truncation_size,
+            "content_length_chars": len(content) if content else 0,
+            "original_body_size_bytes": len(original_body_bytes),
+            "will_truncate": bool(
+                truncation_size and content and len(content) > (truncation_size // 3)
+            ),
+        },
+    )
+
+    if truncation_size and content:
+        # Estimate character limit from byte limit (conservative: assume 3 bytes/char)
+        char_limit = truncation_size // 3
+        if len(content) > char_limit:
+            content = content[:char_limit]
+            truncated_flag = "1"
+        else:
+            truncated_flag = "0"
+    else:
+        truncated_flag = "0"
+
     body_bytes = content.encode("utf-8") if content else b""
-    estimated_size = str(len(body_bytes))
-    payload_bytes, truncated_flag = _truncate_utf8_bytes(body_bytes, truncation_size)
+
+    # If we're still over byte limit after character truncation, trim more carefully
+    if truncation_size and len(body_bytes) > truncation_size:
+        payload_bytes, truncated_flag = _truncate_utf8_bytes(
+            body_bytes, truncation_size
+        )
+    else:
+        payload_bytes = body_bytes
+
     data_text = payload_bytes.decode("utf-8", errors="strict") if payload_bytes else ""
 
     actual_type = "2" if (content and selected_native == 2 and data_text) else "1"
@@ -400,6 +667,21 @@ def write_fetch_responses(
     """Emit canonical <Responses><Fetch> blocks (Z-Push order) with proper body and no CollectionId."""
     if not fetched:
         return
+
+    # DEBUG: Log fetch response building
+    from app.diagnostic_logger import _write_json_line
+
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "write_fetch_responses_start",
+            "fetched_count": len(fetched),
+            "fetched_ids": [em.get("id") for em in fetched],
+            "body_type_preference": body_type_preference,
+            "truncation_size": truncation_size,
+        },
+    )
+
     w.cp(CP_AIRSYNC)
     w.start(AS_Responses)
     for em in fetched:
@@ -493,6 +775,16 @@ def write_fetch_responses(
         w.end()  # </Fetch>
     w.end()  # </Responses>
 
+    # DEBUG: Log fetch response completion
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "write_fetch_responses_complete",
+            "fetched_count": len(fetched),
+            "fetched_ids": [em.get("id") for em in fetched],
+        },
+    )
+
 
 def write_delete_responses(
     *,
@@ -561,22 +853,29 @@ def build_sync_response(
     w.page(CP_AIRSYNC)
     w.start(AS_Sync)
 
+    # CRITICAL: MS-ASCMD requires top-level Status BEFORE Collections!
+    # <Status>1</Status>
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
+
     # <Collections><Collection>
     w.start(AS_Collections)
     w.start(AS_Collection)
 
-    # Required children (Z-Push-like order): SyncKey -> CollectionId -> Class -> Status
+    # CRITICAL FIX: Correct MS-ASCMD order - Status MUST come BEFORE Class!
+    # Microsoft spec: SyncKey -> CollectionId -> Status -> Class
     w.start(AS_SyncKey)
     w.write_str(new_sync_key)
     w.end()
     w.start(AS_CollectionId)
     w.write_str(str(collection_id))
     w.end()
-    w.start(AS_Class)
-    w.write_str(class_name)
-    w.end()
     w.start(AS_Status)
     w.write_str("1")
+    w.end()
+    w.start(AS_Class)
+    w.write_str(class_name)
     w.end()
 
     count = 0
@@ -681,9 +980,15 @@ def build_sync_response(
 
         w.end()  # </Commands>
 
+    # CRITICAL FIX: Must switch back to AirSync codepage before MoreAvailable!
+    # After email body processing (which uses CP_AIRSYNCBASE), we need to switch back
+    w.page(CP_AIRSYNC)
+
     # MoreAvailable after Commands
-    if more_available:
-        w.start(AS_MoreAvailable, with_content=False)
+    # EXPERIMENT: Remove MoreAvailable to test if Outlook accepts response
+    # (iPhone works with it, but maybe Outlook rejects it for some reason)
+    # if more_available:
+    #     w.start(AS_MoreAvailable, with_content=False)
     w.end()  # </Collection>
     w.end()  # </Collections>
     w.end()  # </Sync>
@@ -1070,22 +1375,29 @@ def create_sync_response_wbxml_with_fetch(
     w.cp(CP_AIRSYNC)
     w.start(AS_Sync)
 
+    # CRITICAL: MS-ASCMD requires top-level Status BEFORE Collections!
+    # <Status>1</Status>
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
+
     # <Collections><Collection>
     w.start(AS_Collections)
     w.start(AS_Collection)
 
-    # Required children (Z-Push-like order): SyncKey -> CollectionId -> Class -> Status
+    # CRITICAL FIX: Correct MS-ASCMD order - Status MUST come BEFORE Class!
+    # Microsoft spec: SyncKey -> CollectionId -> Status -> Class
     w.start(AS_SyncKey)
     w.write_str(sync_key)
     w.end()
     w.start(AS_CollectionId)
     w.write_str(collection_id)
     w.end()
-    w.start(AS_Class)
-    w.write_str(class_name)
-    w.end()
     w.start(AS_Status)
     w.write_str("1")
+    w.end()
+    w.start(AS_Class)
+    w.write_str(class_name)
     w.end()
 
     # Commands for new items
@@ -1173,9 +1485,13 @@ def create_sync_response_wbxml_with_fetch(
             count += 1
         w.end()  # </Commands>
 
+    # CRITICAL FIX: Must switch back to AirSync codepage before MoreAvailable!
+    w.page(CP_AIRSYNC)
+
     # MoreAvailable after Commands
-    if more_available:
-        w.start(AS_MoreAvailable, with_content=False)
+    # EXPERIMENT: Remove MoreAvailable to test if Outlook accepts response
+    # if more_available:
+    #     w.start(AS_MoreAvailable, with_content=False)
     w.end()
     w.end()  # </Collection></Collections>
 

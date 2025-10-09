@@ -46,12 +46,14 @@ from activesync.ios26_compatibility import (
 from activesync.state_machine import SyncStateStore
 from activesync.wbxml_builder import (
     SyncBatch,
+    WBXMLWriter,
     build_foldersync_no_changes,
     build_foldersync_with_folders,
     build_provision_response,
     create_invalid_synckey_response_wbxml,
     create_sync_response_wbxml,
     create_sync_response_wbxml_with_fetch,
+    write_fetch_responses,
 )
 
 from ..synckey_utils import bump_synckey, generate_synckey, has_synckey, parse_synckey
@@ -1566,7 +1568,8 @@ async def eas_dispatch(
         # CRITICAL FIX: Enforce server-side maximum WindowSize (Z-Push/Grommunio best practice)
         # This prevents large, fragile payloads that can cause client hangs
         # Recommendation: 25-50 items max for resilience across unstable networks
-        MAX_WINDOW_SIZE = 25  # Conservative limit for maximum reliability
+        # OUTLOOK FIX: Reduced to 3 for maximum compatibility (Z-Push emergency mode)
+        MAX_WINDOW_SIZE = 3  # ULTRA-conservative for Outlook (3 emails per batch)
 
         # Cap to reasonable bounds
         if window_size <= 0:
@@ -1606,20 +1609,37 @@ async def eas_dispatch(
         # Full bodies can be fetched via ItemOperations when user opens the email
         is_initial_sync = client_sync_key == "0"
 
+        # CRITICAL: Detect "first sync with data" - when client hasn't downloaded any emails yet
+        # This is when last_synced_email_id is 0 (no emails synced yet)
+        # Outlook often goes 0→1 (empty), 1→2 (empty), then 2→3 (all emails at once)
+        is_first_data_sync = state.last_synced_email_id == 0 and client_sync_key != "0"
+
+        # CRITICAL FIX: Enforce maximum truncation for ALL syncs (Z-Push/Grommunio best practice)
+        # Never send more than 8KB per email body, even if client requests unlimited
+        MAX_BODY_TRUNCATION = 8192  # 8KB maximum per email
+        FIRST_SYNC_TRUNCATION = (
+            512  # 512 bytes for first bulk sync (ULTRA-conservative for Outlook)
+        )
+
         if body_type_preference == 4:
-            # MIME type - respect client's truncation request
-            effective_truncation = truncation_size
+            # MIME type - respect client's truncation request but enforce maximum
+            effective_truncation = (
+                min(truncation_size, MAX_BODY_TRUNCATION)
+                if truncation_size
+                else MAX_BODY_TRUNCATION
+            )
         else:
             # HTML or Plain text
             if truncation_size is not None:
-                effective_truncation = truncation_size
-            elif is_initial_sync:
-                # CRITICAL: For initial sync, use aggressive truncation (4KB preview)
-                # Z-Push/Grommunio best practice: Small previews, fast sync
-                effective_truncation = 4096  # 4KB preview for initial sync
+                # Client specified truncation - use it but enforce maximum
+                effective_truncation = min(truncation_size, MAX_BODY_TRUNCATION)
+            elif is_initial_sync or is_first_data_sync:
+                # CRITICAL: For initial sync or first bulk data transfer, use VERY aggressive truncation (1KB preview)
+                # Z-Push/Grommunio best practice: Tiny previews for fast sync, especially for Outlook
+                effective_truncation = FIRST_SYNC_TRUNCATION  # 1KB preview
             else:
-                # Normal sync: moderate truncation (8KB)
-                effective_truncation = 8192
+                # Normal sync: moderate truncation (8KB max)
+                effective_truncation = MAX_BODY_TRUNCATION
 
         _write_json_line(
             "activesync/activesync.log",
@@ -1628,6 +1648,10 @@ async def eas_dispatch(
                 "body_preferences": body_prefs,
                 "selected_type": body_type_preference,
                 "truncation_size": truncation_size,
+                "effective_truncation": effective_truncation,
+                "is_initial_sync": is_initial_sync,
+                "is_first_data_sync": is_first_data_sync,
+                "last_synced_email_id": state.last_synced_email_id,
             },
         )
 
@@ -1791,6 +1815,29 @@ async def eas_dispatch(
                 state.pending_item_ids = None
                 db.commit()
 
+        # CRITICAL FIX: Handle client exactly 1 ahead of server (post-FolderSync recovery)
+        # Example: Client sends sync_key=1, server has sync_key=0, no pending batch
+        # This is NORMAL after FolderSync reset - just advance server to match
+        if (
+            client_key_int == 1
+            and server_key_int == 0
+            and not state.pending_sync_key
+            and not fetch_ids
+        ):
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_recovery_advance_server",
+                    "client_key": client_sync_key,
+                    "server_key": state.sync_key,
+                    "message": "Client is 1 ahead after FolderSync reset - advancing server to match",
+                },
+            )
+            state.sync_key = "1"
+            state.synckey_counter = 1
+            db.commit()
+            # Fall through to send emails with response_sync_key=2
+
         # 1) Client confirms last batch? → Clear pending, advance to next batch
         pending_confirmed = False
         pending_int: Optional[int] = None
@@ -1941,6 +1988,19 @@ async def eas_dispatch(
                     has_more_pending = len(remaining_emails) > 0
 
                     # Re-send with SAME SyncKey (idempotent resend!) using compliant builder
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "resend_building_wbxml",
+                            "pending_sync_key": state.pending_sync_key,
+                            "emails_to_resend_count": len(emails_to_resend),
+                            "email_ids": [e.id for e in emails_to_resend],
+                            "body_type_preference": body_type_preference,
+                            "effective_truncation": effective_truncation,
+                            "has_more_pending": has_more_pending,
+                        },
+                    )
+
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=state.pending_sync_key,
                         emails=[
@@ -1953,6 +2013,17 @@ async def eas_dispatch(
                         body_type_preference=body_type_preference,
                         truncation_size=effective_truncation,
                     )
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "resend_wbxml_built",
+                            "wbxml_length": len(wbxml_batch.payload),
+                            "pending_sync_key": state.pending_sync_key,
+                            "email_count": len(emails_to_resend),
+                        },
+                    )
+
                     return _wbxml_response(
                         wbxml_batch.payload,
                         headers,
@@ -1962,6 +2033,8 @@ async def eas_dispatch(
                             "collection_id": collection_id,
                             "response_sync_key": state.pending_sync_key,
                             "resend_pending": True,
+                            "wbxml_length": len(wbxml_batch.payload),
+                            "email_count_sent": len(emails_to_resend),
                         },
                     )
 
@@ -2153,6 +2226,13 @@ async def eas_dispatch(
         )
 
         # Initial sync (SyncKey=0) - already handled above at line 799-813!
+        # EXPERIMENT: Try sending data immediately like iOS (empty responses might be the problem!)
+        # iPhone works perfectly with immediate data, let's try the same for Outlook
+        is_outlook = "Outlook" in user_agent or "WindowsOutlook" in device_type
+
+        # DISABLE empty response for Outlook - send data immediately like iOS
+        outlook_needs_empty = False  # Try treating Outlook like iOS
+
         if client_sync_key == "0":
             # State was already reset BEFORE email query (line 799-813)
             # This ensures last_synced_email_id=0 BEFORE we filter emails
@@ -2161,10 +2241,8 @@ async def eas_dispatch(
                 request_body_bytes
             ) > 0 and request_body_bytes.startswith(b"\x03\x01")
 
-            # CRITICAL: Outlook expects EMPTY response on initial sync (0→1)
-            # Only iOS can handle items on first response!
-            is_outlook = "Outlook" in user_agent or "WindowsOutlook" in device_type
-            send_items_on_initial = not is_outlook  # iOS=True, Outlook=False
+            # iOS can handle items immediately, Outlook needs empty response
+            send_items_on_initial = not outlook_needs_empty
 
             if is_wbxml_request:
                 if send_items_on_initial:
@@ -2187,7 +2265,8 @@ async def eas_dispatch(
                 else:
                     # Outlook behavior: Send EMPTY response, items come on next request
                     emails_to_send = []
-                    has_more = False
+                    # CRITICAL FIX: Must set MoreAvailable=true when emails exist!
+                    has_more = len(emails) > 0  # ✅ Tell Outlook more data exists
 
                     _write_json_line(
                         "activesync/activesync.log",
@@ -2197,6 +2276,7 @@ async def eas_dispatch(
                             "device_type": device_type,
                             "user_agent": user_agent,
                             "email_count_available": len(emails),
+                            "has_more": has_more,
                             "message": "Sending EMPTY response on SyncKey 0→1, items will come on next sync",
                         },
                     )
@@ -2243,6 +2323,14 @@ async def eas_dispatch(
                                 "message": "Windows Outlook client does not confirm pending batches; committed immediately",
                             },
                         )
+
+                # CRITICAL FIX: Update state.sync_key BEFORE commit!
+                # Without this, state stays at 0 and client gets stuck in loop
+                state.sync_key = response_sync_key
+                if prefer_uuid_synckey and hasattr(state, "synckey_counter"):
+                    state.synckey_counter = (
+                        _analyze_synckey(response_sync_key)[0] or state.synckey_counter
+                    )
 
                 # Commit PENDING state (not last_synced_email_id yet!)
                 db.commit()
@@ -2357,6 +2445,9 @@ async def eas_dispatch(
             )
         # Client confirmed initial sync with simple integer synckey
         elif client_sync_key != "0":
+            # REMOVED: The "first data sync empty response" logic that caused infinite loop
+            # Outlook gets ONE empty response on 0→1, then DATA starts on 1→2!
+
             client_counter = client_key_int
             if client_counter <= 0:
                 _write_json_line(
@@ -2446,6 +2537,24 @@ async def eas_dispatch(
             is_wbxml_request = len(
                 request_body_bytes
             ) > 0 and request_body_bytes.startswith(b"\x03\x01")
+
+            # CRITICAL DEBUG: Log WBXML check result
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "wbxml_check_debug",
+                    "is_wbxml_request": is_wbxml_request,
+                    "request_body_length": len(request_body_bytes),
+                    "request_starts_with_wbxml": (
+                        request_body_bytes.startswith(b"\x03\x01")
+                        if request_body_bytes
+                        else False
+                    ),
+                    "emails_count": len(emails),
+                    "has_collection_changes": has_collection_changes,
+                },
+            )
+
             if is_wbxml_request:
                 # CRITICAL FIX #13 (APPLIED TO ALL CODE PATHS): Respect WindowSize!
                 # Expert diagnosis: "you dump 19 items in one batch with WindowSize=4"
@@ -2453,26 +2562,104 @@ async def eas_dispatch(
                 emails_to_send = emails[:window_size] if window_size else emails
                 has_more = len(emails) > window_size if window_size else False
 
-                # Use builder that can include both Adds and Fetch responses
-                from activesync.wbxml_builder import (
-                    create_sync_response_wbxml_with_fetch,
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "wbxml_building_start",
+                        "emails_to_send_count": len(emails_to_send),
+                        "has_more": has_more,
+                        "response_sync_key": response_sync_key,
+                    },
                 )
 
-                wbxml_batch = create_sync_response_wbxml_with_fetch(
-                    sync_key=response_sync_key,
-                    emails=[_email_payload(e, collection_id) for e in emails_to_send],
-                    fetched=[_email_payload(e, collection_id) for e in fetched_emails],
-                    collection_id=collection_id,
-                    window_size=window_size,
-                    more_available=has_more,
-                    class_name="Email",
-                    body_type_preference=body_type_preference,
-                    truncation_size=effective_truncation,
-                )
-                wbxml = wbxml_batch.payload
+                # Use builder that can include both Adds and Fetch responses
+                # (Already imported at top of file)
+
+                # CRITICAL: Wrap in try/catch to catch WBXML building errors
+                try:
+                    # CRITICAL DEBUG: Build email payloads with logging to catch slow/hanging emails
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "email_payload_building_start",
+                            "emails_to_send_count": len(emails_to_send),
+                            "email_ids": [e.id for e in emails_to_send],
+                        },
+                    )
+                    email_payloads = []
+                    for idx, e in enumerate(emails_to_send):
+                        try:
+                            payload = _email_payload(e, collection_id)
+                            email_payloads.append(payload)
+                        except Exception as payload_error:
+                            _write_json_line(
+                                "activesync/activesync.log",
+                                {
+                                    "event": "email_payload_FAILED",
+                                    "email_id": e.id,
+                                    "email_index": idx,
+                                    "error_type": type(payload_error).__name__,
+                                    "error_message": str(payload_error),
+                                },
+                            )
+                            raise
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "email_payload_building_complete",
+                            "payloads_built": len(email_payloads),
+                        },
+                    )
+
+                    wbxml_batch = create_sync_response_wbxml_with_fetch(
+                        sync_key=response_sync_key,
+                        emails=email_payloads,
+                        fetched=[
+                            _email_payload(e, collection_id) for e in fetched_emails
+                        ],
+                        collection_id=collection_id,
+                        window_size=window_size,
+                        more_available=has_more,
+                        class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
+                    )
+                    wbxml = wbxml_batch.payload
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_built_successfully",
+                            "wbxml_length": len(wbxml),
+                        },
+                    )
+                except Exception as wbxml_error:
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_building_FAILED",
+                            "error_type": type(wbxml_error).__name__,
+                            "error_message": str(wbxml_error),
+                            "emails_count": len(emails_to_send),
+                            "response_sync_key": response_sync_key,
+                        },
+                    )
+                    # Send Status=5 (Server Error) instead of crashing
+                    # (create_sync_response_wbxml already imported at top of file)
+
+                    wbxml_batch = create_sync_response_wbxml(
+                        sync_key=state.sync_key,
+                        emails=[],
+                        collection_id=collection_id,
+                        window_size=window_size,
+                        more_available=False,
+                        class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
+                    )
+                    wbxml = wbxml_batch.payload
                 # If there were FETCH requests, append <Responses><Fetch> with bodies
                 if fetched_emails:
-                    from activesync.wbxml_builder import write_fetch_responses
+                    # (write_fetch_responses already imported at top of file)
 
                     w = activesync_w = None
                     try:
