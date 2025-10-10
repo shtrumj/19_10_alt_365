@@ -1025,9 +1025,37 @@ async def eas_dispatch(
     device_type_lower = (device.device_type or "").lower()
     is_windows_outlook = device_type_lower.startswith("windowsoutlook")
     prefer_uuid_synckey = False
-    # FIXED: Always require confirmation from ALL clients (including Outlook)
-    # Outlook MUST send a follow-up sync to confirm receipt before we mark items as synced
-    requires_pending_confirmation = True
+
+    # CRITICAL FIX: Detect client type at TOP of handler, BEFORE any conditional logic
+    # This prevents scoping bugs where is_outlook was undefined in conditional blocks
+    user_agent = request.headers.get("user-agent", "")
+    is_outlook = (
+        "outlook" in user_agent.lower() or "windowsoutlook" in device_type_lower
+    )
+    is_ios = "iphone" in user_agent.lower() or "ipad" in user_agent.lower()
+    is_android = "android" in user_agent.lower()
+
+    # Import and initialize strategy for this client
+    from activesync.strategies.factory import get_activesync_strategy
+
+    strategy = get_activesync_strategy(user_agent, device.device_type or "")
+
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "sync_client_detected",
+            "device_id": device_id,
+            "user_agent": user_agent,
+            "device_type": device.device_type,
+            "is_outlook": is_outlook,
+            "is_ios": is_ios,
+            "is_android": is_android,
+            "strategy": strategy.get_client_name(),
+        },
+    )
+
+    # Use strategy to determine if pending confirmation is needed
+    requires_pending_confirmation = strategy.should_use_pending_confirmation()
 
     if not device.policy_key:
         device.policy_key = "0"
@@ -1563,17 +1591,14 @@ async def eas_dispatch(
         try:
             window_size = int(window_size_str)
         except (ValueError, TypeError):
-            window_size = 25
+            window_size = strategy.get_default_window_size()
 
-        # CRITICAL FIX: Enforce server-side maximum WindowSize (Z-Push/Grommunio best practice)
-        # This prevents large, fragile payloads that can cause client hangs
-        # Recommendation: 25-50 items max for resilience across unstable networks
-        # OUTLOOK FIX: Reduced to 3 for maximum compatibility (Z-Push emergency mode)
-        MAX_WINDOW_SIZE = 3  # ULTRA-conservative for Outlook (3 emails per batch)
+        # Use strategy to determine window size limits
+        MAX_WINDOW_SIZE = strategy.get_max_window_size()
 
         # Cap to reasonable bounds
         if window_size <= 0:
-            window_size = 25
+            window_size = strategy.get_default_window_size()
         elif window_size > MAX_WINDOW_SIZE:
             window_size = MAX_WINDOW_SIZE
             _write_json_line(
@@ -1604,42 +1629,18 @@ async def eas_dispatch(
         if body_type_preference != 4 and fetch_ids:
             body_type_preference = 4
 
-        # SMART TRUNCATION: For initial syncs with many items, enforce smaller body previews
-        # This dramatically reduces payload size and speeds up initial sync
-        # Full bodies can be fetched via ItemOperations when user opens the email
+        # Use strategy to determine truncation
         is_initial_sync = client_sync_key == "0"
 
-        # CRITICAL: Detect "first sync with data" - when client hasn't downloaded any emails yet
-        # This is when last_synced_email_id is 0 (no emails synced yet)
-        # Outlook often goes 0→1 (empty), 1→2 (empty), then 2→3 (all emails at once)
+        # Detect "first data sync" - when client hasn't downloaded any emails yet
         is_first_data_sync = state.last_synced_email_id == 0 and client_sync_key != "0"
 
-        # CRITICAL FIX: Enforce maximum truncation for ALL syncs (Z-Push/Grommunio best practice)
-        # Never send more than 8KB per email body, even if client requests unlimited
-        MAX_BODY_TRUNCATION = 8192  # 8KB maximum per email
-        FIRST_SYNC_TRUNCATION = (
-            512  # 512 bytes for first bulk sync (ULTRA-conservative for Outlook)
+        # Use strategy pattern for truncation (Z-Push/Grommunio compliant)
+        effective_truncation = strategy.get_truncation_strategy(
+            body_type=body_type_preference,
+            truncation_size=truncation_size,
+            is_initial_sync=is_initial_sync,
         )
-
-        if body_type_preference == 4:
-            # MIME type - respect client's truncation request but enforce maximum
-            effective_truncation = (
-                min(truncation_size, MAX_BODY_TRUNCATION)
-                if truncation_size
-                else MAX_BODY_TRUNCATION
-            )
-        else:
-            # HTML or Plain text
-            if truncation_size is not None:
-                # Client specified truncation - use it but enforce maximum
-                effective_truncation = min(truncation_size, MAX_BODY_TRUNCATION)
-            elif is_initial_sync or is_first_data_sync:
-                # CRITICAL: For initial sync or first bulk data transfer, use VERY aggressive truncation (1KB preview)
-                # Z-Push/Grommunio best practice: Tiny previews for fast sync, especially for Outlook
-                effective_truncation = FIRST_SYNC_TRUNCATION  # 1KB preview
-            else:
-                # Normal sync: moderate truncation (8KB max)
-                effective_truncation = MAX_BODY_TRUNCATION
 
         _write_json_line(
             "activesync/activesync.log",
@@ -2226,12 +2227,18 @@ async def eas_dispatch(
         )
 
         # Initial sync (SyncKey=0) - already handled above at line 799-813!
-        # EXPERIMENT: Try sending data immediately like iOS (empty responses might be the problem!)
-        # iPhone works perfectly with immediate data, let's try the same for Outlook
-        is_outlook = "Outlook" in user_agent or "WindowsOutlook" in device_type
+        # Use strategy to determine if empty response is needed
+        needs_empty_response = strategy.needs_empty_initial_response(client_sync_key)
 
-        # DISABLE empty response for Outlook - send data immediately like iOS
-        outlook_needs_empty = False  # Try treating Outlook like iOS
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "sync_initial_response_strategy",
+                "needs_empty_response": needs_empty_response,
+                "client_sync_key": client_sync_key,
+                "strategy": strategy.get_client_name(),
+            },
+        )
 
         if client_sync_key == "0":
             # State was already reset BEFORE email query (line 799-813)
@@ -2241,8 +2248,8 @@ async def eas_dispatch(
                 request_body_bytes
             ) > 0 and request_body_bytes.startswith(b"\x03\x01")
 
-            # iOS can handle items immediately, Outlook needs empty response
-            send_items_on_initial = not outlook_needs_empty
+            # Use strategy decision: iOS gets items immediately, Outlook gets empty response
+            send_items_on_initial = not needs_empty_response
 
             if is_wbxml_request:
                 if send_items_on_initial:
@@ -2559,8 +2566,53 @@ async def eas_dispatch(
                 # CRITICAL FIX #13 (APPLIED TO ALL CODE PATHS): Respect WindowSize!
                 # Expert diagnosis: "you dump 19 items in one batch with WindowSize=4"
                 # This code path was missing the WindowSize enforcement!
-                emails_to_send = emails[:window_size] if window_size else emails
-                has_more = len(emails) > window_size if window_size else False
+
+                # Z-PUSH/GROMMUNIO FIX: Limit batch by BYTES for Outlook (not just count)
+                # Outlook rejects batches > 50KB. Must split into smaller batches.
+                # Reference: Z-Push MAX_EMBEDDED_SIZE = 50000 bytes
+                MAX_BATCH_SIZE_BYTES_OUTLOOK = 50000  # 50KB per batch (Z-Push standard)
+
+                if is_outlook:
+                    # Outlook-specific: Limit by BOTH count AND bytes
+                    selected_emails = []
+                    batch_size_bytes = 0
+
+                    for email in emails[:window_size]:
+                        # Estimate WBXML size (MIME content + headers + metadata)
+                        mime_size = len(email.mime_content or b"")
+                        email_size_estimate = mime_size + 500  # +500 for XML overhead
+
+                        if (
+                            batch_size_bytes + email_size_estimate
+                            > MAX_BATCH_SIZE_BYTES_OUTLOOK
+                        ):
+                            # Batch size limit reached, stop here
+                            break
+
+                        selected_emails.append(email)
+                        batch_size_bytes += email_size_estimate
+
+                    emails_to_send = selected_emails
+                    has_more = len(selected_emails) < len(
+                        emails
+                    )  # More if we didn't send all
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "outlook_batch_size_limiting",
+                            "total_emails_available": len(emails),
+                            "emails_selected": len(emails_to_send),
+                            "batch_size_bytes": batch_size_bytes,
+                            "max_batch_size_bytes": MAX_BATCH_SIZE_BYTES_OUTLOOK,
+                            "has_more": has_more,
+                            "message": "Z-Push strategy: Limiting Outlook batch to 50KB",
+                        },
+                    )
+                else:
+                    # iOS/Android: Send full WindowSize (they can handle larger batches)
+                    emails_to_send = emails[:window_size] if window_size else emails
+                    has_more = len(emails) > window_size if window_size else False
 
                 _write_json_line(
                     "activesync/activesync.log",

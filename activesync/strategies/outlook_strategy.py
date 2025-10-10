@@ -1,0 +1,95 @@
+"""
+Outlook ActiveSync Strategy
+
+Microsoft Outlook Desktop ActiveSync behavior aligned with Z-Push/Grommunio standards.
+
+Key Characteristics:
+- Requires empty response on initial sync (SyncKey 0→1)
+- Prefers MIME body format (Type=4)
+- Conservative batch sizes (25 default, 100 max)
+- Two-phase commit for reliability
+- Honor client truncation requests for Type=1/2, cap Type=4 at 512KB
+"""
+
+from typing import List, Optional
+
+from .base import ActiveSyncStrategy
+
+
+class OutlookStrategy(ActiveSyncStrategy):
+    """Microsoft Outlook Desktop ActiveSync behavior (Z-Push/Grommunio compatible)"""
+
+    def needs_empty_initial_response(self, client_sync_key: str) -> bool:
+        """
+        Outlook REQUIRES empty response on SyncKey=0 (Z-Push standard).
+
+        This is critical for Outlook Desktop compatibility. Outlook expects:
+        1. Sync 0→1: Empty response with folder structure
+        2. Sync 1→2: First batch of emails
+        3. Sync 2→3: Confirm receipt, get next batch
+
+        If Outlook receives items on 0→1, it rejects the response and retries
+        indefinitely, causing the "Connected but not downloading" issue.
+        """
+        return client_sync_key == "0"
+
+    def get_default_window_size(self) -> int:
+        """Conservative default for Outlook (25 items per batch)"""
+        return 25
+
+    def get_max_window_size(self) -> int:
+        """Z-Push/Grommunio standard maximum (100 items per batch)"""
+        return 100
+
+    def get_body_type_preference_order(self) -> List[int]:
+        """
+        Outlook prefers MIME format for maximum fidelity.
+
+        Returns:
+            [4, 1, 2] - MIME first, then plain text, then HTML
+        """
+        return [4, 1, 2]
+
+    def should_use_pending_confirmation(self) -> bool:
+        """
+        Outlook DOES NOT use two-phase commit.
+
+        CRITICAL: Outlook does NOT confirm receipt like iOS/Android.
+        If we use two-phase commit, Outlook rejects the response and we
+        enter an infinite RESEND loop, sending the same cached response
+        forever.
+
+        Z-Push/Grommunio disable two-phase commit for Outlook Desktop.
+        """
+        return False  # CRITICAL FIX: No pending confirmation for Outlook
+
+    def get_truncation_strategy(
+        self,
+        body_type: int,
+        truncation_size: Optional[int],
+        is_initial_sync: bool,
+    ) -> Optional[int]:
+        """
+        Z-Push truncation strategy for Outlook.
+
+        Args:
+            body_type: 1=plain, 2=HTML, 4=MIME
+            truncation_size: Client's requested size (None = unlimited)
+            is_initial_sync: True if SyncKey=0
+
+        Returns:
+            Effective truncation size in bytes
+
+        Strategy:
+            - Type 1/2 (plain/HTML): Honor client's request exactly (no override!)
+            - Type 4 (MIME): Cap at 512KB to prevent huge transfers
+
+        This matches Z-Push/Grommunio behavior where the client's truncation
+        preference is respected for text bodies, but MIME is capped for safety.
+        """
+        if body_type == 4:  # MIME
+            # Cap MIME at 512KB (Z-Push standard)
+            return min(truncation_size or 512000, 512000)
+        else:  # Type 1 or 2 (plain text or HTML)
+            # Honor client's request exactly - no server override!
+            return truncation_size

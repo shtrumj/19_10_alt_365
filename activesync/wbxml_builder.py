@@ -456,6 +456,64 @@ def _extract_text_from_mime_with_charset(
         return "", "", debug_info
 
 
+def _validate_body_payload(payload: dict, requested_type: int) -> None:
+    """
+    Validate body payload compliance with MS-ASAIRS specification.
+
+    References:
+    - MS-ASAIRS §2.2.2.17: EstimatedDataSize (MUST be untruncated size)
+    - MS-ASAIRS §2.2.2.50: Truncated (0 or 1)
+    - MS-ASAIRS §2.2.2.22.7: Type (1=plain, 2=HTML, 3=RTF, 4=MIME)
+    - MS-ASAIRS §2.2.2.8: Data (inline or OPAQUE)
+    """
+    from app.diagnostic_logger import _write_json_line
+
+    # Required fields per MS-ASAIRS
+    assert "type" in payload, "MS-ASAIRS violation: Missing Body.Type"
+    assert (
+        "data" in payload or "data_bytes" in payload
+    ), "MS-ASAIRS violation: Missing Body.Data"
+    assert (
+        "estimated_size" in payload
+    ), "MS-ASAIRS violation: Missing Body.EstimatedDataSize"
+    assert "truncated" in payload, "MS-ASAIRS violation: Missing Body.Truncated"
+
+    # Truncated must be "0" or "1"
+    assert payload["truncated"] in (
+        "0",
+        "1",
+    ), f"MS-ASAIRS violation: Truncated must be '0' or '1', got '{payload['truncated']}'"
+
+    # Calculate actual data size
+    if "data" in payload:
+        actual_size = len(payload["data"].encode("utf-8"))
+    elif "data_bytes" in payload:
+        actual_size = len(payload["data_bytes"])
+    else:
+        actual_size = 0
+
+    estimated = int(payload["estimated_size"])
+
+    # MS-ASAIRS §2.2.2.17: EstimatedDataSize MUST be >= actual data size when truncated
+    if payload["truncated"] == "1":
+        assert (
+            estimated >= actual_size
+        ), f"MS-ASAIRS violation: EstimatedDataSize ({estimated}) < actual ({actual_size})"
+
+    # Log validation success
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "body_payload_validated",
+            "type": payload["type"],
+            "estimated_size": estimated,
+            "actual_data_size": actual_size,
+            "truncated": payload["truncated"],
+            "ms_asairs_compliant": True,
+        },
+    )
+
+
 def _prepare_body_payload(
     em: Dict[str, Any],
     *,
@@ -569,7 +627,27 @@ def _prepare_body_payload(
         native_type = "2" if native_pref == 2 else "1"
 
         # For Type=4, we need to return the raw bytes for OPAQUE writing
-        return {
+        # DEBUG: Log type=4 MIME body data
+        from app.diagnostic_logger import _write_json_line
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "mime_type4_body_final",
+                "email_id": em.get("id"),
+                "data_bytes_length": len(payload_bytes) if payload_bytes else 0,
+                "data_is_empty": not bool(payload_bytes),
+                "estimated_size": estimated_size,
+                "truncated": truncated_flag,
+                "native_type": native_type,
+                "mime_content_type": mime_content_type or detected_mime_header,
+                "data_preview_hex": (
+                    payload_bytes[:100].hex() if payload_bytes else None
+                ),
+            },
+        )
+
+        payload = {
             "type": "4",
             "data_bytes": payload_bytes,  # Raw bytes for OPAQUE
             "estimated_size": estimated_size,
@@ -578,6 +656,11 @@ def _prepare_body_payload(
             "content_type": "message/rfc822",
             "detected_mime_type": mime_content_type or detected_mime_header,
         }
+
+        # MS-ASAIRS COMPLIANCE VALIDATION
+        _validate_body_payload(payload, requested_type=4)
+
+        return payload
 
     preference = 1 if body_type == 1 else 2
 
@@ -592,14 +675,39 @@ def _prepare_body_payload(
         content = html or plain
         selected_native = 2 if html else 1 if plain else 1
 
-    # CRITICAL FIX: Character-aware truncation (Z-Push/Grommunio best practice)
-    # Truncate string first (by character count), THEN encode to UTF-8
-    # This prevents cutting multi-byte UTF-8 characters (Hebrew, emojis, etc.) in half
+    # DEBUG: Log what content was selected
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "body_content_selected",
+            "email_id": em.get("id"),
+            "preference": preference,
+            "selected_native": selected_native,
+            "has_plain": bool(plain),
+            "has_html": bool(html),
+            "plain_length": len(plain) if plain else 0,
+            "html_length": len(html) if html else 0,
+            "selected_content_length": len(content) if content else 0,
+            "content_preview": content[:100] if content else None,
+        },
+    )
 
-    # CRITICAL FIX: Calculate EstimatedDataSize BEFORE truncation (MS-ASCMD § 2.2.2.17)
-    # EstimatedDataSize MUST be the size of the FULL (untruncated) body!
+    # Z-PUSH STRATEGY: Calculate EstimatedDataSize BEFORE any modifications
+    # EstimatedDataSize MUST be the size of the FULL (untruncated) body with original line endings
+    # per MS-ASCMD § 2.2.2.17
     original_body_bytes = content.encode("utf-8") if content else b""
     estimated_size = str(len(original_body_bytes))  # ✅ FULL size, not truncated!
+
+    # Z-PUSH STRATEGY: Normalize line endings for Type=1/2 (text/HTML) AFTER size calculation
+    # iPhone rejects plain text bodies with CRLF (\r\n), expects LF (\n) only
+    # But keep original line endings in EstimatedDataSize calculation
+    if content:
+        content = content.replace("\r\n", "\n")  # CRLF -> LF
+        content = content.replace("\r", "\n")  # CR -> LF (for old Mac emails)
+
+    # Z-PUSH STRATEGY: Honor client's TruncationSize exactly, no artificial limits
+    # Truncate at UTF-8 byte boundaries to prevent corruption
+    body_bytes = content.encode("utf-8") if content else b""
 
     # DEBUG: Log truncation decision
     _write_json_line(
@@ -607,34 +715,23 @@ def _prepare_body_payload(
         {
             "event": "truncation_check",
             "truncation_size": truncation_size,
-            "content_length_chars": len(content) if content else 0,
+            "content_length_bytes": len(body_bytes),
             "original_body_size_bytes": len(original_body_bytes),
+            "estimated_size": estimated_size,
             "will_truncate": bool(
-                truncation_size and content and len(content) > (truncation_size // 3)
+                truncation_size and len(body_bytes) > truncation_size
             ),
         },
     )
 
-    if truncation_size and content:
-        # Estimate character limit from byte limit (conservative: assume 3 bytes/char)
-        char_limit = truncation_size // 3
-        if len(content) > char_limit:
-            content = content[:char_limit]
-            truncated_flag = "1"
-        else:
-            truncated_flag = "0"
-    else:
-        truncated_flag = "0"
-
-    body_bytes = content.encode("utf-8") if content else b""
-
-    # If we're still over byte limit after character truncation, trim more carefully
     if truncation_size and len(body_bytes) > truncation_size:
+        # Truncate at UTF-8 character boundary (prevents multi-byte character corruption)
         payload_bytes, truncated_flag = _truncate_utf8_bytes(
             body_bytes, truncation_size
         )
     else:
         payload_bytes = body_bytes
+        truncated_flag = "0"
 
     data_text = payload_bytes.decode("utf-8", errors="strict") if payload_bytes else ""
 
@@ -647,7 +744,22 @@ def _prepare_body_payload(
     )
     native_type = "2" if selected_native == 2 else "1"
 
-    return {
+    # DEBUG: Log the final body data being returned
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "body_data_final",
+            "email_id": em.get("id"),
+            "actual_type": actual_type,
+            "native_type": native_type,
+            "data_length": len(data_text),
+            "data_is_empty": not bool(data_text),
+            "data_preview": data_text[:100] if data_text else None,
+            "truncated": truncated_flag,
+        },
+    )
+
+    payload = {
         "type": actual_type,
         "data": data_text,
         "estimated_size": estimated_size,
@@ -655,6 +767,11 @@ def _prepare_body_payload(
         "native_type": native_type,
         "content_type": content_type,
     }
+
+    # MS-ASAIRS COMPLIANCE VALIDATION
+    _validate_body_payload(payload, requested_type=body_type)
+
+    return payload
 
 
 def write_fetch_responses(
@@ -758,6 +875,25 @@ def write_fetch_responses(
                 w.write_opaque(body_payload["data_bytes"])
             else:
                 # Type=1/2 uses string data
+                # DEBUG: Log what's being written to WBXML
+                from app.diagnostic_logger import _write_json_line
+
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "wbxml_body_data_write",
+                        "body_type": body_payload["type"],
+                        "data_length": (
+                            len(body_payload["data"]) if body_payload.get("data") else 0
+                        ),
+                        "data_is_empty": not bool(body_payload.get("data")),
+                        "data_preview": (
+                            body_payload["data"][:100]
+                            if body_payload.get("data")
+                            else None
+                        ),
+                    },
+                )
                 w.write_str(body_payload["data"])
         w.end()
         content_type = body_payload.get("content_type")
@@ -878,6 +1014,11 @@ def build_sync_response(
     w.write_str(class_name)
     w.end()
 
+    # CRITICAL FIX: MoreAvailable MUST come BEFORE Commands (MS-ASCMD 2.2.3.24.2)
+    # Z-Push/Grommunio put it here, not after Commands!
+    if more_available:
+        w.start(AS_MoreAvailable, with_content=False)
+
     count = 0
     if items:
         # Commands
@@ -957,6 +1098,25 @@ def build_sync_response(
                 w.write_opaque(body_payload["data_bytes"])
             else:
                 # Type=1/2 uses string data
+                # DEBUG: Log what's being written to WBXML
+                from app.diagnostic_logger import _write_json_line
+
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "wbxml_body_data_write",
+                        "body_type": body_payload["type"],
+                        "data_length": (
+                            len(body_payload["data"]) if body_payload.get("data") else 0
+                        ),
+                        "data_is_empty": not bool(body_payload.get("data")),
+                        "data_preview": (
+                            body_payload["data"][:100]
+                            if body_payload.get("data")
+                            else None
+                        ),
+                    },
+                )
                 w.write_str(body_payload["data"])
             w.end()
             content_type = body_payload.get("content_type")
@@ -980,15 +1140,9 @@ def build_sync_response(
 
         w.end()  # </Commands>
 
-    # CRITICAL FIX: Must switch back to AirSync codepage before MoreAvailable!
-    # After email body processing (which uses CP_AIRSYNCBASE), we need to switch back
+    # CRITICAL FIX: Must switch back to AirSync codepage after email body processing
     w.page(CP_AIRSYNC)
 
-    # MoreAvailable after Commands
-    # EXPERIMENT: Remove MoreAvailable to test if Outlook accepts response
-    # (iPhone works with it, but maybe Outlook rejects it for some reason)
-    # if more_available:
-    #     w.start(AS_MoreAvailable, with_content=False)
     w.end()  # </Collection>
     w.end()  # </Collections>
     w.end()  # </Sync>
@@ -1400,6 +1554,10 @@ def create_sync_response_wbxml_with_fetch(
     w.write_str(class_name)
     w.end()
 
+    # CRITICAL FIX: MoreAvailable MUST come BEFORE Commands (MS-ASCMD 2.2.3.24.2)
+    if more_available:
+        w.start(AS_MoreAvailable, with_content=False)
+
     # Commands for new items
     count = 0
     if emails:
@@ -1466,6 +1624,25 @@ def create_sync_response_wbxml_with_fetch(
                 w.write_opaque(body_payload["data_bytes"])
             else:
                 # Type=1/2 uses string data
+                # DEBUG: Log what's being written to WBXML
+                from app.diagnostic_logger import _write_json_line
+
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "wbxml_body_data_write",
+                        "body_type": body_payload["type"],
+                        "data_length": (
+                            len(body_payload["data"]) if body_payload.get("data") else 0
+                        ),
+                        "data_is_empty": not bool(body_payload.get("data")),
+                        "data_preview": (
+                            body_payload["data"][:100]
+                            if body_payload.get("data")
+                            else None
+                        ),
+                    },
+                )
                 w.write_str(body_payload["data"])
             w.end()
             content_type = body_payload.get("content_type")
@@ -1485,13 +1662,9 @@ def create_sync_response_wbxml_with_fetch(
             count += 1
         w.end()  # </Commands>
 
-    # CRITICAL FIX: Must switch back to AirSync codepage before MoreAvailable!
+    # CRITICAL FIX: Must switch back to AirSync codepage after email body processing
     w.page(CP_AIRSYNC)
 
-    # MoreAvailable after Commands
-    # EXPERIMENT: Remove MoreAvailable to test if Outlook accepts response
-    # if more_available:
-    #     w.start(AS_MoreAvailable, with_content=False)
     w.end()
     w.end()  # </Collection></Collections>
 

@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -47,42 +48,42 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     admin = Column(Boolean, default=False)  # Admin flag for auditing/management
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Modern Authentication Fields
     # TOTP (Time-based One-Time Password)
     totp_secret = Column(String, nullable=True)
     totp_enabled = Column(Boolean, default=False)
-    
+
     # WebAuthn (FIDO2)
     webauthn_credentials = Column(Text, nullable=True)  # JSON array of credentials
     webauthn_enabled = Column(Boolean, default=False)
     webauthn_challenge = Column(String, nullable=True)  # Temporary challenge storage
-    
+
     # API Key Authentication
     api_key_hash = Column(String, nullable=True)
     api_key_created = Column(DateTime, nullable=True)
-    
+
     # OAuth2
     oauth2_provider = Column(String, nullable=True)  # google, microsoft, etc.
     oauth2_id = Column(String, nullable=True)
     oauth2_access_token = Column(Text, nullable=True)
     oauth2_refresh_token = Column(Text, nullable=True)
     oauth2_token_expires = Column(DateTime, nullable=True)
-    
+
     # SAML
     saml_name_id = Column(String, nullable=True)
     saml_session_index = Column(String, nullable=True)
-    
+
     # LDAP
     ldap_dn = Column(String, nullable=True)  # Distinguished Name
-    
+
     # Kerberos
     kerberos_principal = Column(String, nullable=True)
-    
+
     # Client Certificate
     client_cert_serial = Column(String, nullable=True)
     client_cert_issuer = Column(String, nullable=True)
-    
+
     # Last login tracking
     last_login = Column(DateTime, nullable=True)
     last_login_method = Column(String, nullable=True)  # password, totp, webauthn, etc.
@@ -98,6 +99,7 @@ class User(Base):
     contact_folders = relationship("ContactFolder", back_populates="owner")
     calendar_events = relationship("CalendarEvent", back_populates="owner")
     calendar_folders = relationship("CalendarFolder", back_populates="owner")
+    mapi_sessions = relationship("MapiSession", back_populates="user")
 
 
 class Email(Base):
@@ -268,22 +270,28 @@ class ActiveSyncState(Base):
     # CRITICAL FIX #24: Track pagination for proper email sync
     last_synced_email_id = Column(Integer, default=0)  # Last email ID sent to client
     # Track all server IDs already acknowledged by the client to drive pagination
-    synced_email_ids = Column(Text, nullable=True)  # JSON array of previously synced email IDs
+    synced_email_ids = Column(
+        Text, nullable=True
+    )  # JSON array of previously synced email IDs
     # CRITICAL FIX #26: Two-phase commit - stage pending batches
     pending_sync_key = Column(String, nullable=True)  # SyncKey of pending batch
-    pending_max_email_id = Column(Integer, nullable=True)  # Max email ID in pending batch
-    pending_item_ids = Column(String, nullable=True)  # JSON array of email IDs in pending batch
+    pending_max_email_id = Column(
+        Integer, nullable=True
+    )  # Max email ID in pending batch
+    pending_item_ids = Column(
+        String, nullable=True
+    )  # JSON array of email IDs in pending batch
     foldersync_attempts = Column(Integer, default=0)
     last_sync = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     @property
     def grommunio_synckey(self) -> str:
         """Generate Grommunio-style {UUID}Counter synckey"""
         if not self.synckey_uuid or self.synckey_counter == 0:
             return "0"
         return f"{{{self.synckey_uuid}}}{self.synckey_counter}"
-    
+
     def set_grommunio_synckey(self, synckey: str):
         """Parse and set Grommunio-style synckey"""
         if synckey == "0":
@@ -292,13 +300,15 @@ class ActiveSyncState(Base):
             self.sync_key = "0"
         else:
             import re
-            match = re.match(r'^\{([0-9A-Za-z-]+)\}([0-9]+)$', synckey)
+
+            match = re.match(r"^\{([0-9A-Za-z-]+)\}([0-9]+)$", synckey)
             if match:
                 self.synckey_uuid = match.group(1)
                 self.synckey_counter = int(match.group(2))
                 self.sync_key = str(self.synckey_counter)  # Legacy field
             else:
                 raise ValueError(f"Invalid synckey format: {synckey}")
+
     __table_args__ = (
         UniqueConstraint(
             "user_id", "device_id", "collection_id", name="uq_user_device_collection"
@@ -430,6 +440,160 @@ class CalendarFolder(Base):
         cascade="all, delete-orphan",
     )
     events = relationship("CalendarEvent", back_populates="folder")
+
+
+# ============================================================================
+# MAPI/HTTP Models
+# ============================================================================
+
+
+class MapiSession(Base):
+    """
+    MAPI/HTTP session.
+
+    Represents an active connection from an Outlook client.
+    """
+
+    __tablename__ = "mapi_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # Session metadata
+    context_handle = Column(LargeBinary)  # Opaque context handle
+    client_info = Column(String(255))  # X-ClientInfo header
+    user_agent = Column(String(255))
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_activity = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="mapi_sessions")
+    objects = relationship(
+        "MapiObject", back_populates="session", cascade="all, delete-orphan"
+    )
+    subscriptions = relationship(
+        "MapiSubscription", back_populates="session", cascade="all, delete-orphan"
+    )
+
+    def is_expired(self) -> bool:
+        """Check if session has expired."""
+        return datetime.utcnow() > self.expires_at
+
+    def refresh(self, timeout_minutes: int = 30):
+        """Refresh session expiration."""
+        from datetime import timedelta
+
+        self.last_activity = datetime.utcnow()
+        self.expires_at = datetime.utcnow() + timedelta(minutes=timeout_minutes)
+
+
+class MapiObject(Base):
+    """
+    MAPI object handle.
+
+    Represents an open object (folder, message, attachment, table) within a session.
+    """
+
+    __tablename__ = "mapi_objects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        String(64),
+        ForeignKey("mapi_sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Object identification
+    handle = Column(Integer, nullable=False)  # Client-side handle (0-255)
+    object_type = Column(
+        String(32), nullable=False
+    )  # folder, message, attachment, table
+
+    # Entity reference
+    entity_type = Column(String(32))  # email, folder, attachment
+    entity_id = Column(Integer)  # References emails.id, etc.
+
+    # Property storage
+    properties = Column(Text)  # JSON cached properties
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    session = relationship("MapiSession", back_populates="objects")
+
+    def __repr__(self):
+        return f"<MapiObject handle={self.handle} type={self.object_type} entity={self.entity_type}:{self.entity_id}>"
+
+
+class MapiSubscription(Base):
+    """
+    MAPI notification subscription.
+
+    Represents a client subscription to server events (new mail, folder changes, etc.).
+    """
+
+    __tablename__ = "mapi_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        String(64),
+        ForeignKey("mapi_sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Subscription configuration
+    subscription_id = Column(Integer, nullable=False)
+    folder_id = Column(Integer)  # Folder to monitor (None = all folders)
+    notification_types = Column(Integer, nullable=False)  # Bitmask of event types
+
+    # Status
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    session = relationship("MapiSession", back_populates="subscriptions")
+
+    def __repr__(self):
+        return f"<MapiSubscription id={self.subscription_id} folder={self.folder_id} active={self.is_active}>"
+
+
+class MapiSyncState(Base):
+    """
+    MAPI synchronization state.
+
+    Tracks sync state for folder contents (ICS - Incremental Change Synchronization).
+    """
+
+    __tablename__ = "mapi_sync_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    folder_id = Column(Integer, nullable=False)
+
+    # Sync state
+    sync_state = Column(LargeBinary)  # Opaque sync state blob
+    last_sync_time = Column(DateTime)
+
+    # ICS counters
+    last_cn = Column(Integer, default=0)  # Last change number
+    last_mid = Column(Integer, default=0)  # Last message ID
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<MapiSyncState user={self.user_id} folder={self.folder_id} cn={self.last_cn}>"
 
 
 def create_tables():
@@ -640,7 +804,9 @@ def ensure_email_mime_columns():
             if "mime_content" not in columns:
                 conn.execute(text("ALTER TABLE emails ADD COLUMN mime_content TEXT"))
             if "mime_content_type" not in columns:
-                conn.execute(text("ALTER TABLE emails ADD COLUMN mime_content_type TEXT"))
+                conn.execute(
+                    text("ALTER TABLE emails ADD COLUMN mime_content_type TEXT")
+                )
             conn.commit()
     except Exception:
         pass
