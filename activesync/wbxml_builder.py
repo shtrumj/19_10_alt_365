@@ -74,6 +74,7 @@ ASB_Data = 0x0B
 ASB_EstimatedDataSize = 0x0C
 ASB_Truncated = 0x0D
 ASB_ContentType = 0x0E
+ASB_Preview = 0x14
 ASB_NativeBodyType = 0x16
 
 
@@ -896,6 +897,38 @@ def write_fetch_responses(
                 )
                 w.write_str(body_payload["data"])
         w.end()
+
+        # iOS CRITICAL: Add Preview element for better compatibility
+        # Preview shows first ~255 chars of body content
+        if body_payload.get("data") and body_payload["type"] in ("1", "2"):
+            preview_text = body_payload["data"][:255]  # First 255 chars
+
+            # DEBUG: Log Preview write attempt (Fetch path)
+            from app.diagnostic_logger import _write_json_line
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "wbxml_preview_write_attempt_fetch",
+                    "preview_length": len(preview_text),
+                    "preview_preview": preview_text[:50],
+                    "body_type": body_payload["type"],
+                },
+            )
+
+            w.start(ASB_Preview)
+            w.write_str(preview_text)
+            w.end()
+
+            # DEBUG: Confirm Preview written
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "wbxml_preview_written_fetch",
+                    "preview_length": len(preview_text),
+                },
+            )
+
         content_type = body_payload.get("content_type")
         if content_type:
             w.start(ASB_ContentType)
@@ -1119,6 +1152,66 @@ def build_sync_response(
                 )
                 w.write_str(body_payload["data"])
             w.end()
+
+            # DEBUG: Log body_payload details BEFORE Preview check
+            from app.diagnostic_logger import _write_json_line
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "body_payload_before_preview_check",
+                    "has_data": bool(body_payload.get("data")),
+                    "data_length": len(body_payload.get("data", "")),
+                    "type_value": body_payload["type"],
+                    "type_repr": repr(body_payload["type"]),
+                    "type_in_tuple": body_payload["type"] in ("1", "2"),
+                    "condition_result": bool(
+                        body_payload.get("data") and body_payload["type"] in ("1", "2")
+                    ),
+                },
+            )
+
+            # iOS CRITICAL: Add Preview element for better compatibility
+            # Preview shows first ~255 chars of body content
+            if body_payload.get("data") and body_payload["type"] in ("1", "2"):
+                preview_text = body_payload["data"][:255]  # First 255 chars
+
+                # DEBUG: Log Preview write attempt
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "wbxml_preview_write_attempt",
+                        "preview_length": len(preview_text),
+                        "preview_preview": preview_text[:50],
+                        "body_type": body_payload["type"],
+                    },
+                )
+
+                w.start(ASB_Preview)
+                w.write_str(preview_text)
+                w.end()
+
+                # DEBUG: Confirm Preview written
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "wbxml_preview_written",
+                        "preview_length": len(preview_text),
+                    },
+                )
+            else:
+                # DEBUG: Log why Preview was skipped
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "preview_skipped",
+                        "reason": "condition_failed",
+                        "has_data": bool(body_payload.get("data")),
+                        "type_value": body_payload["type"],
+                        "type_check": body_payload["type"] in ("1", "2"),
+                    },
+                )
+
             content_type = body_payload.get("content_type")
             if content_type:
                 w.start(ASB_ContentType)

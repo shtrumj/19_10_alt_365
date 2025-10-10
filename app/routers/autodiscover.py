@@ -84,6 +84,7 @@ async def autodiscover(request: Request):
         "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006"
     )
     requested_email = None
+    is_mobilesync_request = False
     try:
         text = body.decode("utf-8", errors="ignore")
         # Very simple extraction: <EMailAddress>user@domain</EMailAddress>
@@ -99,7 +100,12 @@ async def autodiscover(request: Request):
         )
         if schema_match:
             schema_value = schema_match.group(1).strip()
-            if schema_value.endswith("/2006a"):
+            if "mobilesync" in schema_value.lower():
+                # ActiveSync/MobileSync request
+                response_schema = "http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006"
+                is_mobilesync_request = True
+                logger.info("Received MobileSync/ActiveSync schema request")
+            elif schema_value.endswith("/2006a"):
                 response_schema = "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"
         if "2006a" in text and not schema_match:
             response_schema = "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a"
@@ -154,7 +160,31 @@ async def autodiscover(request: Request):
             or request.query_params.get("Email")
         )
 
-    xml = f"""<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+    # Generate ActiveSync/MobileSync format if requested
+    if is_mobilesync_request:
+        xml = f"""<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="{response_ns}">
+    <Culture>en:us</Culture>
+    <User>
+      <DisplayName>{escaped_display}</DisplayName>
+      <EMailAddress>{escaped_email}</EMailAddress>
+    </User>
+    <Action>
+      <Settings>
+        <Server>
+          <Type>MobileSync</Type>
+          <Url>{escaped_as}</Url>
+          <Name>{escaped_as}</Name>
+        </Server>
+      </Settings>
+    </Action>
+  </Response>
+</Autodiscover>
+"""
+    else:
+        # Generate Outlook/EXCH format (default)
+        xml = f"""<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Response xmlns="{response_ns}">
     <ErrorCode>NoError</ErrorCode>
@@ -198,31 +228,6 @@ async def autodiscover(request: Request):
           <OOFUrl>{escaped_ews}</OOFUrl>
           <CertPrincipalName>msstd:{escaped_host}</CertPrincipalName>
         </Internal>
-        <External>
-          <Server>{escaped_host}</Server>
-          <Url>{escaped_mapi}</Url>
-          <ASUrl>{escaped_as}</ASUrl>
-          <EwsUrl>{escaped_ews}</EwsUrl>
-          <OOFUrl>{escaped_ews}</OOFUrl>
-          <CertPrincipalName>msstd:{escaped_host}</CertPrincipalName>
-        </External>
-      </Protocol>
-      <Protocol>
-        <Type>EXPR</Type>
-        <Server>{escaped_host}</Server>
-        <Port>443</Port>
-        <SSL>On</SSL>
-        <SPA>Off</SPA>
-        <AuthRequired>On</AuthRequired>
-        <DomainRequired>Off</DomainRequired>
-        <AuthPackage>Basic</AuthPackage>
-        <LoginName>{escaped_email}</LoginName>
-        <ASUrl>{escaped_as}</ASUrl>
-        <EwsUrl>{escaped_ews}</EwsUrl>
-        <OOFUrl>{escaped_ews}</OOFUrl>
-        <OABUrl>{escaped_oab}</OABUrl>
-        <CertPrincipalName>msstd:{escaped_host}</CertPrincipalName>
-        <ServerExclusiveConnect>On</ServerExclusiveConnect>
         <External>
           <Server>{escaped_host}</Server>
           <Url>{escaped_mapi}</Url>
@@ -282,11 +287,8 @@ async def autodiscover(request: Request):
                 "mapi_http_enabled": True,
                 "protocols_offered": [
                     "EXCH",
-                    "EXPR",
                     "WEB",
                     "MobileSync",
-                    "IMAP",
-                    "POP3",
                     "SMTP",
                 ],
             },
