@@ -163,47 +163,46 @@ def _format_synckey(
 
 
 def _select_body_pref(
-    prefs: List[Dict], is_single_item_fetch: bool
+    prefs: List[Dict], 
+    is_single_item_fetch: bool,
+    strategy_order: Optional[List[int]] = None
 ) -> tuple[int, int | None]:
     """
     Select the best body preference for ActiveSync.
 
     Args:
         prefs: List of body preferences from client
-        is_single_item_fetch: True if this is a single-item fetch (prefer MIME)
+        is_single_item_fetch: True if this is a single-item fetch
+        strategy_order: Strategy's preferred body type order (e.g. [2, 1] for iOS)
 
     Returns:
         (body_type, truncation_size)
     """
+    # CRITICAL FIX: Respect strategy preferences (e.g. iOS needs HTML, not MIME)
+    # Apple iOS Mail can't render MIME type 4 properly, especially with international chars
+    default_order = strategy_order if strategy_order else [2, 1, 4]
+    
     if not prefs:
-        # For single fetches default to full MIME to satisfy iOS' "Download Message" flow
-        if is_single_item_fetch:
-            return (4, None)
-        return (2, 32768)  # Default: HTML with moderate truncation
-
-    # Order preferences by priority
-    if is_single_item_fetch:
-        # For single-item fetch: prefer MIME (4), then HTML (2), then plain (1)
-        order = [4, 2, 1]
-    else:
-        # For normal sync: prefer HTML (2), then plain (1), only fall back to MIME (4) if requested
-        order = [2, 1, 4]
+        # Use strategy's first preference
+        preferred_type = default_order[0] if default_order else 2
+        return (preferred_type, None if is_single_item_fetch else 32768)
 
     # Group preferences by type
     by_type = {p.get("type", 2): p for p in prefs if "type" in p}
 
-    # Try each type in order of preference
-    for body_type in order:
+    # Try each type in strategy's order of preference
+    for body_type in default_order:
         if body_type in by_type:
             pref = by_type[body_type]
             return (pref.get("type", 2), pref.get("truncation_size"))
 
-    # Fallback to first preference
+    # Fallback to first client preference
     if prefs:
         pref = prefs[0]
         return (pref.get("type", 2), pref.get("truncation_size"))
 
-    return (2, 32768)  # Final fallback
+    # Final fallback: use strategy's preferred type
+    return (default_order[0] if default_order else 2, 32768)
 
 
 def _parse_itemops_fetches(
@@ -1689,9 +1688,12 @@ async def eas_dispatch(
         # Determine if this is a single-item fetch (prefer MIME)
         is_single_item_fetch = bool(fetch_ids)
 
-        # Select best body preference
+        # Select best body preference using strategy's preference order
+        # CRITICAL FIX: Pass strategy preferences to respect iOS HTML-only policy
         body_type_preference, truncation_size = _select_body_pref(
-            body_prefs, is_single_item_fetch
+            body_prefs, 
+            is_single_item_fetch,
+            strategy_order=strategy.get_body_type_preference_order()
         )
         if truncation_size is not None:
             try:
@@ -1699,8 +1701,8 @@ async def eas_dispatch(
             except (ValueError, TypeError):
                 truncation_size = None
 
-        if body_type_preference != 4 and fetch_ids:
-            body_type_preference = 4
+        # REMOVED: Don't force MIME for fetches - respect strategy preference!
+        # Old buggy code: if body_type_preference != 4 and fetch_ids: body_type_preference = 4
 
         # Use strategy to determine truncation
         is_initial_sync = client_sync_key == "0"

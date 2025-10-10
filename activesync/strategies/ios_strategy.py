@@ -40,12 +40,16 @@ class IOSStrategy(ActiveSyncStrategy):
 
     def get_body_type_preference_order(self) -> List[int]:
         """
-        iOS prefers plain text for rendering.
+        iOS prefers HTML over MIME.
+
+        CRITICAL FIX: iOS Mail has issues rendering MIME type 4, especially
+        with international characters (Hebrew, etc.). Force HTML (type 2)
+        instead, which renders correctly.
 
         Returns:
-            [1, 2, 4] - Plain text first, then HTML, then MIME
+            [2, 1] - HTML first, then plain text (NO MIME type 4)
         """
-        return [1, 2, 4]
+        return [2, 1]
 
     def should_use_pending_confirmation(self) -> bool:
         """
