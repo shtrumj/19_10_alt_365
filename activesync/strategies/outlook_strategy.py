@@ -81,15 +81,25 @@ class OutlookStrategy(ActiveSyncStrategy):
             Effective truncation size in bytes
 
         Strategy:
-            - Type 1/2 (plain/HTML): Honor client's request exactly (no override!)
+            - Type 1/2 (plain/HTML): Honor client's request, but apply 32KB minimum
             - Type 4 (MIME): Cap at 512KB to prevent huge transfers
 
         This matches Z-Push/Grommunio behavior where the client's truncation
         preference is respected for text bodies, but MIME is capped for safety.
+
+        CRITICAL FIX: Apply minimum of 32KB for Type 1/2 to prevent clients
+        from requesting absurdly small sizes (e.g., 500 bytes) that make emails
+        unreadable.
         """
         if body_type == 4:  # MIME
             # Cap MIME at 512KB (Z-Push standard)
             return min(truncation_size or 512000, 512000)
         else:  # Type 1 or 2 (plain text or HTML)
-            # Honor client's request exactly - no server override!
-            return truncation_size
+            # CRITICAL FIX: Apply minimum truncation of 32KB for text bodies
+            # Some clients request tiny sizes (500 bytes) which prevents
+            # meaningful email content from being displayed
+            MIN_TEXT_TRUNCATION = 32768  # 32KB
+            if truncation_size is None:
+                return None  # Unlimited
+            # Honor client's request, but enforce minimum
+            return max(truncation_size, MIN_TEXT_TRUNCATION)

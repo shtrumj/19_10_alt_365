@@ -100,6 +100,52 @@ class User(Base):
     calendar_events = relationship("CalendarEvent", back_populates="owner")
     calendar_folders = relationship("CalendarFolder", back_populates="owner")
     mapi_sessions = relationship("MapiSession", back_populates="user")
+    oof_settings = relationship("OofSettings", back_populates="user", uselist=False)
+
+
+class OofSettings(Base):
+    """Out of Office (OOF) automatic reply settings per user.
+
+    Based on Microsoft ActiveSync Settings:Oof specification (MS-ASCMD § 2.2.3.119).
+    Implements Z-Push/Grommunio-sync compatible OOF state management.
+    """
+
+    __tablename__ = "oof_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+
+    # OOF State: 0=Disabled, 1=Enabled, 2=Scheduled (external timezone-based)
+    oof_state = Column(Integer, default=0, nullable=False)
+
+    # Start and end time for scheduled OOF (state=2)
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+
+    # Internal message (sent to users within organization)
+    internal_message = Column(Text, nullable=True)
+    internal_enabled = Column(Boolean, default=True)
+
+    # External message (sent to users outside organization)
+    external_message = Column(Text, nullable=True)
+    external_enabled = Column(Boolean, default=False)
+
+    # Audience type for external messages:
+    # 0=None, 1=Known (contacts only), 2=All
+    external_audience = Column(Integer, default=0)
+
+    # Reply-once per sender flag (prevent spam)
+    reply_once_per_sender = Column(Boolean, default=True)
+
+    # Tracking of who has received auto-replies (JSON list of email addresses)
+    replied_to_senders = Column(Text, nullable=True)  # JSON array
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship
+    user = relationship("User", back_populates="oof_settings")
 
 
 class Email(Base):

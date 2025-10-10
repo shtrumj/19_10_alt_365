@@ -65,10 +65,17 @@ class AndroidStrategy(ActiveSyncStrategy):
             Effective truncation size in bytes
 
         Strategy:
-            - Type 1/2: Honor client's request
+            - Type 1/2: Honor client's request, but apply 32KB minimum
             - Type 4 (MIME): Cap at 512KB
         """
         if body_type == 4:  # MIME
             return min(truncation_size or 512000, 512000)
         else:  # Type 1 or 2
-            return truncation_size
+            # CRITICAL FIX: Apply minimum truncation of 32KB for text bodies
+            # Some clients request tiny sizes (500 bytes) which prevents
+            # meaningful email content from being displayed
+            MIN_TEXT_TRUNCATION = 32768  # 32KB
+            if truncation_size is None:
+                return None  # Unlimited
+            # Honor client's request, but enforce minimum
+            return max(truncation_size, MIN_TEXT_TRUNCATION)

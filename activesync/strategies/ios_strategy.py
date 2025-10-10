@@ -74,15 +74,22 @@ class IOSStrategy(ActiveSyncStrategy):
             Effective truncation size in bytes
 
         Strategy:
-            - Type 1/2: Honor client's request (iOS typically requests 32KB)
+            - Type 1/2: Honor client's request, but apply 32KB minimum
             - Type 4 (MIME): Cap at 512KB
 
         iOS typically requests 32KB truncation for text bodies, which is
-        reasonable and should be honored.
+        reasonable and should be honored. For very small requests (<5KB),
+        apply a minimum of 32KB to ensure meaningful content is displayed.
         """
         if body_type == 4:  # MIME
             # Cap MIME at 512KB (Z-Push standard)
             return min(truncation_size or 512000, 512000)
         else:  # Type 1 or 2 (plain text or HTML)
-            # Honor client's request - iOS typically requests 32KB
-            return truncation_size
+            # CRITICAL FIX: Apply minimum truncation of 32KB for text bodies
+            # Some clients request tiny sizes (500 bytes) which prevents
+            # meaningful email content from being displayed
+            MIN_TEXT_TRUNCATION = 32768  # 32KB
+            if truncation_size is None:
+                return None  # Unlimited
+            # Honor client's request, but enforce minimum
+            return max(truncation_size, MIN_TEXT_TRUNCATION)

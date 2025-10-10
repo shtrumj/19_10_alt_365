@@ -2191,6 +2191,21 @@ async def eas_dispatch(
         if fetch_int_id_set:
             emails = [e for e in emails if e.id not in fetch_int_id_set]
 
+        # CRITICAL FIX: Add fetched emails back to the list!
+        # Fetched emails should ALWAYS be returned, regardless of sync state
+        if fetched_emails:
+            emails = list(fetched_emails) + emails
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_fetch_combined",
+                    "fetched_count": len(fetched_emails),
+                    "regular_count": len(emails) - len(fetched_emails),
+                    "total_count": len(emails),
+                    "message": "Added fetched emails to response",
+                },
+            )
+
         _write_json_line(
             "activesync/activesync.log",
             {
@@ -3310,43 +3325,202 @@ async def eas_dispatch(
             content=options_xml, media_type="application/xml", headers=headers
         )
     if cmd == "settings":
-        # MS-ASCMD Settings implementation with comprehensive device management
+        # MS-ASCMD Settings implementation with OOF support
+        # Based on Z-Push/Grommunio and Microsoft MS-ASCMD specification
+        from activesync.settings_parser import parse_settings_request
+        from activesync.wbxml_builder import (
+            build_settings_oof_get_response,
+            build_settings_oof_set_response,
+        )
+        from app.database import OofSettings
+
+        # Parse WBXML request
+        parsed = parse_settings_request(request_body_bytes)
+        action = parsed.get("action")
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "settings_request",
+                "user": current_user.email,
+                "action": action,
+                "parsed": parsed,
+            },
+        )
+
+        # Handle OOF Get request
+        if action == "oof_get":
+            # Fetch or create OOF settings for user
+            oof_settings = (
+                db.query(OofSettings)
+                .filter(OofSettings.user_id == current_user.id)
+                .first()
+            )
+
+            if not oof_settings:
+                # Create default OOF settings
+                oof_settings = OofSettings(
+                    user_id=current_user.id,
+                    oof_state=0,  # Disabled by default
+                    internal_message="I am currently out of the office.",
+                    internal_enabled=True,
+                    external_message="I am currently out of the office and will respond when I return.",
+                    external_enabled=False,
+                    external_audience=0,
+                )
+                db.add(oof_settings)
+                db.commit()
+                db.refresh(oof_settings)
+
+            # Build response
+            oof_dict = {
+                "oof_state": oof_settings.oof_state,
+                "start_time": oof_settings.start_time,
+                "end_time": oof_settings.end_time,
+                "internal_message": oof_settings.internal_message or "",
+                "internal_enabled": oof_settings.internal_enabled,
+                "external_message": oof_settings.external_message or "",
+                "external_enabled": oof_settings.external_enabled,
+                "external_audience": oof_settings.external_audience,
+            }
+
+            wbxml_response = build_settings_oof_get_response(oof_dict)
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "settings_oof_get_response",
+                    "user": current_user.email,
+                    "oof_state": oof_settings.oof_state,
+                },
+            )
+
+            return Response(
+                content=wbxml_response,
+                media_type="application/vnd.ms-sync.wbxml",
+                headers=headers,
+            )
+
+        # Handle OOF Set request
+        if action == "oof_set":
+            oof_data = parsed.get("oof", {})
+
+            # Fetch or create OOF settings
+            oof_settings = (
+                db.query(OofSettings)
+                .filter(OofSettings.user_id == current_user.id)
+                .first()
+            )
+
+            if not oof_settings:
+                oof_settings = OofSettings(user_id=current_user.id)
+                db.add(oof_settings)
+
+            # Update OOF settings
+            if "oof_state" in oof_data:
+                oof_settings.oof_state = oof_data["oof_state"]
+
+            if "start_time" in oof_data:
+                try:
+                    oof_settings.start_time = datetime.fromisoformat(
+                        oof_data["start_time"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            if "end_time" in oof_data:
+                try:
+                    oof_settings.end_time = datetime.fromisoformat(
+                        oof_data["end_time"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            if "internal_message" in oof_data:
+                oof_settings.internal_message = oof_data["internal_message"]
+
+            if "internal_enabled" in oof_data:
+                oof_settings.internal_enabled = oof_data["internal_enabled"]
+
+            if "external_message" in oof_data:
+                oof_settings.external_message = oof_data["external_message"]
+
+            if "external_enabled" in oof_data:
+                oof_settings.external_enabled = oof_data["external_enabled"]
+
+            if "external_audience" in oof_data:
+                oof_settings.external_audience = oof_data["external_audience"]
+
+            db.commit()
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "settings_oof_set",
+                    "user": current_user.email,
+                    "oof_state": oof_settings.oof_state,
+                    "updated": oof_data,
+                },
+            )
+
+            # Build success response
+            wbxml_response = build_settings_oof_set_response(status=1)
+
+            return Response(
+                content=wbxml_response,
+                media_type="application/vnd.ms-sync.wbxml",
+                headers=headers,
+            )
+
+        # Handle DeviceInformation Set request
+        if action == "device_info_set":
+            device_info = parsed.get("device_info", {})
+
+            # Update device with parsed info (if desired)
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "settings_device_info_set",
+                    "user": current_user.email,
+                    "device_info": device_info,
+                },
+            )
+
+            # Return success (stub for now - could update ActiveSyncDevice table)
+            from activesync.wbxml_builder import (
+                CP_SETTINGS,
+                SETTINGS_Settings,
+                SETTINGS_Status,
+                WBXMLWriter,
+            )
+
+            w = WBXMLWriter()
+            w.header()
+            w.page(CP_SETTINGS)
+            w.start(SETTINGS_Settings)
+            w.start(SETTINGS_Status)
+            w.write_str("1")
+            w.end()
+            w.end()
+
+            return Response(
+                content=w.bytes(),
+                media_type="application/vnd.ms-sync.wbxml",
+                headers=headers,
+            )
+
+        # Fallback: return basic XML response for unknown Settings requests
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <Settings xmlns="Settings">
     <Status>1</Status>
-    <DeviceInformation>
-        <Set>
-            <Model>Generic ActiveSync Device</Model>
-            <IMEI>123456789012345</IMEI>
-            <FriendlyName>ActiveSync Client</FriendlyName>
-            <OS>iOS/Android/Windows</OS>
-            <OSLanguage>en-US</OSLanguage>
-            <PhoneNumber>+1234567890</PhoneNumber>
-            <UserAgent>Microsoft-Server-ActiveSync/16.0</UserAgent>
-        </Set>
-    </DeviceInformation>
-    <Oof>
-        <Get>
-            <BodyType>Text</BodyType>
-        </Get>
-    </Oof>
-    <DevicePassword>
-        <Set>
-            <Password>123456</Password>
-        </Set>
-    </DevicePassword>
-    <UserInformation>
-        <Get>
-            <EmailAddresses>
-                <SMTPAddress>{current_user.email}</SMTPAddress>
-            </EmailAddresses>
-            <DisplayName>{current_user.full_name or current_user.username}</DisplayName>
-        </Get>
-    </UserInformation>
 </Settings>"""
         _write_json_line(
             "activesync/activesync.log",
-            {"event": "settings", "user": current_user.email},
+            {
+                "event": "settings_fallback",
+                "user": current_user.email,
+                "action": action,
+            },
         )
         return Response(content=xml, media_type="application/xml", headers=headers)
     if cmd == "search":

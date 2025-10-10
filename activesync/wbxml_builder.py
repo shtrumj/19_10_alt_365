@@ -32,6 +32,7 @@ CP_AIRSYNC = 0
 CP_PING = 1  # Ping codepage for push notifications
 CP_EMAIL = 2
 CP_AIRSYNCBASE = 17
+CP_SETTINGS = 18  # Settings codepage for OOF, DeviceInformation, etc.
 CP_PROVISION = 14
 
 # AirSync (CP 0)
@@ -76,6 +77,46 @@ ASB_Truncated = 0x0D
 ASB_ContentType = 0x0E
 ASB_Preview = 0x14
 ASB_NativeBodyType = 0x16
+
+# Settings (CP 18) - MS-ASCMD § 2.2.2.1
+SETTINGS_Settings = 0x05
+SETTINGS_Status = 0x06
+SETTINGS_Get = 0x07
+SETTINGS_Set = 0x08
+SETTINGS_Oof = 0x09
+SETTINGS_OofState = 0x0A
+SETTINGS_StartTime = 0x0B
+SETTINGS_EndTime = 0x0C
+SETTINGS_OofMessage = 0x0D
+SETTINGS_AppliesToInternal = 0x0E
+SETTINGS_AppliesToExternalKnown = 0x0F
+SETTINGS_AppliesToExternalUnknown = 0x10
+SETTINGS_Enabled = 0x11
+SETTINGS_ReplyMessage = 0x12
+SETTINGS_BodyType = 0x13
+SETTINGS_DevicePassword = 0x14
+SETTINGS_Password = 0x15
+SETTINGS_DeviceInformation = 0x16
+SETTINGS_Model = 0x17
+SETTINGS_IMEI = 0x18
+SETTINGS_FriendlyName = 0x19
+SETTINGS_OS = 0x1A
+SETTINGS_OSLanguage = 0x1B
+SETTINGS_PhoneNumber = 0x1C
+SETTINGS_UserInformation = 0x1D
+SETTINGS_EmailAddresses = 0x1E
+SETTINGS_SMTPAddress = 0x1F
+SETTINGS_UserAgent = 0x20
+SETTINGS_EnableOutboundSMS = 0x21
+SETTINGS_MobileOperator = 0x22
+SETTINGS_PrimarySmtpAddress = 0x23
+SETTINGS_Accounts = 0x24
+SETTINGS_Account = 0x25
+SETTINGS_AccountId = 0x26
+SETTINGS_AccountName = 0x27
+SETTINGS_UserDisplayName = 0x28
+SETTINGS_SendDisabled = 0x29
+SETTINGS_RightsManagementInformation = 0x2B
 
 
 class WBXMLWriter:
@@ -1750,8 +1791,8 @@ def create_sync_response_wbxml_with_fetch(
             w.end()
             # Close appdata/add
             w.cp(CP_AIRSYNC)
-            w.end()
-            w.end()
+            w.end()  # </ApplicationData>
+            w.end()  # </Add>
             count += 1
         w.end()  # </Commands>
 
@@ -1760,26 +1801,166 @@ def create_sync_response_wbxml_with_fetch(
 
     w.end()
     w.end()  # </Collection></Collections>
+    w.end()  # </Sync>
 
-    # <Responses><Fetch> for fetched items
-    write_fetch_responses(
-        w=w,
-        fetched=fetched,
-        body_type_preference=body_type_preference,
-        truncation_size=truncation_size,
-    )
-
-    # Close Sync
-    w.end()
-
-    payload = w.bytes()
+    # CRITICAL FIX: Return SyncBatch object!
     return SyncBatch(
         response_sync_key=sync_key,
-        payload=payload,
+        payload=w.bytes(),
         sent_count=count,
-        total_available=len(emails),
+        total_available=len(emails) + len(fetched),
         more_available=more_available,
     )
+
+
+def build_settings_oof_get_response(oof_settings: Dict[str, Any]) -> bytes:
+    """
+    Build WBXML Settings:Oof:Get response.
+
+    Based on MS-ASCMD § 2.2.3.119 (Settings:Oof) and Z-Push implementation.
+
+    Args:
+        oof_settings: Dictionary with OOF settings:
+            - oof_state: 0=Disabled, 1=Enabled, 2=Scheduled
+            - start_time: ISO datetime string (for state=2)
+            - end_time: ISO datetime string (for state=2)
+            - internal_message: Internal OOF message
+            - internal_enabled: Boolean
+            - external_message: External OOF message
+            - external_enabled: Boolean
+            - external_audience: 0=None, 1=Known, 2=All
+
+    Returns:
+        WBXML bytes for Settings response
+    """
+    w = WBXMLWriter()
+    w.header()
+
+    # <Settings>
+    w.page(CP_SETTINGS)
+    w.start(SETTINGS_Settings)
+
+    # <Status>1</Status>
+    w.start(SETTINGS_Status)
+    w.write_str("1")  # Success
+    w.end()
+
+    # <Oof>
+    w.start(SETTINGS_Oof)
+
+    # <Get>
+    w.start(SETTINGS_Get)
+
+    # <OofState>
+    w.start(SETTINGS_OofState)
+    w.write_str(str(oof_settings.get("oof_state", 0)))
+    w.end()
+
+    # <StartTime> (only for state=2)
+    if oof_settings.get("oof_state") == 2 and oof_settings.get("start_time"):
+        w.start(SETTINGS_StartTime)
+        w.write_str(_ensure_utc_z(oof_settings["start_time"]))
+        w.end()
+
+    # <EndTime> (only for state=2)
+    if oof_settings.get("oof_state") == 2 and oof_settings.get("end_time"):
+        w.start(SETTINGS_EndTime)
+        w.write_str(_ensure_utc_z(oof_settings["end_time"]))
+        w.end()
+
+    # <OofMessage> for Internal
+    if oof_settings.get("internal_enabled", True):
+        w.start(SETTINGS_OofMessage)
+
+        # <AppliesToInternal />
+        w.start(SETTINGS_AppliesToInternal, with_content=False)
+
+        # <Enabled>
+        w.start(SETTINGS_Enabled)
+        w.write_str("1" if oof_settings.get("internal_enabled", True) else "0")
+        w.end()
+
+        # <ReplyMessage>
+        w.start(SETTINGS_ReplyMessage)
+        w.write_str(oof_settings.get("internal_message", ""))
+        w.end()
+
+        # <BodyType>
+        w.start(SETTINGS_BodyType)
+        w.write_str("TEXT")  # or "HTML"
+        w.end()
+
+        w.end()  # </OofMessage>
+
+    # <OofMessage> for External (if enabled)
+    external_audience = oof_settings.get("external_audience", 0)
+    if oof_settings.get("external_enabled", False) and external_audience > 0:
+        w.start(SETTINGS_OofMessage)
+
+        # <AppliesToExternalKnown /> or <AppliesToExternalUnknown />
+        if external_audience == 1:  # Known contacts only
+            w.start(SETTINGS_AppliesToExternalKnown, with_content=False)
+        elif external_audience == 2:  # All external
+            w.start(SETTINGS_AppliesToExternalUnknown, with_content=False)
+
+        # <Enabled>
+        w.start(SETTINGS_Enabled)
+        w.write_str("1")
+        w.end()
+
+        # <ReplyMessage>
+        w.start(SETTINGS_ReplyMessage)
+        w.write_str(oof_settings.get("external_message", ""))
+        w.end()
+
+        # <BodyType>
+        w.start(SETTINGS_BodyType)
+        w.write_str("TEXT")
+        w.end()
+
+        w.end()  # </OofMessage>
+
+    w.end()  # </Get>
+    w.end()  # </Oof>
+    w.end()  # </Settings>
+
+    return w.bytes()
+
+
+def build_settings_oof_set_response(status: int = 1) -> bytes:
+    """
+    Build WBXML Settings:Oof:Set response.
+
+    Args:
+        status: 1=Success, 2=Protocol error, 3=Access denied, etc.
+
+    Returns:
+        WBXML bytes for Settings response
+    """
+    w = WBXMLWriter()
+    w.header()
+
+    # <Settings>
+    w.page(CP_SETTINGS)
+    w.start(SETTINGS_Settings)
+
+    # <Status>
+    w.start(SETTINGS_Status)
+    w.write_str(str(status))
+    w.end()
+
+    # <Oof>
+    w.start(SETTINGS_Oof)
+
+    # <Status>
+    w.start(SETTINGS_Status)
+    w.write_str(str(status))
+    w.end()
+
+    w.end()  # </Oof>
+    w.end()  # </Settings>
+
+    return w.bytes()
 
 
 def create_invalid_synckey_response_wbxml(
