@@ -35,8 +35,8 @@ class IOSStrategy(ActiveSyncStrategy):
         return 50
 
     def get_max_window_size(self) -> int:
-        """Z-Push/Grommunio standard maximum (100 items per batch)"""
-        return 100
+        """Cap iOS batches aggressively to avoid oversized responses"""
+        return 5
 
     def get_body_type_preference_order(self) -> List[int]:
         """
@@ -92,11 +92,6 @@ class IOSStrategy(ActiveSyncStrategy):
             # Cap MIME at 512KB (Z-Push standard)
             return min(truncation_size or 512000, 512000)
         else:  # Type 1 or 2 (plain text or HTML)
-            # CRITICAL FIX: Apply minimum truncation of 32KB for text bodies
-            # Some clients request tiny sizes (500 bytes) which prevents
-            # meaningful email content from being displayed
-            MIN_TEXT_TRUNCATION = 32768  # 32KB
-            if truncation_size is None:
-                return None  # Unlimited
-            # Honor client's request, but enforce minimum
-            return max(truncation_size, MIN_TEXT_TRUNCATION)
+            # Honor client's requested truncation size for previews during sync.
+            # The client will fetch full content later on demand.
+            return truncation_size

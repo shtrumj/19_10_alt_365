@@ -1708,7 +1708,7 @@ async def eas_dispatch(
         # REMOVED: Don't force MIME for fetches - respect strategy preference!
         # Old buggy code: if body_type_preference != 4 and fetch_ids: body_type_preference = 4
 
-        # Use strategy to determine truncation
+        # Use strategy to determine truncation, but cap for Sync to avoid large bodies
         is_initial_sync = client_sync_key == "0"
 
         # Detect "first data sync" - when client hasn't downloaded any emails yet
@@ -1720,6 +1720,11 @@ async def eas_dispatch(
             truncation_size=truncation_size,
             is_initial_sync=is_initial_sync,
         )
+
+        # Hard cap: During Sync (not Fetch), do not exceed 5KB preview to keep batches small
+        # iOS will fetch full content via Fetch/ItemOperations when needed
+        if effective_truncation is None or effective_truncation > 5120:
+            effective_truncation = 5120
 
         _write_json_line(
             "activesync/activesync.log",
@@ -2156,8 +2161,11 @@ async def eas_dispatch(
         last_id = max(synced_ids) if synced_ids else (state.last_synced_email_id or 0)
 
         # Query latest emails (ordered newest first)
+        # CRITICAL: Fetch one more than WindowSize to detect MoreAvailable (Z-Push/Grommunio)
+        # This lets us set has_more correctly while only sending WindowSize items
+        query_limit = max(window_size + 1, 2)
         all_emails = email_service.get_user_emails(
-            current_user.id, folder_type, limit=100
+            current_user.id, folder_type, start_id=last_id, limit=query_limit
         )
 
         # Filter to only unsent emails (exclude already synced + pending)
@@ -2209,6 +2217,25 @@ async def eas_dispatch(
                     "regular_count": len(emails) - len(fetched_emails),
                     "total_count": len(emails),
                     "message": "Added fetched emails to response",
+                },
+            )
+
+        # Determine has_more BEFORE trimming to WindowSize
+        has_more = len(emails) > window_size if window_size else False
+
+        # Apply window_size limit to what we send
+        original_count = len(emails)
+        if window_size and len(emails) > window_size:
+            emails = emails[:window_size]
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "window_size_applied",
+                    "original_count": original_count,
+                    "window_size": window_size,
+                    "final_count": len(emails),
+                    "has_more": has_more,
+                    "message": "Limited emails to window_size as requested by client",
                 },
             )
 
@@ -2348,8 +2375,9 @@ async def eas_dispatch(
             if is_wbxml_request:
                 if send_items_on_initial:
                     # iOS behavior: Send items immediately
-                    emails_to_send = emails[:window_size] if window_size else emails
-                    has_more = len(emails) > window_size if window_size else False
+                    # emails has already been trimmed to WindowSize above; keep it as-is
+                    emails_to_send = emails
+                    # Use has_more computed BEFORE trimming to WindowSize
 
                     _write_json_line(
                         "activesync/activesync.log",
@@ -2384,6 +2412,14 @@ async def eas_dispatch(
                 email_dicts = [
                     _email_payload(email, collection_id) for email in emails_to_send
                 ]
+
+                # Initial sync: Always respond with the server key (0→1) even if there are more items.
+                # Echoing the client's 0 causes iOS to loop. Grommunio/Z-Push respond with 1 and set MoreAvailable.
+                response_sync_key = (
+                    state.sync_key
+                    if state.sync_key
+                    else _bump_sync_key(state, db, prefer_uuid_synckey)
+                )
 
                 wbxml_batch = create_sync_response_wbxml(
                     sync_key=response_sync_key,
@@ -2912,20 +2948,27 @@ async def eas_dispatch(
                 )
         # Client sync key matches server - check if we need to send emails
         elif client_key_int == server_key_int:
-            # If we have emails to send, send them and bump sync key
+            # If we have emails to send, send them with correct paging SyncKey behavior
             if len(emails) > 0:
-                new_sync_key = _bump_sync_key(state, db, prefer_uuid_synckey)
                 is_wbxml_request = len(
                     request_body_bytes
                 ) > 0 and request_body_bytes.startswith(b"\x03\x01")
                 if is_wbxml_request:
-                    # CRITICAL FIX #13: Respect WindowSize! Only send N items at a time
-                    # Expert diagnosis: "If client asked for WindowSize = N, put at most N <Add> items"
-                    emails_to_send = emails[:window_size] if window_size else emails
-                    has_more = len(emails) > window_size if window_size else False
+                    # Respect WindowSize (emails already trimmed earlier); reuse pre-trim has_more
+                    emails_to_send = emails
+
+                    # Determine response SyncKey based on paging status per spec
+                    if has_more:
+                        # Paging in progress: echo client's key (no advance)
+                        response_sync_key = state.sync_key
+                    else:
+                        # Final batch: advance SyncKey
+                        response_sync_key = _bump_sync_key(
+                            state, db, prefer_uuid_synckey
+                        )
 
                     wbxml_batch = create_sync_response_wbxml(
-                        sync_key=new_sync_key,
+                        sync_key=response_sync_key,
                         emails=[
                             _email_payload(e, collection_id) for e in emails_to_send
                         ],
@@ -2941,7 +2984,7 @@ async def eas_dispatch(
                         "activesync/activesync.log",
                         {
                             "event": "sync_emails_sent_wbxml",
-                            "sync_key": new_sync_key,
+                            "sync_key": response_sync_key,
                             "client_key": client_sync_key,
                             "email_count_total": len(emails),  # ← Total available
                             "email_count_sent": len(emails_to_send),  # ← Actually sent
@@ -2960,7 +3003,7 @@ async def eas_dispatch(
                         log_meta={
                             "device_id": device_id,
                             "collection_id": collection_id,
-                            "response_sync_key": new_sync_key,
+                            "response_sync_key": response_sync_key,
                             "email_count_sent": len(emails_to_send),
                             "has_more": has_more,
                         },
@@ -3292,7 +3335,18 @@ async def eas_dispatch(
         folder_type = "inbox" if collection_id == "1" else "inbox"
 
         email_service = EmailService(db)
-        emails = email_service.get_user_emails(current_user.id, folder_type, limit=1000)
+        # Respect WindowSize for GetItemEstimate-like flows; default to 5 if absent
+        estimate_limit = max(
+            (
+                int(wbxml_params.get("window_size", 5))
+                if "wbxml_params" in locals()
+                else 5
+            ),
+            1,
+        )
+        emails = email_service.get_user_emails(
+            current_user.id, folder_type, limit=estimate_limit
+        )
 
         xml = f"""<?xml version="1.0" encoding="utf-8"?>
 <GetItemEstimate xmlns="GetItemEstimate">
@@ -4012,7 +4066,8 @@ async def sync_emails(
 
         # Get user's emails
         email_service = EmailService(db)
-        emails = email_service.get_user_emails(current_user.id, "inbox", limit=100)
+        # Respect typical preview size
+        emails = email_service.get_user_emails(current_user.id, "inbox", limit=5)
 
         # Create ActiveSync response
         xml_response = create_sync_response(emails)
@@ -4091,7 +4146,8 @@ def get_folder_emails(
     }
 
     folder = folder_map.get(folder_id, "inbox")
-    emails = email_service.get_user_emails(current_user.id, folder, limit=50)
+    # Respect a conservative limit for folder browse
+    emails = email_service.get_user_emails(current_user.id, folder, limit=25)
 
     return {
         "folder_id": folder_id,
