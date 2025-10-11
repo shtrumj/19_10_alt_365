@@ -163,9 +163,9 @@ def _format_synckey(
 
 
 def _select_body_pref(
-    prefs: List[Dict], 
+    prefs: List[Dict],
     is_single_item_fetch: bool,
-    strategy_order: Optional[List[int]] = None
+    strategy_order: Optional[List[int]] = None,
 ) -> tuple[int, int | None]:
     """
     Select the best body preference for ActiveSync.
@@ -181,7 +181,7 @@ def _select_body_pref(
     # CRITICAL FIX: Respect strategy preferences (e.g. iOS needs HTML, not MIME)
     # Apple iOS Mail can't render MIME type 4 properly, especially with international chars
     default_order = strategy_order if strategy_order else [2, 1, 4]
-    
+
     if not prefs:
         # Use strategy's first preference
         preferred_type = default_order[0] if default_order else 2
@@ -196,13 +196,17 @@ def _select_body_pref(
             pref = by_type[body_type]
             return (pref.get("type", 2), pref.get("truncation_size"))
 
-    # Fallback to first client preference
-    if prefs:
-        pref = prefs[0]
-        return (pref.get("type", 2), pref.get("truncation_size"))
+    # CRITICAL FIX: If client didn't request any of our preferred types,
+    # FORCE our most preferred type anyway (e.g., iOS MUST get HTML even if it requests plain text)
+    # This prevents crashes when iOS requests plain text for Hebrew emails
+    forced_type = default_order[0] if default_order else 2
 
-    # Final fallback: use strategy's preferred type
-    return (default_order[0] if default_order else 2, 32768)
+    # Try to get truncation size from any client preference
+    truncation = None
+    if prefs and len(prefs) > 0:
+        truncation = prefs[0].get("truncation_size")
+
+    return (forced_type, truncation if truncation else 32768)
 
 
 def _parse_itemops_fetches(
@@ -1691,9 +1695,9 @@ async def eas_dispatch(
         # Select best body preference using strategy's preference order
         # CRITICAL FIX: Pass strategy preferences to respect iOS HTML-only policy
         body_type_preference, truncation_size = _select_body_pref(
-            body_prefs, 
+            body_prefs,
             is_single_item_fetch,
-            strategy_order=strategy.get_body_type_preference_order()
+            strategy_order=strategy.get_body_type_preference_order(),
         )
         if truncation_size is not None:
             try:

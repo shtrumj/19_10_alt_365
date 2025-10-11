@@ -40,16 +40,19 @@ class IOSStrategy(ActiveSyncStrategy):
 
     def get_body_type_preference_order(self) -> List[int]:
         """
-        iOS prefers HTML over MIME.
+        iOS REQUIRES HTML only.
 
-        CRITICAL FIX: iOS Mail has issues rendering MIME type 4, especially
-        with international characters (Hebrew, etc.). Force HTML (type 2)
-        instead, which renders correctly.
+        CRITICAL FIX: iOS Mail crashes when receiving plain text (type 1) for
+        emails with complex Hebrew content and HTML formatting. Plain text loses
+        93% of content (e.g., 13KB HTML → 972 bytes plain text).
+
+        SOLUTION: Force HTML (type 2) ONLY. Even if the client requests plain text,
+        we must override and send HTML to prevent crashes and content loss.
 
         Returns:
-            [2, 1] - HTML first, then plain text (NO MIME type 4)
+            [2] - HTML ONLY (no plain text, no MIME)
         """
-        return [2, 1]
+        return [2]
 
     def should_use_pending_confirmation(self) -> bool:
         """

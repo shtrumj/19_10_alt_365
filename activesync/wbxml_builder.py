@@ -779,6 +779,17 @@ def _prepare_body_payload(
 
     actual_type = "2" if (content and selected_native == 2 and data_text) else "1"
 
+    # CRITICAL: Following grommunio-sync implementation
+    # Do NOT wrap HTML in complete documents - send fragments as-is
+    # grommunio-sync sends raw HTML fragments, and iOS Mail handles them correctly
+    # when properly encoded in WBXML with correct charset (UTF-8)
+
+    # HTML wrapping DISABLED - testing raw HTML fragments per grommunio-sync
+    # if actual_type == "2" and data_text:
+    #     if not data_text.strip().lower().startswith("<!doctype") and not data_text.strip().lower().startswith("<html"):
+    #         data_text = f"""<!DOCTYPE html>..."""
+    #         estimated_size = str(len(data_text.encode("utf-8")))
+
     content_type = (
         "text/html; charset=utf-8"
         if actual_type == "2"
@@ -970,11 +981,14 @@ def write_fetch_responses(
                 },
             )
 
-        content_type = body_payload.get("content_type")
-        if content_type:
-            w.start(ASB_ContentType)
-            w.write_str(content_type)
-            w.end()
+        # REMOVED: ContentType should NOT be in Body element per MS-ASAIRS spec
+        # MS-ASAIRS § 2.2.2.9: ContentType is for attachments only
+        # Having it in main body may confuse iOS Mail
+        # content_type = body_payload.get("content_type")
+        # if content_type:
+        #     w.start(ASB_ContentType)
+        #     w.write_str(content_type)
+        #     w.end()
         w.end()  # </Body>
         w.start(ASB_NativeBodyType)
         w.write_str(body_payload["native_type"])
