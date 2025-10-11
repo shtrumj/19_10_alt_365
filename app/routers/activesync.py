@@ -2421,16 +2421,32 @@ async def eas_dispatch(
                     else _bump_sync_key(state, db, prefer_uuid_synckey)
                 )
 
-                wbxml_batch = create_sync_response_wbxml(
-                    sync_key=response_sync_key,
-                    emails=email_dicts,
-                    collection_id=collection_id,
-                    window_size=window_size,
-                    more_available=has_more,
-                    class_name="Email",
-                    body_type_preference=body_type_preference,
-                    truncation_size=effective_truncation,
-                )
+                # For initial SyncKey=0, emit header-only Adds (no Body) to match grommunio behavior
+                header_only = True
+                if header_only:
+                    from activesync.wbxml_builder import (
+                        create_sync_response_wbxml_headers_only,
+                    )
+
+                    wbxml_batch = create_sync_response_wbxml_headers_only(
+                        sync_key=response_sync_key,
+                        emails=email_dicts,
+                        collection_id=collection_id,
+                        window_size=window_size,
+                        more_available=has_more,
+                        class_name="Email",
+                    )
+                else:
+                    wbxml_batch = create_sync_response_wbxml(
+                        sync_key=response_sync_key,
+                        emails=email_dicts,
+                        collection_id=collection_id,
+                        window_size=window_size,
+                        more_available=has_more,
+                        class_name="Email",
+                        body_type_preference=body_type_preference,
+                        truncation_size=effective_truncation,
+                    )
                 wbxml = wbxml_batch.payload
 
                 # CRITICAL FIX #26: Stage as PENDING, don't commit yet!

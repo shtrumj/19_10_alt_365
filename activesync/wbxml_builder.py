@@ -1314,11 +1314,7 @@ def build_sync_response(
                     },
                 )
 
-            content_type = body_payload.get("content_type")
-            if content_type:
-                w.start(ASB_ContentType)
-                w.write_str(content_type)
-                w.end()
+            # REMOVED: ContentType must not be in Body (MS-ASAIRS: attachments only)
             w.end()  # </Body>
             # Native body type hint (as Z-Push does)
             w.page(CP_AIRSYNCBASE)
@@ -1335,7 +1331,7 @@ def build_sync_response(
 
         w.end()  # </Commands>
 
-    # Align with grommunio/z-push: place MoreAvailable AFTER Commands
+    # Place MoreAvailable BEFORE Commands (grommunio/z-push behaviour)
     if more_available:
         w.start(AS_MoreAvailable, with_content=False)
 
@@ -1912,11 +1908,7 @@ def create_sync_response_wbxml_with_fetch(
                 # CRITICAL iOS FIX: Type=1/2 MUST use OPAQUE (not STR_I) per iOS requirements
                 w.write_opaque(body_payload["data"].encode("utf-8"))
             w.end()
-            content_type = body_payload.get("content_type")
-            if content_type:
-                w.start(ASB_ContentType)
-                w.write_str(content_type)
-                w.end()
+            # REMOVED: ContentType must not be in Body (MS-ASAIRS: attachments only)
             w.end()  # </Body>
             w.cp(CP_AIRSYNCBASE)
             w.start(ASB_NativeBodyType)
@@ -1929,7 +1921,7 @@ def create_sync_response_wbxml_with_fetch(
             count += 1
         w.end()  # </Commands>
 
-    # Align with grommunio/z-push: place MoreAvailable AFTER Commands
+    # Place MoreAvailable BEFORE Commands (grommunio/z-push behaviour)
     if more_available:
         w.start(AS_MoreAvailable, with_content=False)
 
@@ -2193,3 +2185,120 @@ PR_AllowConsumerEmail = 0x34
 PR_AllowRemoteDesktop = 0x35
 PR_AllowInternetSharing = 0x36
 PR_AccountOnlyRemoteWipe = 0x3B
+
+
+def create_sync_response_wbxml_headers_only(
+    *,
+    sync_key: str,
+    emails: List[Dict[str, Any]],
+    collection_id: str = "1",
+    window_size: int = 25,
+    more_available: bool = False,
+    class_name: str = "Email",
+) -> SyncBatch:
+    """Emit Adds without AirSyncBase:Body (header-only) for initial sync compatibility."""
+    w = WBXMLWriter()
+    w.header()
+
+    w.page(CP_AIRSYNC)
+    w.start(AS_Sync)
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
+
+    w.start(AS_Collections)
+    w.start(AS_Collection)
+    w.start(AS_SyncKey)
+    w.write_str(sync_key)
+    w.end()
+    w.start(AS_CollectionId)
+    w.write_str(collection_id)
+    w.end()
+    w.start(AS_Status)
+    w.write_str("1")
+    w.end()
+    w.start(AS_Class)
+    w.write_str(class_name)
+    w.end()
+
+    count = 0
+    if emails:
+        w.start(AS_Commands)
+        for idx, em in enumerate(emails):
+            if count >= window_size:
+                break
+            server_id = em.get("server_id") or f"{collection_id}:{em.get('id', idx+1)}"
+            subj = str(em.get("subject") or "(no subject)")
+            frm = str(em.get("from") or em.get("sender") or "")
+            to = str(em.get("to") or em.get("recipient") or "")
+            read = "1" if bool(em.get("is_read")) else "0"
+            when = _ensure_utc_z(em.get("created_at"))
+
+            w.cp(CP_AIRSYNC)
+            w.start(AS_Add)
+            w.start(AS_ServerId)
+            w.write_str(server_id)
+            w.end()
+            try:
+                from app.diagnostic_logger import _write_json_line as _dj
+
+                _dj(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_add_server_id",
+                        "server_id": server_id,
+                        "email_id": em.get("id"),
+                        "collection_id": collection_id,
+                    },
+                )
+            except Exception:
+                pass
+
+            w.start(AS_ApplicationData)
+            w.cp(CP_EMAIL)
+            w.start(EM_Subject)
+            w.write_str(subj)
+            w.end()
+            if frm:
+                w.start(EM_From)
+                w.write_str(frm)
+                w.end()
+            if to:
+                w.start(EM_To)
+                w.write_str(to)
+                w.end()
+            if when:
+                w.start(EM_DateReceived)
+                w.write_str(when)
+                w.end()
+            w.start(EM_MessageClass)
+            w.write_str("IPM.Note")
+            w.end()
+            w.start(EM_InternetCPID)
+            w.write_str("65001")
+            w.end()
+            w.start(EM_Read)
+            w.write_str(read)
+            w.end()
+            w.cp(CP_AIRSYNC)
+            w.end()  # </ApplicationData>
+            w.end()  # </Add>
+            count += 1
+        w.end()  # </Commands>
+
+    # Place MoreAvailable BEFORE Commands (grommunio/z-push behaviour)
+    if more_available:
+        w.start(AS_MoreAvailable, with_content=False)
+
+    w.page(CP_AIRSYNC)
+    w.end()
+    w.end()
+    w.end()
+
+    return SyncBatch(
+        response_sync_key=sync_key,
+        payload=w.bytes(),
+        sent_count=count,
+        total_available=len(emails),
+        more_available=more_available,
+    )
