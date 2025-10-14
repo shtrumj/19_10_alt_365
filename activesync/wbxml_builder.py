@@ -12,6 +12,7 @@ Highlights
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
@@ -20,6 +21,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
 from email.utils import format_datetime, formatdate, make_msgid
+from html import unescape
 from typing import Any, Dict, List, Optional
 
 # WBXML control
@@ -223,6 +225,22 @@ def _select_body_content(
         content = html or plain
         native = 2 if html else 1 if plain else 1
     return content, native
+
+
+def _html_to_plain_text(html: str) -> str:
+    """Convert HTML fragments to plain text for BodyPreference Type=1 handling."""
+    if not html:
+        return ""
+
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", html)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div)\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = unescape(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return text.strip()
 
 
 def _truncate_bytes(data: bytes, limit: Optional[int]) -> tuple[bytes, str]:
@@ -706,13 +724,41 @@ def _prepare_body_payload(
         return payload
 
     preference = 1 if body_type == 1 else 2
+    converted_plain_used = False
+    converted_plain_length = 0
 
     # CRITICAL FIX: Use the transcoded MIME content, not pre-stored fields!
     # The html/plain variables were populated by MIME transcoding above
     if preference == 1:
-        # Client wants plain text
-        content = plain or html
-        selected_native = 1 if plain else 2 if html else 1
+        # Client wants plain text; synthesize from HTML if necessary (grommunio parity)
+        if not plain and html:
+            converted_plain = _html_to_plain_text(html)
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "html_to_plain_conversion",
+                    "email_id": em.get("id"),
+                    "source_length": len(html),
+                    "result_length": len(converted_plain),
+                    "result_preview": (
+                        converted_plain[:100] if converted_plain else None
+                    ),
+                },
+            )
+            if converted_plain:
+                plain = converted_plain
+                converted_plain_used = True
+                converted_plain_length = len(converted_plain)
+
+        if plain:
+            content = plain
+            selected_native = 1
+        elif html:
+            content = html
+            selected_native = 2
+        else:
+            content = ""
+            selected_native = 1
     else:
         # Client wants HTML
         content = html or plain
@@ -726,6 +772,10 @@ def _prepare_body_payload(
             "email_id": em.get("id"),
             "preference": preference,
             "selected_native": selected_native,
+            "converted_plain_used": converted_plain_used,
+            "converted_plain_length": (
+                converted_plain_length if converted_plain_used else 0
+            ),
             "has_plain": bool(plain),
             "has_html": bool(html),
             "plain_length": len(plain) if plain else 0,
@@ -1368,17 +1418,17 @@ def build_foldersync_with_folders(
 
     CRITICAL: Pass BASE tokens WITHOUT 0x40 bit - WBXMLWriter.start() adds it automatically!
 
-    Base token values for FolderHierarchy codepage (0x07):
+    Base token values for FolderHierarchy codepage (0x07) aligned to grommunio:
     - FolderSync = 0x16
-    - Status = 0x0B
+    - Status = 0x0C
     - SyncKey = 0x12
     - Changes = 0x0E
-    - Count = 0x07
-    - Add = 0x0C
-    - ServerId = 0x15
-    - ParentId = 0x17
-    - DisplayName = 0x08
-    - Type = 0x0F
+    - Count = 0x17
+    - Add = 0x0F
+    - ServerId = 0x08
+    - ParentId = 0x09
+    - DisplayName = 0x07
+    - Type = 0x0A
     """
     w = WBXMLWriter()
     w.header()
@@ -1386,16 +1436,16 @@ def build_foldersync_with_folders(
     # FolderHierarchy codepage (CP 7)
     CP_FOLDER = 0x07
     FH_FOLDERSYNC = 0x16
-    FH_STATUS = 0x0C
+    FH_STATUS = 0x0C  # Correct per spec/grommunio
     FH_SYNCKEY = 0x12
     FH_CHANGES = 0x0E
-    FH_COUNT = 0x17
-    FH_ADD = 0x0F
-    FH_DISPLAYNAME = 0x07
-    FH_SERVERID = 0x08
-    FH_PARENTID = 0x09
-    FH_TYPE = 0x0A
-    FH_CLASS = 0x06  # CRITICAL: Outlook needs Class to know content type!
+    FH_COUNT = 0x17  # Correct per spec/grommunio
+    FH_ADD = 0x0F  # Correct per spec/grommunio
+    FH_DISPLAYNAME = 0x07  # Correct per spec/grommunio
+    FH_SERVERID = 0x08  # Correct per spec/grommunio
+    FH_PARENTID = 0x09  # Correct per spec/grommunio
+    FH_TYPE = 0x0A  # Correct per spec/grommunio
+    FH_CLASS = 0x06  # Optional but helpful for some clients
 
     w.page(CP_FOLDER)
 
@@ -1464,6 +1514,12 @@ def build_foldersync_with_folders(
         w.start(FH_TYPE)
         w.write_str(str(folder_type))
         w.end()
+
+        # <Class> (optional but improves client recognition)
+        if folder_class:
+            w.start(FH_CLASS)
+            w.write_str(folder_class)
+            w.end()
 
         w.end()  # </Add>
     w.end()  # </Changes>
@@ -2302,3 +2358,12 @@ def create_sync_response_wbxml_headers_only(
         total_available=len(emails),
         more_available=more_available,
     )
+
+
+def _safe_aslog(category: str, event: str, **fields: Any) -> None:
+    try:
+        from app.diagnostic_logger2 import aslog as __aslog  # type: ignore
+
+        __aslog(category, event, **fields)
+    except Exception:
+        return

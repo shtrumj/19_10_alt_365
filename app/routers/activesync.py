@@ -2,6 +2,7 @@ import base64
 import html as html_module
 import json
 import logging
+import random
 import re
 import time
 import traceback
@@ -589,6 +590,11 @@ def _wbxml_response(
     status_code: int = 200,
     log_meta: dict | None = None,
 ) -> Response:
+    """Return WBXML response and write both legacy and split logs.
+
+    Logs to legacy activesync.log for backward compatibility and to
+    split logger (comm/data) for easier analysis.
+    """
     hdrs = dict(headers or {})
     hdrs["Content-Type"] = WBXML_MEDIA_TYPE
     response = Response(
@@ -611,6 +617,23 @@ def _wbxml_response(
     if log_meta:
         log_entry.update(log_meta)
     _write_json_line("activesync/activesync.log", log_entry)
+    _aslog(
+        "comm",
+        "wbxml_response",
+        cmd=cmd,
+        status_code=status_code,
+        content_length=len(payload),
+        device_id=log_meta.get("device_id") if log_meta else None,
+        collection_id=log_meta.get("collection_id") if log_meta else None,
+        response_sync_key=log_meta.get("response_sync_key") if log_meta else None,
+    )
+    _aslog(
+        "data",
+        "wbxml_preview",
+        cmd=cmd,
+        preview_hex=payload[:64].hex(),
+        length=len(payload),
+    )
     return response
 
 
@@ -1008,27 +1031,47 @@ def _check_rate_limit(user_id: int, device_id: str, cmd: str) -> bool:
     return True
 
 
-def _bump_sync_key(
-    state: ActiveSyncState, db: Session, prefer_uuid_synckey: bool = False
-) -> str:
-    current_counter, current_uuid, is_grom = _analyze_synckey(state.sync_key or "0")
-    if current_counter <= 0:
-        current_counter = 1
-    else:
-        current_counter += 1
+def _allocate_sync_key(
+    state: ActiveSyncState,
+    prefer_uuid_synckey: bool = False,
+) -> tuple[str, int]:
+    """
+    Compute the next SyncKey value without mutating committed state.
 
-    new_key, resolved_uuid = _format_synckey(
-        current_counter,
-        existing_uuid=(state.synckey_uuid or current_uuid),
-        prefer_uuid=prefer_uuid_synckey or is_grom or bool(state.synckey_uuid),
+    Grommunio allocates a new SyncKey (UUID + counter) for each batch, but only
+    promotes it to the current key after the client confirms. This helper mirrors
+    that behaviour: it returns the key string and the associated counter while
+    leaving ``state.sync_key`` and ``state.synckey_counter`` untouched. The caller
+    is responsible for staging the returned key in ``state.pending_sync_key`` and
+    committing the transaction.
+    """
+    # If a pending key already exists, reuse it so repeated requests get the same value.
+    if state.pending_sync_key:
+        pending_int, _, _ = _analyze_synckey(state.pending_sync_key)
+        return state.pending_sync_key, pending_int or 0
+
+    # Determine the latest confirmed counter.
+    confirmed_counter = state.synckey_counter or 0
+    server_counter, server_uuid, server_is_uuid = _analyze_synckey(
+        state.sync_key or "0"
+    )
+    if server_counter and server_counter > confirmed_counter:
+        confirmed_counter = server_counter
+
+    # Initial sync or post-reset yields counter = 0; next counter must be 1.
+    next_counter = confirmed_counter + 1 if confirmed_counter > 0 else 1
+
+    base_uuid = state.synckey_uuid or server_uuid
+    next_key, resolved_uuid = _format_synckey(
+        next_counter,
+        existing_uuid=base_uuid,
+        prefer_uuid=prefer_uuid_synckey or server_is_uuid or bool(base_uuid),
     )
 
-    state.synckey_counter = current_counter
-    state.synckey_uuid = resolved_uuid if (prefer_uuid_synckey or is_grom) else None
-    state.sync_key = new_key
-    db.commit()
-    db.refresh(state)
-    return state.sync_key
+    if resolved_uuid and resolved_uuid != state.synckey_uuid:
+        state.synckey_uuid = resolved_uuid
+
+    return next_key, next_counter
 
 
 @router.post("/Microsoft-Server-ActiveSync")
@@ -1097,7 +1140,7 @@ async def eas_dispatch(
 
     device_type_lower = (device.device_type or "").lower()
     is_windows_outlook = device_type_lower.startswith("windowsoutlook")
-    prefer_uuid_synckey = False
+    prefer_uuid_synckey = True
 
     # CRITICAL FIX: Detect client type at TOP of handler, BEFORE any conditional logic
     # This prevents scoping bugs where is_outlook was undefined in conditional blocks
@@ -1130,14 +1173,7 @@ async def eas_dispatch(
     # Use strategy to determine if pending confirmation is needed
     requires_pending_confirmation = strategy.should_use_pending_confirmation()
 
-    if not device.policy_key:
-        device.policy_key = "0"
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-        else:
-            db.refresh(device)
+    # Do not auto-set policy_key to "0"; let Provision path assign a non-zero key
 
     if is_windows_outlook and device.is_provisioned != 1:
         device.policy_key = (
@@ -1180,12 +1216,15 @@ async def eas_dispatch(
             },
         )
 
-    # MS-ASPROV: Follow stored device policy key (final key after provisioning)
-    policy_key_header = (
-        device.policy_key
-        if device.policy_key is not None
-        else ("1234567890" if device.is_provisioned == 1 else "0")
-    )
+    # MS-ASPROV: Use final non-zero key on all responses after provisioning
+    if device.is_provisioned == 1:
+        policy_key_header = (
+            device.policy_key
+            if device.policy_key not in (None, "", "0")
+            else "1234567890"
+        )
+    else:
+        policy_key_header = device.policy_key or "0"
 
     # CRITICAL FIX #31: Pass protocol_version to echo client's request!
     if is_ios26_client:
@@ -1225,6 +1264,80 @@ async def eas_dispatch(
             "body_preview": request_body_for_log[:500],
         },
     )
+
+    # If the client declares X-MS-PolicyKey: 0 (OPTIONS may include it) and this is not Provision,
+    # force Provision with HTTP 449 regardless of server state, mirroring grommunio behavior.
+    client_policy_key_hdr = request.headers.get(
+        "X-MS-PolicyKey"
+    ) or request.headers.get("x-ms-policykey")
+    if cmd != "provision":
+        # If client header is missing/zero but we already issued a non-zero PolicyKey,
+        # soft-allow this command to proceed (align with grommunio observed behavior)
+        if (
+            client_policy_key_hdr in (None, "0")
+            and device.policy_key
+            and device.policy_key != "0"
+        ):
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "provision_soft_allow_header_missing",
+                    "device_id": device_id,
+                    "cmd": cmd,
+                    "server_policy_key": device.policy_key,
+                    "message": "Proceeding despite missing/zero client header; server has non-zero PolicyKey",
+                },
+            )
+            try:
+                # Ensure subsequent response includes the correct policy header
+                headers["X-MS-PolicyKey"] = device.policy_key
+            except Exception:
+                pass
+        elif client_policy_key_hdr == "0" or client_policy_key_hdr is None:
+            # Ensure we have a non-zero server policy key to guide client ACK
+            policy_key_to_use = None
+            try:
+                if device.policy_key and device.policy_key != "0":
+                    policy_key_to_use = device.policy_key
+                else:
+                    import random
+
+                    policy_key_to_use = (
+                        "".join(random.choices("0123456789", k=10)).lstrip("0") or "1"
+                    )
+                    device.policy_key = policy_key_to_use
+                    try:
+                        db.commit()
+                        db.refresh(device)
+                    except Exception:
+                        db.rollback()
+            except Exception:
+                policy_key_to_use = device.policy_key or "0"
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "provisioning_required_client_header",
+                    "device_id": device_id,
+                    "client_policy_key": client_policy_key_hdr or "<none>",
+                    "server_policy_key": policy_key_to_use,
+                    "message": "Client indicates PolicyKey=0 or missing; returning 449 to trigger Provision",
+                },
+            )
+            headers_449 = dict(headers)
+            # Echo non-zero key if we have one to guide client ACK
+            headers_449["X-MS-PolicyKey"] = (
+                policy_key_to_use or headers.get("X-MS-PolicyKey") or "0"
+            )
+            headers_449["Retry-After"] = "1"
+            headers_449["MS-ASProtocolError"] = "1"
+            headers_449["MS-ASProtocolError-Code"] = "DeviceNotProvisioned"
+            headers_449["MS-ASProtocolCommand"] = "Provision"
+            if negotiated_version:
+                headers_449["MS-ASProtocolError-MS-ASProtocolVersion"] = (
+                    negotiated_version
+                )
+            return Response(status_code=449, headers=headers_449)
 
     if not cmd:
         _write_json_line(
@@ -1273,8 +1386,18 @@ async def eas_dispatch(
                 provision_fields["status"] = "1"
                 provision_fields["is_acknowledgement"] = True
 
-        is_acknowledgment = bool(provision_fields.get("is_acknowledgement"))
-        client_policy_key = provision_fields.get("policy_key")
+        # Determine acknowledgment per grommunio behavior: client returns Status=1 and echoes the server-provided PolicyKey, without policy Data
+        client_policy_key = (provision_fields.get("policy_key") or "").strip()
+        client_status = (provision_fields.get("status") or "").strip()
+        has_policy_data = bool(provision_fields.get("has_policy_data"))
+        is_acknowledgment = (
+            client_status == "1"
+            and not has_policy_data
+            and (
+                (device.policy_key and client_policy_key == device.policy_key)
+                or client_policy_key == "0"  # backward-compatible clients
+            )
+        )
 
         _write_json_line(
             "activesync/activesync.log",
@@ -1290,12 +1413,14 @@ async def eas_dispatch(
         )
 
         if is_acknowledgment:
-            final_policy_key = (
-                device.policy_key
-                if device.policy_key not in (None, "", "0")
-                else "1234567890"
-            )
-            device.policy_key = final_policy_key
+            # ACK: finalize provisioning with the stored non-zero policy key
+            final_policy_key = device.policy_key or "1234567890"
+            if final_policy_key in ("", "0"):
+                # Generate a new non-zero numeric policy key as fallback
+                final_policy_key = "".join(
+                    random.choice("0123456789") for _ in range(10)
+                )
+                device.policy_key = final_policy_key
             device.is_provisioned = 1
             try:
                 db.commit()
@@ -1332,8 +1457,11 @@ async def eas_dispatch(
                 },
             )
 
-        # Initial provisioning request: send policy with temporary key 0
-        device.policy_key = "0"
+        # Initial provisioning request: send policy with a non-zero numeric PolicyKey like grommunio
+        generated_key = "".join(random.choice("0123456789") for _ in range(10))
+        if not generated_key or set(generated_key) == {"0"}:
+            generated_key = "1234567890"
+        device.policy_key = generated_key
         device.is_provisioned = 0
         try:
             db.commit()
@@ -1342,9 +1470,41 @@ async def eas_dispatch(
         else:
             db.refresh(device)
 
-        wbxml_payload = build_provision_response(
-            policy_key="0",
-            include_policy_data=True,
+        # Extra diagnostics: mark begin of provision initial build
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "provision_initial_begin",
+                "device_id": device_id,
+                "policy_key": device.policy_key,
+            },
+        )
+
+        try:
+            wbxml_payload = build_provision_response(
+                policy_key=device.policy_key,
+                include_policy_data=True,
+            )
+        except Exception as e:
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "provision_initial_build_error",
+                    "device_id": device_id,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+            raise
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "provision_initial_built",
+                "device_id": device_id,
+                "policy_key": device.policy_key,
+                "wbxml_length": len(wbxml_payload),
+            },
         )
 
         _write_json_line(
@@ -1352,13 +1512,28 @@ async def eas_dispatch(
             {
                 "event": "provision_initial_request",
                 "device_id": device_id,
-                "policy_key": "0",
-                "message": "Sending initial policy with temporary PolicyKey=0.",
+                "policy_key": device.policy_key,
+                "message": "Sending initial policy with non-zero PolicyKey",
             },
         )
 
         headers = dict(headers)
-        headers["X-MS-PolicyKey"] = "0"
+        headers["X-MS-PolicyKey"] = device.policy_key
+        # Extra visibility: log a short WBXML preview for Provision initial
+        try:
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "provision_initial_wbxml",
+                    "device_id": device_id,
+                    "policy_key": device.policy_key,
+                    "wbxml_first20": wbxml_payload[:20].hex(),
+                    "wbxml_length": len(wbxml_payload),
+                },
+            )
+        except Exception:
+            pass
+
         return _wbxml_response(
             wbxml_payload,
             headers,
@@ -1366,45 +1541,113 @@ async def eas_dispatch(
             log_meta={
                 "device_id": device_id,
                 "stage": "initial",
-                "policy_key": "0",
+                "policy_key": device.policy_key,
             },
         )
 
-    # All other commands require that the device has completed the provisioning step above.
-    # EXCEPTION: Skip provisioning for Microsoft Connectivity Analyzer (testing tool)
-    is_microsoft_rca = "TestExchangeConnectivity" in user_agent
-
-    if device.is_provisioned != 1 and not is_microsoft_rca:
+    # Enforce provisioning: any non-Provision command is 449 until device is provisioned
+    if cmd != "provision" and device.is_provisioned != 1:
         _write_json_line(
             "activesync/activesync.log",
             {
                 "event": "provisioning_required",
                 "command": cmd,
                 "device_id": device_id,
-                "message": "Device not provisioned. Sending HTTP 449.",
+                "message": "Device not provisioned. Sending HTTP 449 to trigger Provision.",
             },
         )
         headers_449 = dict(headers)
-        policy_key_449 = device.policy_key or "0"
-        headers_449["X-MS-PolicyKey"] = policy_key_449
+        # Ensure we echo a non-zero numeric PolicyKey to guide the client ACK
+        pk = headers_449.get("X-MS-PolicyKey") or device.policy_key
+        if not pk or pk == "0":
+            import random
+
+            pk = "".join(random.choices("0123456789", k=10)).lstrip("0") or "1"
+            try:
+                device.policy_key = pk
+                db.commit()
+            except Exception:
+                db.rollback()
+        headers_449["X-MS-PolicyKey"] = pk
         headers_449["Retry-After"] = "1"
         headers_449["MS-ASProtocolError"] = "1"
         headers_449["MS-ASProtocolError-Code"] = "DeviceNotProvisioned"
         headers_449["MS-ASProtocolCommand"] = "Provision"
         if negotiated_version:
             headers_449["MS-ASProtocolError-MS-ASProtocolVersion"] = negotiated_version
-        return Response(
-            status_code=449,
-            headers=headers_449,
-        )
+        return Response(status_code=449, headers=headers_449)
 
     if cmd == "foldersync":
+        # Hard gate: if PolicyKey header would be 0, force Provision first
+        try:
+            effective_pk = policy_key_header
+        except Exception:
+            effective_pk = "0"
+        if device.is_provisioned != 1 or effective_pk == "0":
+            if device.policy_key and device.policy_key != "0":
+                # Soft-allow FolderSync if server already has a non-zero PolicyKey
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "foldersync_soft_allow",
+                        "device_id": device_id,
+                        "server_policy_key": device.policy_key,
+                        "effective_client_header": effective_pk,
+                        "reason": "server has non-zero PolicyKey; proceeding",
+                    },
+                )
+                try:
+                    headers["X-MS-PolicyKey"] = device.policy_key
+                except Exception:
+                    pass
+            else:
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "provisioning_required_foldersync_gate",
+                        "device_id": device_id,
+                        "message": "PolicyKey=0 at FolderSync; returning 449 to trigger Provision",
+                    },
+                )
+                hdrs = dict(headers)
+                # Keep non-zero policy key to prompt correct ACK
+                hdrs["X-MS-PolicyKey"] = (
+                    hdrs.get("X-MS-PolicyKey") or device.policy_key or "0"
+                )
+                hdrs["Retry-After"] = "1"
+                hdrs["MS-ASProtocolError"] = "1"
+                hdrs["MS-ASProtocolError-Code"] = "DeviceNotProvisioned"
+                hdrs["MS-ASProtocolCommand"] = "Provision"
+                return Response(status_code=449, headers=hdrs)
         # Microsoft ActiveSync FolderSync implementation according to MS-ASCMD specification
         # Use dedicated state for folder hierarchy (collection_id="0")
         state = _get_or_init_state(db, current_user.id, device_id, "0")
 
-        # Parse WBXML request body to extract actual SyncKey
-        wbxml_params = parse_wbxml_foldersync_request(request_body_bytes)
+        # Log entry into FolderSync handler
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "foldersync_enter",
+                "device_id": device_id,
+                "has_request_body": bool(request_body_bytes),
+                "body_first16_hex": (
+                    request_body_bytes[:16].hex() if request_body_bytes else ""
+                ),
+            },
+        )
+
+        # Parse WBXML request body to extract actual SyncKey (with defensive handling)
+        try:
+            wbxml_params = parse_wbxml_foldersync_request(request_body_bytes)
+        except Exception as e:
+            wbxml_params = None
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "foldersync_parse_error",
+                    "error": str(e),
+                },
+            )
         # CRITICAL FIX: Handle case where parse returns None (malformed WBXML or empty body)
         client_sync_key = (
             wbxml_params.get("sync_key", request.query_params.get("SyncKey", "0"))
@@ -1461,11 +1704,11 @@ async def eas_dispatch(
             old_sync_key = state.sync_key
             new_sync_key, resolved_uuid = _format_synckey(
                 counter=1,
-                existing_uuid=state.synckey_uuid,
-                prefer_uuid=prefer_uuid_synckey,
+                existing_uuid=None,
+                prefer_uuid=False,
             )
             state.sync_key = new_sync_key
-            state.synckey_uuid = resolved_uuid
+            state.synckey_uuid = None
             state.synckey_counter = 1
             try:
                 db.commit()
@@ -1721,10 +1964,10 @@ async def eas_dispatch(
             is_initial_sync=is_initial_sync,
         )
 
-        # Hard cap: During Sync (not Fetch), do not exceed 5KB preview to keep batches small
-        # iOS will fetch full content via Fetch/ItemOperations when needed
-        if effective_truncation is None or effective_truncation > 5120:
-            effective_truncation = 5120
+        # For non-iOS clients, keep previews conservative to avoid oversized batches.
+        if not is_ios:
+            if effective_truncation is None or effective_truncation > 5120:
+                effective_truncation = 5120
 
         _write_json_line(
             "activesync/activesync.log",
@@ -1756,8 +1999,16 @@ async def eas_dispatch(
         if state.synckey_counter != server_key_int:
             state.synckey_counter = server_key_int
 
-        # Self-heal: clear stale pending batches if SyncKey and pending diverged
-        if state.pending_sync_key and state.pending_sync_key != state.sync_key:
+        synced_ids_snapshot = _load_synced_ids(state)
+        has_pending_batch = bool(state.pending_sync_key)
+        has_confirmed_state = state.sync_key not in (None, "0")
+        has_synced_history = (
+            bool(synced_ids_snapshot) or (state.last_synced_email_id or 0) > 0
+        )
+        client_retry_from_zero = False
+
+        # Self-heal: clear stale pending batches only if the committed key has already advanced
+        if state.pending_sync_key:
             pending_int, pending_uuid, pending_is_uuid = _analyze_synckey(
                 state.pending_sync_key
             )
@@ -1767,54 +2018,75 @@ async def eas_dispatch(
             if server_pending_is_uuid and not state.synckey_uuid:
                 state.synckey_uuid = server_uuid_for_pending
 
-            _write_json_line(
-                "activesync/activesync.log",
-                {
-                    "event": "sync_pending_mismatch_reset",
-                    "client_sync_key": client_sync_key,
-                    "server_sync_key": state.sync_key,
-                    "pending_sync_key": state.pending_sync_key,
-                    "pending_ids": _parse_id_list(state.pending_item_ids),
-                    "server_key_int": server_int_for_pending,
-                    "pending_key_int": pending_int,
-                    "message": "Pending batch diverged from persisted SyncKey; clearing staged items to resend cleanly",
-                },
-            )
-            state.pending_sync_key = None
-            state.pending_max_email_id = None
-            state.pending_item_ids = None
-            db.commit()
+            if (
+                server_int_for_pending is not None
+                and pending_int is not None
+                and server_int_for_pending >= pending_int
+                and state.pending_sync_key != state.sync_key
+            ):
+                _write_json_line(
+                    "activesync/activesync.log",
+                    {
+                        "event": "sync_pending_mismatch_reset",
+                        "client_sync_key": client_sync_key,
+                        "server_sync_key": state.sync_key,
+                        "pending_sync_key": state.pending_sync_key,
+                        "pending_ids": _parse_id_list(state.pending_item_ids),
+                        "server_key_int": server_int_for_pending,
+                        "pending_key_int": pending_int,
+                        "message": "Pending batch is older than committed SyncKey; clearing staged items",
+                    },
+                )
+                state.pending_sync_key = None
+                state.pending_max_email_id = None
+                state.pending_item_ids = None
+                db.commit()
 
         # CRITICAL FIX: Handle SyncKey=0 BEFORE any email queries!
         # When client sends SyncKey=0, it means "I have nothing, start fresh"
         # We MUST reset last_synced_email_id BEFORE filtering emails!
         if client_sync_key == "0":
-            previous_server_key = state.sync_key or "0"
-
-            state.synckey_counter = 1
-            state.sync_key, state.synckey_uuid = _format_synckey(
-                state.synckey_counter,
-                existing_uuid=state.synckey_uuid,
-                prefer_uuid=prefer_uuid_synckey,
-            )
-            state.last_synced_email_id = 0  # RESET PAGINATION for first-time sync only
-            state.synced_email_ids = None
-            state.pending_sync_key = None
-            state.pending_max_email_id = None
-            state.pending_item_ids = None
-            db.commit()
-
-            if previous_server_key != state.sync_key:
+            if has_pending_batch or has_confirmed_state or has_synced_history:
+                client_retry_from_zero = True
                 _write_json_line(
                     "activesync/activesync.log",
                     {
-                        "event": "sync_initial_reset_EARLY",
+                        "event": "sync_initial_retry_reuse",
                         "device_id": device_id,
                         "collection_id": collection_id,
-                        "previous_server_key": previous_server_key,
-                        "message": "CRITICAL: Resetting server SyncKey to 1 for fresh client request",
+                        "pending_sync_key": state.pending_sync_key,
+                        "server_sync_key": state.sync_key,
+                        "has_synced_history": has_synced_history,
+                        "message": "Client sent SyncKey=0 but state exists; reusing staged state instead of resetting",
                     },
                 )
+            else:
+                previous_server_key = state.sync_key or "0"
+
+                state.sync_key = "0"
+                state.synckey_counter = 0
+                state.synckey_uuid = None
+                state.last_synced_email_id = (
+                    0  # RESET PAGINATION for first-time sync only
+                )
+                state.synced_email_ids = None
+                state.pending_sync_key = None
+                state.pending_max_email_id = None
+                state.pending_item_ids = None
+                db.commit()
+                synced_ids_snapshot = set()
+
+                if previous_server_key != "0":
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "sync_initial_reset_EARLY",
+                            "device_id": device_id,
+                            "collection_id": collection_id,
+                            "previous_server_key": previous_server_key,
+                            "message": "CRITICAL: Resetting server SyncKey to 0 for fresh client request",
+                        },
+                    )
 
         # CRITICAL: Detect InvalidSyncKey - client and server are out of sync
         # Per expert: "When client sends stale key (e.g. 4) but server is at 190,
@@ -2021,7 +2293,8 @@ async def eas_dispatch(
             # We should ONLY resend pending if client is retrying with a non-zero key.
             # Client is asking for pending if: client==pending OR client==server OR client==pending-1
             is_asking_for_pending = (
-                client_sync_key == state.pending_sync_key  # Exact match
+                client_retry_from_zero
+                or client_sync_key == state.pending_sync_key  # Exact match
                 or client_sync_key == state.sync_key  # Old server key
                 or (
                     client_int_for_retry > 0
@@ -2155,7 +2428,7 @@ async def eas_dispatch(
         email_service = EmailService(db)
 
         # Track which IDs the client already has
-        synced_ids = _load_synced_ids(state)
+        synced_ids = set(synced_ids_snapshot)
         pending_id_list = _parse_id_list(state.pending_item_ids)
         pending_ids = set(pending_id_list)
         last_id = max(synced_ids) if synced_ids else (state.last_synced_email_id or 0)
@@ -2364,7 +2637,6 @@ async def eas_dispatch(
         if client_sync_key == "0":
             # State was already reset BEFORE email query (line 799-813)
             # This ensures last_synced_email_id=0 BEFORE we filter emails
-            response_sync_key = state.sync_key
             is_wbxml_request = len(
                 request_body_bytes
             ) > 0 and request_body_bytes.startswith(b"\x03\x01")
@@ -2413,12 +2685,10 @@ async def eas_dispatch(
                     _email_payload(email, collection_id) for email in emails_to_send
                 ]
 
-                # Initial sync: Always respond with the server key (0→1) even if there are more items.
-                # Echoing the client's 0 causes iOS to loop. Grommunio/Z-Push respond with 1 and set MoreAvailable.
-                response_sync_key = (
-                    state.sync_key
-                    if state.sync_key
-                    else _bump_sync_key(state, db, prefer_uuid_synckey)
+                # Allocate the next SyncKey (Grommunio behaviour) and stage it until the client confirms.
+                response_sync_key, next_counter = _allocate_sync_key(
+                    state,
+                    prefer_uuid_synckey=prefer_uuid_synckey,
                 )
 
                 # For initial SyncKey=0, emit header-only Adds (no Body) to match grommunio behavior
@@ -2451,6 +2721,18 @@ async def eas_dispatch(
 
                 # CRITICAL FIX #26: Stage as PENDING, don't commit yet!
                 # Expert: "Only commit when client echoes back the SyncKey"
+                sent_ids: list[int] = []
+                if requires_pending_confirmation:
+                    state.pending_sync_key = response_sync_key
+                    state.pending_max_email_id = None
+                    state.pending_item_ids = None
+                else:
+                    state.pending_sync_key = None
+                    state.pending_max_email_id = None
+                    state.pending_item_ids = None
+                    state.sync_key = response_sync_key
+                    state.synckey_counter = next_counter
+
                 if emails_to_send:
                     max_sent_id = max(e.id for e in emails_to_send)
                     sent_ids = [e.id for e in emails_to_send]
@@ -2476,16 +2758,12 @@ async def eas_dispatch(
                                 "message": "Windows Outlook client does not confirm pending batches; committed immediately",
                             },
                         )
+                elif requires_pending_confirmation:
+                    # Pending batch with no items (e.g., initial empty Outlook response)
+                    state.pending_max_email_id = None
+                    state.pending_item_ids = None
 
-                # CRITICAL FIX: Update state.sync_key BEFORE commit!
-                # Without this, state stays at 0 and client gets stuck in loop
-                state.sync_key = response_sync_key
-                if prefer_uuid_synckey and hasattr(state, "synckey_counter"):
-                    state.synckey_counter = (
-                        _analyze_synckey(response_sync_key)[0] or state.synckey_counter
-                    )
-
-                # Commit PENDING state (not last_synced_email_id yet!)
+                # Commit the staged state (pending or autocommitted)
                 db.commit()
 
                 _write_json_line(
@@ -2646,19 +2924,30 @@ async def eas_dispatch(
             ) or has_more_flag
 
             if has_collection_changes:
-                state.synckey_counter = client_counter + 1
+                response_sync_key, next_counter = _allocate_sync_key(
+                    state,
+                    prefer_uuid_synckey=prefer_uuid_synckey
+                    or client_key_is_uuid
+                    or bool(state.synckey_uuid),
+                )
+                new_counter_value = next_counter
+                if requires_pending_confirmation:
+                    state.pending_sync_key = response_sync_key
+                    state.pending_max_email_id = None
+                    state.pending_item_ids = None
+                else:
+                    state.pending_sync_key = None
+                    state.pending_max_email_id = None
+                    state.pending_item_ids = None
+                    state.sync_key = response_sync_key
+                    state.synckey_counter = next_counter
             else:
-                state.synckey_counter = client_counter  # Keep same key if only Fetch
-
-            response_sync_key, resolved_uuid = _format_synckey(
-                state.synckey_counter,
-                existing_uuid=state.synckey_uuid or client_key_uuid,
-                prefer_uuid=prefer_uuid_synckey
-                or client_key_is_uuid
-                or bool(state.synckey_uuid),
-            )
-            state.sync_key = response_sync_key  # Persist the chosen key
-            state.synckey_uuid = resolved_uuid
+                response_sync_key = state.sync_key
+                new_counter_value = state.synckey_counter or client_counter
+                state.synckey_counter = new_counter_value
+                state.pending_sync_key = None
+                state.pending_max_email_id = None
+                state.pending_item_ids = None
 
             # Sanity trace: explicit log when fetch-only (no collection changes)
             if not has_collection_changes and fetched_emails:
@@ -2680,7 +2969,7 @@ async def eas_dispatch(
                     "client_sync_key": client_sync_key,
                     "response_sync_key": response_sync_key,
                     "client_counter": client_counter,
-                    "new_counter": state.synckey_counter,
+                    "new_counter": new_counter_value,
                     "email_count": add_count,
                     "fetch_count": len(fetch_ids) if fetch_ids else 0,
                     "has_collection_changes": has_collection_changes,
@@ -2978,10 +3267,33 @@ async def eas_dispatch(
                         # Paging in progress: echo client's key (no advance)
                         response_sync_key = state.sync_key
                     else:
-                        # Final batch: advance SyncKey
-                        response_sync_key = _bump_sync_key(
-                            state, db, prefer_uuid_synckey
+                        # Final batch: allocate a new SyncKey and stage/commit per client requirements
+                        response_sync_key, next_counter = _allocate_sync_key(
+                            state,
+                            prefer_uuid_synckey=prefer_uuid_synckey,
                         )
+                        if requires_pending_confirmation:
+                            state.pending_sync_key = response_sync_key
+                            state.pending_max_email_id = (
+                                max(e.id for e in emails_to_send)
+                                if emails_to_send
+                                else None
+                            )
+                            state.pending_item_ids = (
+                                json.dumps([e.id for e in emails_to_send])
+                                if emails_to_send
+                                else None
+                            )
+                        else:
+                            state.pending_sync_key = None
+                            state.pending_max_email_id = None
+                            state.pending_item_ids = None
+                            state.sync_key = response_sync_key
+                            state.synckey_counter = next_counter
+                            if emails_to_send:
+                                synced_ids = _load_synced_ids(state)
+                                synced_ids.update(e.id for e in emails_to_send)
+                                _store_synced_ids(state, synced_ids)
 
                     wbxml_batch = create_sync_response_wbxml(
                         sync_key=response_sync_key,
@@ -2996,6 +3308,8 @@ async def eas_dispatch(
                         truncation_size=effective_truncation,
                     )
                     wbxml = wbxml_batch.payload
+                    if not has_more:
+                        db.commit()
                     _write_json_line(
                         "activesync/activesync.log",
                         {
@@ -3083,7 +3397,29 @@ async def eas_dispatch(
             # Graceful approach: Send current emails with next sync key to catch up client
             # Don't force reset - instead, send current state to get client caught up
             sync_gap = server_key_int - client_key_int
-            new_sync_key = _bump_sync_key(state, db, prefer_uuid_synckey)
+            new_sync_key, next_counter = _allocate_sync_key(
+                state,
+                prefer_uuid_synckey=prefer_uuid_synckey,
+            )
+            if requires_pending_confirmation:
+                state.pending_sync_key = new_sync_key
+                state.pending_max_email_id = (
+                    max(e.id for e in emails) if emails else None
+                )
+                state.pending_item_ids = (
+                    json.dumps([e.id for e in emails]) if emails else None
+                )
+            else:
+                state.pending_sync_key = None
+                state.pending_max_email_id = None
+                state.pending_item_ids = None
+                state.sync_key = new_sync_key
+                state.synckey_counter = next_counter
+                if emails:
+                    synced_ids = _load_synced_ids(state)
+                    synced_ids.update(e.id for e in emails)
+                    _store_synced_ids(state, synced_ids)
+            db.commit()
 
             is_wbxml_request = len(
                 request_body_bytes

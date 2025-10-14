@@ -35,8 +35,8 @@ class IOSStrategy(ActiveSyncStrategy):
         return 50
 
     def get_max_window_size(self) -> int:
-        """Cap iOS batches aggressively to avoid oversized responses"""
-        return 5
+        """Allow iOS to request up to 100 items per batch (grommunio default)"""
+        return 100
 
     def get_body_type_preference_order(self) -> List[int]:
         """

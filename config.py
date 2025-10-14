@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,3 +20,8 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "1025"))
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
+
+# ActiveSync logging flags
+AS_LOG_SPLIT = os.getenv("AS_LOG_SPLIT", "1") not in ("0", "false", "False")
+AS_REDACT = os.getenv("AS_REDACT", "0") in ("1", "true", "True")
+AS_MAX_WINDOW_SIZE = int(os.getenv("AS_MAX_WINDOW_SIZE", "25"))
