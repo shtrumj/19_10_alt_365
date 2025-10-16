@@ -1270,74 +1270,59 @@ async def eas_dispatch(
     client_policy_key_hdr = request.headers.get(
         "X-MS-PolicyKey"
     ) or request.headers.get("x-ms-policykey")
+
+    # Strict policy gating: if client header is missing/zero or mismatched, force Provision (grommunio parity)
     if cmd != "provision":
-        # If client header is missing/zero but we already issued a non-zero PolicyKey,
-        # soft-allow this command to proceed (align with grommunio observed behavior)
-        if (
-            client_policy_key_hdr in (None, "0")
-            and device.policy_key
-            and device.policy_key != "0"
-        ):
+        server_has_key = bool(device.policy_key) and device.policy_key not in ("", "0")
+        client_missing_or_zero = client_policy_key_hdr in (None, "0")
+        client_mismatch = server_has_key and client_policy_key_hdr not in (
+            device.policy_key,
+        )
+        needs_provision = (
+            (not server_has_key)
+            or client_missing_or_zero
+            or client_mismatch
+            or device.is_provisioned != 1
+        )
+        if needs_provision:
             _write_json_line(
                 "activesync/activesync.log",
                 {
-                    "event": "provision_soft_allow_header_missing",
-                    "device_id": device_id,
-                    "cmd": cmd,
-                    "server_policy_key": device.policy_key,
-                    "message": "Proceeding despite missing/zero client header; server has non-zero PolicyKey",
-                },
-            )
-            try:
-                # Ensure subsequent response includes the correct policy header
-                headers["X-MS-PolicyKey"] = device.policy_key
-            except Exception:
-                pass
-        elif client_policy_key_hdr == "0" or client_policy_key_hdr is None:
-            # Ensure we have a non-zero server policy key to guide client ACK
-            policy_key_to_use = None
-            try:
-                if device.policy_key and device.policy_key != "0":
-                    policy_key_to_use = device.policy_key
-                else:
-                    import random
-
-                    policy_key_to_use = (
-                        "".join(random.choices("0123456789", k=10)).lstrip("0") or "1"
-                    )
-                    device.policy_key = policy_key_to_use
-                    try:
-                        db.commit()
-                        db.refresh(device)
-                    except Exception:
-                        db.rollback()
-            except Exception:
-                policy_key_to_use = device.policy_key or "0"
-
-            _write_json_line(
-                "activesync/activesync.log",
-                {
-                    "event": "provisioning_required_client_header",
+                    "event": "provisioning_required",
+                    "command": cmd,
                     "device_id": device_id,
                     "client_policy_key": client_policy_key_hdr or "<none>",
-                    "server_policy_key": policy_key_to_use,
-                    "message": "Client indicates PolicyKey=0 or missing; returning 449 to trigger Provision",
+                    "server_policy_key": device.policy_key or "0",
+                    "reason": {
+                        "server_has_key": server_has_key,
+                        "client_missing_or_zero": client_missing_or_zero,
+                        "client_mismatch": client_mismatch,
+                        "is_provisioned": device.is_provisioned,
+                    },
                 },
             )
-            headers_449 = dict(headers)
-            # Echo non-zero key if we have one to guide client ACK
-            headers_449["X-MS-PolicyKey"] = (
-                policy_key_to_use or headers.get("X-MS-PolicyKey") or "0"
-            )
-            headers_449["Retry-After"] = "1"
-            headers_449["MS-ASProtocolError"] = "1"
-            headers_449["MS-ASProtocolError-Code"] = "DeviceNotProvisioned"
-            headers_449["MS-ASProtocolCommand"] = "Provision"
-            if negotiated_version:
-                headers_449["MS-ASProtocolError-MS-ASProtocolVersion"] = (
-                    negotiated_version
+            # Ensure we echo a non-zero numeric PolicyKey to guide the client ACK
+            hdrs_449 = dict(headers)
+            effective_pk = device.policy_key
+            if not effective_pk or effective_pk == "0":
+                import random
+
+                effective_pk = (
+                    "".join(random.choices("0123456789", k=10)).lstrip("0") or "1"
                 )
-            return Response(status_code=449, headers=headers_449)
+                try:
+                    device.policy_key = effective_pk
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            hdrs_449["X-MS-PolicyKey"] = effective_pk
+            hdrs_449["Retry-After"] = "1"
+            hdrs_449["MS-ASProtocolError"] = "1"
+            hdrs_449["MS-ASProtocolError-Code"] = "DeviceNotProvisioned"
+            hdrs_449["MS-ASProtocolCommand"] = "Provision"
+            if negotiated_version:
+                hdrs_449["MS-ASProtocolError-MS-ASProtocolVersion"] = negotiated_version
+            return Response(status_code=449, headers=hdrs_449)
 
     if not cmd:
         _write_json_line(
