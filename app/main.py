@@ -21,6 +21,7 @@ from .queue_processor import queue_processor
 from .routers import (
     auth,
     calendar,
+    caldav_carddav,
     contacts,
     debug,
     deep_debug,
@@ -79,6 +80,7 @@ app.include_router(queue.router)
 app.include_router(debug.router)
 app.include_router(websocket_simple.router)
 app.include_router(ews.router)
+app.include_router(caldav_carddav.router)
 app.include_router(mapihttp.router)
 app.include_router(mapihttp.root_router)
 app.include_router(oab.router)

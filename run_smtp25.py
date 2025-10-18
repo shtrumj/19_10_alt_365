@@ -21,6 +21,7 @@ from app.email_queue import Base as QueueBase
 from app.queue_processor import queue_processor
 from app.routers import (
     auth,
+    caldav_carddav,
     autodiscover,
     calendar,
     contacts,
@@ -86,6 +87,8 @@ app.include_router(ws_router.router)
 app.include_router(autodiscover.router)
 # EWS SOAP endpoint
 app.include_router(ews.router)
+# CalDAV/CardDAV
+app.include_router(caldav_carddav.router)
 # MAPI/HTTP stubs
 app.include_router(mapihttp.router)
 app.include_router(mapihttp.root_router)
