@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..auth import authenticate_user
 from ..database import Email, User, get_db
 from ..diagnostic_logger import log_ews
+from ..email_delivery import email_delivery
 
 router = APIRouter(prefix="/EWS", tags=["ews"])
 
@@ -284,8 +285,11 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             import re
 
             requested_ids = re.findall(r"DistinguishedFolderId\s+Id=\"([^\"]+)\"", text)
-            if not requested_ids:
-                requested_ids = ["inbox"]
+            folder_ids = re.findall(r"FolderId\s+Id=\"(DF_[^\"]+)\"", text)
+            requested_from_folder_ids = [fid[3:] for fid in folder_ids]
+            all_ids = requested_ids + requested_from_folder_ids
+            if not all_ids:
+                all_ids = ["inbox"]
             display_map = {
                 "msgfolderroot": "Root",
                 "inbox": "Inbox",
@@ -306,8 +310,8 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 if fid == "calendar":
                     return f'<t:CalendarFolder xmlns:t="{EWS_NS_TYPES}"><t:FolderId Id="DF_calendar" ChangeKey="0"/><t:ParentFolderId Id="DF_root" ChangeKey="0"/><t:FolderClass>IPF.Appointment</t:FolderClass><t:DisplayName>{name}</t:DisplayName><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount><t:UnreadCount>0</t:UnreadCount></t:CalendarFolder>'
                 if fid == "msgfolderroot":
-                    # Advertise child count so clients attempt discovery
-                    return f'<t:Folder><t:FolderId Id="DF_root" ChangeKey="0"/><t:DisplayName>{name}</t:DisplayName><t:ChildFolderCount>2</t:ChildFolderCount></t:Folder>'
+                    # Advertise accurate child count so clients show full tree
+                    return f'<t:Folder><t:FolderId Id="DF_root" ChangeKey="0"/><t:DisplayName>{name}</t:DisplayName><t:ChildFolderCount>9</t:ChildFolderCount></t:Folder>'
                 # add basic counts; compute inbox total from DB
                 total = 0
                 if fid == "inbox":
@@ -316,6 +320,13 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                             db.query(Email)
                             .filter(Email.recipient_id == user.id)
                             .count()
+                        )
+                    except Exception:
+                        total = 0
+                elif fid == "sentitems":
+                    try:
+                        total = (
+                            db.query(Email).filter(Email.sender_id == user.id).count()
                         )
                     except Exception:
                         total = 0
@@ -340,7 +351,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                         f"<m:Folders>{folder_xml(fid)}</m:Folders>"
                         f"</m:GetFolderResponseMessage>"
                     )
-                    for fid in requested_ids
+                    for fid in all_ids
                 ]
             )
             body = (
@@ -429,13 +440,14 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             mfolder = re.search(r'<t:FolderId[^>]*Id="([^"]+)"', text)
             folder_id = mfolder.group(1) if mfolder else "DF_inbox"
 
-            emails = (
-                db.query(Email)
-                .filter(Email.recipient_id == user.id)
-                .order_by(Email.created_at.desc())
-                .limit(10)
-                .all()
-            )
+            # Select emails based on target folder
+            query = db.query(Email)
+            if folder_id.endswith("sentitems") or folder_id == "DF_sentitems":
+                query = query.filter(Email.sender_id == user.id)
+            else:
+                # Default to Inbox semantics
+                query = query.filter(Email.recipient_id == user.id)
+            emails = query.order_by(Email.created_at.desc()).limit(10).all()
             creates = "".join(
                 [
                     (
@@ -501,11 +513,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                             f"<t:ToRecipients><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:EmailAddress></t:Mailbox></t:ToRecipients>",
                             f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>",
                             "<t:HasAttachments>false</t:HasAttachments>",
-                            (
-                                f"<t:Body BodyType=\"HTML\">{_xml(getattr(e, 'body_html', None))}</t:Body>"
-                                if getattr(e, "body_html", None)
-                                else f"<t:Body BodyType=\"Text\">{_xml(getattr(e, 'body', None) or '')}</t:Body>"
-                            ),
+                            # Body omitted in this path to avoid nested f-string pitfalls; GetItem returns Body
                             f"<t:InternetMessageId>&lt;ITEM_{e.id}@local&gt;</t:InternetMessageId>",
                             (
                                 (
@@ -600,13 +608,126 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             )
             return Response(content=soap_envelope(body), media_type="text/xml")
         if "CreateItem" in text or "SendItem" in text:
-            # Acknowledge success; real send is future work
+            import asyncio
+            import re
+            from email.parser import Parser
+
+            # Disposition: SendOnly, SaveOnly, SendAndSaveCopy
+            mdisp = re.search(r'MessageDisposition="([^"]+)"', text)
+            disposition = (mdisp.group(1).lower() if mdisp else "").strip()
+
+            # Target folder for saved copy (default Sent Items)
+            m_saved = re.search(
+                r"<SavedItemFolderId>.*?<t:(?:FolderId|DistinguishedFolderId)[^>]*Id=\"([^\"]+)\"",
+                text,
+                re.S,
+            )
+            target_folder = m_saved.group(1) if m_saved else "sentitems"
+            folder_xml_id = (
+                target_folder
+                if target_folder.startswith("DF_")
+                else f"DF_{target_folder}"
+            )
+
+            # Extract MimeContent
+            mmime = re.search(r"<t:MimeContent>([\s\S]*?)</t:MimeContent>", text)
+            new_item_xml = ""
+            queued_message_id = None
+            if disposition in ("saveonly", "sendandsavecopy") and mmime:
+                try:
+                    raw_b64 = mmime.group(1).strip()
+                    raw_mime = base64.b64decode(raw_b64).decode(
+                        "utf-8", errors="ignore"
+                    )
+                    msg = Parser().parsestr(raw_mime)
+                    subj = msg.get("Subject", "")
+                    to_addr = msg.get("To", "")
+
+                    body_text = ""
+                    body_html = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            ctype = part.get_content_type()
+                            payload = part.get_payload(decode=True)
+                            if (
+                                ctype == "text/html"
+                                and not body_html
+                                and payload is not None
+                            ):
+                                body_html = payload.decode(errors="ignore")
+                            if (
+                                ctype == "text/plain"
+                                and not body_text
+                                and payload is not None
+                            ):
+                                body_text = payload.decode(errors="ignore")
+                    else:
+                        payload = msg.get_payload(decode=True)
+                        if payload is not None:
+                            body_text = payload.decode(errors="ignore")
+
+                    email_row = Email(
+                        subject=subj or "(no subject)",
+                        body=body_text or None,
+                        body_html=body_html or None,
+                        mime_content=raw_mime,
+                        mime_content_type=msg.get_content_type(),
+                        sender_id=user.id,
+                        recipient_id=None,
+                        is_external=True,
+                        external_recipient=to_addr,
+                        external_sender=user.email,
+                    )
+                    db.add(email_row)
+                    db.commit()
+                    db.refresh(email_row)
+                    new_item_xml = (
+                        f'<t:Message><t:ItemId Id="ITEM_{email_row.id}" ChangeKey="0"/>'
+                        f'<t:ParentFolderId Id="{folder_xml_id}" ChangeKey="0"/></t:Message>'
+                    )
+                except Exception:
+                    db.rollback()
+
+            # If the request asked to send, queue it for external delivery
+            try:
+                if (disposition in ("sendonly", "sendandsavecopy")) and mmime:
+                    raw_b64 = mmime.group(1).strip()
+                    raw_mime = base64.b64decode(raw_b64).decode(
+                        "utf-8", errors="ignore"
+                    )
+                    msg = Parser().parsestr(raw_mime)
+                    subj = msg.get("Subject", "")
+                    to_addr = (msg.get("To", "") or "").split(",")[0].strip()
+                    body_text = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                payload = part.get_payload(decode=True)
+                                if payload is not None:
+                                    body_text = payload.decode(errors="ignore")
+                                    break
+                    else:
+                        payload = msg.get_payload(decode=True)
+                        if payload is not None:
+                            body_text = payload.decode(errors="ignore")
+
+                    queued_message_id = email_delivery.queue_email(
+                        sender_email=user.email,
+                        recipient_email=to_addr,
+                        subject=subj or "(no subject)",
+                        body=body_text or "",
+                    )
+                    # Kick the delivery loop immediately (best-effort)
+                    await email_delivery.process_queue(db)
+            except Exception:
+                pass
+
             body = (
-                f'<m:CreateItemResponse xmlns:m="{EWS_NS_MESSAGES}">'
+                f'<m:CreateItemResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
                 f"<m:ResponseMessages>"
                 f'<m:CreateItemResponseMessage ResponseClass="Success">'
                 f"<m:ResponseCode>NoError</m:ResponseCode>"
-                f"<m:Items/>"
+                f"<m:Items>{new_item_xml}</m:Items>"
                 f"</m:CreateItemResponseMessage>"
                 f"</m:ResponseMessages>"
                 f"</m:CreateItemResponse>"
