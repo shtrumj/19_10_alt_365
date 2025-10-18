@@ -97,15 +97,13 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
         )
 
         text = raw.decode("utf-8", errors="ignore")
+
         # Naive routing based on method names in SOAP
         def _xml(s: str) -> str:
             if s is None:
                 return ""
             return (
-                str(s)
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
+                str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             )
 
         def _as_email(val, fallback: str = "") -> str:
@@ -121,6 +119,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 return fallback or str(val)
             except Exception:
                 return fallback
+
         if "FindFolder" in text or "<m:FindFolder" in text:
             # Return a shallow listing of default folders under msgfolderroot
             # Include mail, contacts, and calendar folders with minimal metadata
@@ -144,12 +143,12 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 + f_mail("junkemail", "Junk Email")
                 + f_mail("outbox", "Outbox")
                 + f_mail("archive", "Archive")
-                + f"<t:ContactsFolder>"
+                + "<t:ContactsFolder>"
                 f'<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
                 f"<t:DisplayName>Contacts</t:DisplayName>"
                 f"<t:FolderClass>IPF.Contact</t:FolderClass>"
                 f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
-                f"</t:ContactsFolder>" + f"<t:CalendarFolder>"
+                f"</t:ContactsFolder>" + "<t:CalendarFolder>"
                 f'<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
                 f"<t:DisplayName>Calendar</t:DisplayName>"
                 f"<t:FolderClass>IPF.Appointment</t:FolderClass>"
@@ -248,19 +247,23 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 else:
                     items_xml = "".join(
                         [
-                            f'<t:Message xmlns:t="{EWS_NS_TYPES}">'
-                            f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>'
-                            f"<t:Subject>{(e.subject or '').replace('&','&amp;')}</t:Subject>"
-                            f"<t:DateTimeReceived>{(e.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') if getattr(e,'created_at',None) else '')}</t:DateTimeReceived>"
-                            f"<t:ItemClass>IPM.Note</t:ItemClass>"
-                            f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>"
-                            f"<t:HasAttachments>false</t:HasAttachments>"
-                            f"<t:ParentFolderId Id=\"DF_inbox\" ChangeKey=\"0\"/>"
-                            f"<t:From><t:Mailbox><t:EmailAddress>{(getattr(e,'sender_email', None) or getattr(e,'external_sender', '') or '').replace('&','&amp;')}</t:EmailAddress></t:Mailbox></t:From>"
-                            f"</t:Message>"
+                            (
+                                f'<t:Message xmlns:t="{EWS_NS_TYPES}">'
+                                f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>'
+                                f"<t:Subject>{(e.subject or '').replace('&','&amp;')}</t:Subject>"
+                                f"<t:DateTimeReceived>{(e.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') if getattr(e,'created_at',None) else '')}</t:DateTimeReceived>"
+                                f"<t:ItemClass>IPM.Note</t:ItemClass>"
+                                f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>"
+                                f"<t:HasAttachments>false</t:HasAttachments>"
+                                f'<t:ParentFolderId Id="DF_inbox" ChangeKey="0"/>'
+                                f"<t:From><t:Mailbox><t:EmailAddress>{(getattr(e,'sender_email', None) or getattr(e,'external_sender', '') or '').replace('&','&amp;')}</t:EmailAddress></t:Mailbox></t:From>"
+                                f"</t:Message>"
+                            )
                             for e in emails
                         ]
                     )
+            if not items_xml:
+                items_xml = ""
             body = (
                 f'<m:FindItemResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
                 f"<m:ResponseMessages>"
@@ -472,6 +475,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             def iso(dt):
                 return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else ""
 
+            wants_mime = "<t:IncludeMimeContent>true</t:IncludeMimeContent>" in text
             ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
             emails = (
                 db.query(Email)
@@ -483,27 +487,82 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             )
             items_xml = "".join(
                 [
-                    (
-                        f'<t:Message xmlns:t="{EWS_NS_TYPES}">'
-                        f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>'
-                        f"<t:Subject>{_xml(getattr(e, 'subject', ''))}</t:Subject>"
-                        f"<t:DateTimeSent>{iso(getattr(e, 'created_at', None))}</t:DateTimeSent>"
-                        f"<t:DateTimeReceived>{iso(getattr(e, 'created_at', None))}</t:DateTimeReceived>"
-                        f"<t:ItemClass>IPM.Note</t:ItemClass>"
-                        f"<t:Size>{getattr(e, 'size', 0) or 0}</t:Size>"
-                        f"<t:From><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:From>"
-                        f"<t:Sender><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:Sender>"
-                        f"<t:ToRecipients><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:EmailAddress></t:Mailbox></t:ToRecipients>"
-                        f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>"
-                        f"<t:HasAttachments>false</t:HasAttachments>"
-                        f"<t:InternetMessageId>&lt;ITEM_{e.id}@local&gt;</t:InternetMessageId>"
-                        f"<t:InternetMessageHeaders>"
-                        f'<t:InternetMessageHeader HeaderName="X-Server">365-Email-System</t:InternetMessageHeader>'
-                        f"<t:InternetMessageHeader HeaderName=\"From\">{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:InternetMessageHeader>"
-                        f"<t:InternetMessageHeader HeaderName=\"To\">{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:InternetMessageHeader>"
-                        f"<t:InternetMessageHeader HeaderName=\"Subject\">{_xml(getattr(e, 'subject', ''))}</t:InternetMessageHeader>"
-                        f"</t:InternetMessageHeaders>"
-                        f"</t:Message>"
+                    "".join(
+                        [
+                            f'<t:Message xmlns:t="{EWS_NS_TYPES}">',
+                            f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>',
+                            f"<t:Subject>{_xml(getattr(e, 'subject', ''))}</t:Subject>",
+                            f"<t:DateTimeSent>{iso(getattr(e, 'created_at', None))}</t:DateTimeSent>",
+                            f"<t:DateTimeReceived>{iso(getattr(e, 'created_at', None))}</t:DateTimeReceived>",
+                            "<t:ItemClass>IPM.Note</t:ItemClass>",
+                            f"<t:Size>{getattr(e, 'size', 0) or 0}</t:Size>",
+                            f"<t:From><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:From>",
+                            f"<t:Sender><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:Sender>",
+                            f"<t:ToRecipients><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:EmailAddress></t:Mailbox></t:ToRecipients>",
+                            f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>",
+                            "<t:HasAttachments>false</t:HasAttachments>",
+                            (
+                                f"<t:Body BodyType=\"HTML\">{_xml(getattr(e, 'body_html', None))}</t:Body>"
+                                if getattr(e, "body_html", None)
+                                else f"<t:Body BodyType=\"Text\">{_xml(getattr(e, 'body', None) or '')}</t:Body>"
+                            ),
+                            f"<t:InternetMessageId>&lt;ITEM_{e.id}@local&gt;</t:InternetMessageId>",
+                            (
+                                (
+                                    "<t:MimeContent>"
+                                    + __import__("base64")
+                                    .b64encode(
+                                        (
+                                            "MIME-Version: 1.0\r\n"
+                                            + "Date: "
+                                            + iso(getattr(e, "created_at", None))
+                                            + "\r\n"
+                                            + "From: "
+                                            + (
+                                                getattr(e, "sender_email", None)
+                                                or getattr(e, "external_sender", "")
+                                                or ""
+                                            )
+                                            + "\r\n"
+                                            + "To: "
+                                            + (
+                                                getattr(e, "recipient_email", None)
+                                                or getattr(e, "external_recipient", "")
+                                                or getattr(user, "email", "")
+                                            )
+                                            + "\r\n"
+                                            + "Subject: "
+                                            + (getattr(e, "subject", "") or "")
+                                            + "\r\n"
+                                            + "Content-Type: "
+                                            + (
+                                                "text/html"
+                                                if getattr(e, "body_html", None)
+                                                else "text/plain"
+                                            )
+                                            + "; charset=utf-8\r\n"
+                                            + "Content-Transfer-Encoding: 8bit\r\n\r\n"
+                                            + (
+                                                getattr(e, "body_html", None)
+                                                if getattr(e, "body_html", None)
+                                                else (getattr(e, "body", None) or "")
+                                            )
+                                        ).encode("utf-8")
+                                    )
+                                    .decode("ascii")
+                                    + "</t:MimeContent>"
+                                )
+                                if wants_mime
+                                else ""
+                            ),
+                            "<t:InternetMessageHeaders>",
+                            '<t:InternetMessageHeader HeaderName="X-Server">365-Email-System</t:InternetMessageHeader>',
+                            f"<t:InternetMessageHeader HeaderName=\"From\">{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:InternetMessageHeader>",
+                            f"<t:InternetMessageHeader HeaderName=\"To\">{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:InternetMessageHeader>",
+                            f"<t:InternetMessageHeader HeaderName=\"Subject\">{_xml(getattr(e, 'subject', ''))}</t:InternetMessageHeader>",
+                            "</t:InternetMessageHeaders>",
+                            "</t:Message>",
+                        ]
                     )
                     for e in emails
                 ]
