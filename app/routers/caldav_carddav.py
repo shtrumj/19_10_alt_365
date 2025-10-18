@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import authenticate_user
 from ..database import CalendarEvent, Contact, get_db
+from ..diagnostic_logger import log_ews
 
 router = APIRouter(prefix="", tags=["caldav-carddav"])  # mounted directly
 
@@ -84,6 +85,23 @@ async def carddav_options():
 @router.api_route("/carddav/addressbook/", methods=["PROPFIND"])
 async def carddav_propfind(request: Request):
     # Minimal multistatus describing the addressbook collection
+    # Challenge for Basic if missing
+    try:
+        log_ews(
+            "dav_propfind",
+            {
+                "path": "/carddav/addressbook/",
+                "ua": request.headers.get("User-Agent"),
+                "auth": bool(request.headers.get("Authorization")),
+            },
+        )
+    except Exception:
+        pass
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Basic "):
+        return Response(
+            status_code=401, headers={"WWW-Authenticate": 'Basic realm="CardDAV"'}
+        )
     xml = (
         """
 <?xml version="1.0" encoding="utf-8"?>
@@ -97,6 +115,11 @@ async def carddav_propfind(request: Request):
           <card:addressbook/>
         </d:resourcetype>
         <d:displayname>Address Book</d:displayname>
+        <d:current-user-principal><d:href>/principals/users/default/</d:href></d:current-user-principal>
+        <d:supported-report-set>
+          <d:supported-report><d:report><card:addressbook-query/></d:report></d:supported-report>
+          <d:supported-report><d:report><card:addressbook-multiget/></d:report></d:supported-report>
+        </d:supported-report-set>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -109,6 +132,16 @@ async def carddav_propfind(request: Request):
 
 @router.api_route("/carddav/addressbook/", methods=["REPORT"])
 async def carddav_report(request: Request):
+    try:
+        log_ews(
+            "dav_report",
+            {
+                "path": "/carddav/addressbook/",
+                "ua": request.headers.get("User-Agent"),
+            },
+        )
+    except Exception:
+        pass
     db: Session = next(get_db())
     # Return all contacts inline as address-data in a multistatus
     contacts = db.query(Contact).limit(50).all()
@@ -137,11 +170,19 @@ async def carddav_report(request: Request):
 # Well-known discovery endpoints so clients can find the collections
 @router.get("/.well-known/carddav")
 async def well_known_carddav():
+    try:
+        log_ews("dav_well_known", {"path": "/.well-known/carddav"})
+    except Exception:
+        pass
     return Response(status_code=301, headers={"Location": "/carddav/addressbook/"})
 
 
 @router.get("/.well-known/caldav")
 async def well_known_caldav():
+    try:
+        log_ews("dav_well_known", {"path": "/.well-known/caldav"})
+    except Exception:
+        pass
     return Response(status_code=301, headers={"Location": "/caldav/calendar/"})
 
 
@@ -199,6 +240,17 @@ async def caldav_options():
 async def caldav_home_propfind(request: Request):
     db: Session = next(get_db())
     # Advertise the calendar-home-set and current-user-principal
+    try:
+        log_ews(
+            "dav_propfind",
+            {
+                "path": "/caldav/",
+                "ua": request.headers.get("User-Agent"),
+                "auth": bool(request.headers.get("Authorization")),
+            },
+        )
+    except Exception:
+        pass
     user_email = await _basic_auth(request, db)
     home = "/caldav/calendar/" if not user_email else f"/caldav/{user_email}/calendar/"
     principal = (
@@ -235,6 +287,17 @@ async def caldav_home_propfind(request: Request):
 async def carddav_home_propfind(request: Request):
     db: Session = next(get_db())
     # Advertise the addressbook-home-set and current-user-principal
+    try:
+        log_ews(
+            "dav_propfind",
+            {
+                "path": "/carddav/",
+                "ua": request.headers.get("User-Agent"),
+                "auth": bool(request.headers.get("Authorization")),
+            },
+        )
+    except Exception:
+        pass
     user_email = await _basic_auth(request, db)
     home = (
         "/carddav/addressbook/"
@@ -356,6 +419,22 @@ async def caldav_user_calendar_propfind(user_email: str):
 @router.api_route("/caldav/calendar/", methods=["PROPFIND"])
 async def caldav_propfind(request: Request):
     # Describe the calendar collection
+    try:
+        log_ews(
+            "dav_propfind",
+            {
+                "path": "/caldav/calendar/",
+                "ua": request.headers.get("User-Agent"),
+                "auth": bool(request.headers.get("Authorization")),
+            },
+        )
+    except Exception:
+        pass
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Basic "):
+        return Response(
+            status_code=401, headers={"WWW-Authenticate": 'Basic realm="CalDAV"'}
+        )
     xml = (
         """
 <?xml version="1.0" encoding="utf-8"?>
@@ -366,6 +445,11 @@ async def caldav_propfind(request: Request):
       <d:prop>
         <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
         <d:displayname>Calendar</d:displayname>
+        <d:current-user-principal><d:href>/principals/users/default/</d:href></d:current-user-principal>
+        <d:supported-report-set>
+          <d:supported-report><d:report><cal:calendar-query/></d:report></d:supported-report>
+          <d:supported-report><d:report><cal:calendar-multiget/></d:report></d:supported-report>
+        </d:supported-report-set>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -378,6 +462,16 @@ async def caldav_propfind(request: Request):
 
 @router.api_route("/caldav/calendar/", methods=["REPORT"])
 async def caldav_report(request: Request):
+    try:
+        log_ews(
+            "dav_report",
+            {
+                "path": "/caldav/calendar/",
+                "ua": request.headers.get("User-Agent"),
+            },
+        )
+    except Exception:
+        pass
     db: Session = next(get_db())
     # Return all events as calendar-data in a multistatus
     events: List[CalendarEvent] = (

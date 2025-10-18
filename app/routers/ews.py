@@ -359,8 +359,8 @@ async def ews_aspx(request: Request):
                     f"<t:NewMailEvent>"
                     f"<t:Watermark>{evt.get('watermark','')}</t:Watermark>"
                     f"<t:TimeStamp>{int(evt.get('time',0))}</t:TimeStamp>"
-                    f"<t:FolderId Id={evt.get('folder_id','DF_inbox')} />"
-                    f"<t:ItemId Id=ITEM_{evt.get('item_id',0)} />"
+                    f"<t:FolderId Id=\"{evt.get('folder_id','DF_inbox')}\" ChangeKey=\"0\"/>"
+                    f"<t:ItemId Id=\"ITEM_{evt.get('item_id',0)}\" ChangeKey=\"0\"/>"
                     f"</t:NewMailEvent>"
                     f"</m:Notification>"
                 )
@@ -654,15 +654,49 @@ async def ews_aspx(request: Request):
                 return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else ""
 
             wants_mime = "<t:IncludeMimeContent>true</t:IncludeMimeContent>" in text
-            ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
+            email_ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
+            contact_ids = re.findall(r'<t:ItemId[^>]*Id="CONTACT_(\d+)"', text)
+            cal_ids = re.findall(r'<t:ItemId[^>]*Id="CAL_(\d+)"', text)
             emails = (
                 db.query(Email)
                 .filter(
                     Email.recipient_id == user.id,
-                    Email.id.in_([int(i) for i in ids] if ids else [-1]),
+                    Email.id.in_([int(i) for i in email_ids] if email_ids else [-1]),
                 )
                 .all()
             )
+            # Contacts
+            contacts = []
+            if contact_ids:
+                try:
+                    from ..database import Contact
+
+                    contacts = (
+                        db.query(Contact)
+                        .filter(
+                            Contact.owner_id == user.id,
+                            Contact.id.in_([int(i) for i in contact_ids]),
+                        )
+                        .all()
+                    )
+                except Exception:
+                    contacts = []
+            # Calendar events
+            events = []
+            if cal_ids:
+                try:
+                    from ..database import CalendarEvent
+
+                    events = (
+                        db.query(CalendarEvent)
+                        .filter(
+                            CalendarEvent.owner_id == user.id,
+                            CalendarEvent.id.in_([int(i) for i in cal_ids]),
+                        )
+                        .all()
+                    )
+                except Exception:
+                    events = []
 
             def _attachments_xml(eid: int) -> str:
                 try:
@@ -681,7 +715,7 @@ async def ews_aspx(request: Request):
                         "".join(
                             [
                                 "<t:FileAttachment>",
-                                f"<t:AttachmentId Id=ATT_{a.id} />",
+                                f'<t:AttachmentId Id="ATT_{a.id}"/>',
                                 f"<t:Name>{_xml(a.filename or 'attachment')}</t:Name>",
                                 "</t:FileAttachment>",
                             ]
@@ -689,7 +723,7 @@ async def ews_aspx(request: Request):
                     )
                 return "<t:Attachments>" + "".join(parts) + "</t:Attachments>"
 
-            items_xml = "".join(
+            email_items_xml = "".join(
                 [
                     "".join(
                         [
@@ -768,6 +802,38 @@ async def ews_aspx(request: Request):
                     for e in emails
                 ]
             )
+            contact_items_xml = "".join(
+                [
+                    "".join(
+                        [
+                            f'<t:Contact xmlns:t="{EWS_NS_TYPES}">',
+                            f'<t:ItemId Id="CONTACT_{c.id}" ChangeKey="0"/>',
+                            f"<t:DisplayName>{_xml(getattr(c,'display_name','') or '')}</t:DisplayName>",
+                            "<t:EmailAddresses>",
+                            f"<t:Entry Key=\"EmailAddress1\">{_xml(getattr(c,'email_address_1','') or '')}</t:Entry>",
+                            "</t:EmailAddresses>",
+                            "</t:Contact>",
+                        ]
+                    )
+                    for c in contacts
+                ]
+            )
+            cal_items_xml = "".join(
+                [
+                    "".join(
+                        [
+                            f'<t:CalendarItem xmlns:t="{EWS_NS_TYPES}">',
+                            f'<t:ItemId Id="CAL_{ev.id}" ChangeKey="0"/>',
+                            f"<t:Subject>{_xml(getattr(ev,'subject','') or '')}</t:Subject>",
+                            f"<t:Start>{iso(getattr(ev,'start_time', None))}</t:Start>",
+                            f"<t:End>{iso(getattr(ev,'end_time', None))}</t:End>",
+                            "</t:CalendarItem>",
+                        ]
+                    )
+                    for ev in events
+                ]
+            )
+            items_xml = email_items_xml + contact_items_xml + cal_items_xml
             if not items_xml:
                 items_xml = ""
             body = (
@@ -784,17 +850,43 @@ async def ews_aspx(request: Request):
             log_ews("getitem_response", {"count": len(emails), "bytes": len(resp)})
             return Response(content=resp, media_type="text/xml")
         if "ResolveNames" in text:
-            # Echo back an email address from request if found
+            # Search personal contacts first; fall back to echo of entry
             import re
 
             m = re.search(r"<UnresolvedEntry>([^<]+)</UnresolvedEntry>", text)
-            entry = m.group(1) if m else "user@example.com"
+            entry = (m.group(1) if m else "").strip()
+            resolutions = []
+            try:
+                from ..database import Contact
+
+                if entry:
+                    q = (
+                        db.query(Contact)
+                        .filter(Contact.owner_id == user.id)
+                        .filter(
+                            (Contact.display_name.ilike(f"%{entry}%"))
+                            | (Contact.email_address_1.ilike(f"%{entry}%"))
+                        )
+                        .limit(5)
+                        .all()
+                    )
+                    for c in q:
+                        resolutions.append(
+                            f"<t:Resolution><t:Mailbox><t:Name>{_xml(c.display_name or '')}</t:Name><t:EmailAddress>{_xml(c.email_address_1 or '')}</t:EmailAddress></t:Mailbox></t:Resolution>"
+                        )
+            except Exception:
+                pass
+            if not resolutions:
+                # Fallback to echo
+                resolutions.append(
+                    f"<t:Resolution><t:Mailbox><t:EmailAddress>{_xml(entry or 'user@example.com')}</t:EmailAddress></t:Mailbox></t:Resolution>"
+                )
             body = (
                 f'<m:ResolveNamesResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
                 f"<m:ResponseMessages>"
                 f'<m:ResolveNamesResponseMessage ResponseClass="Success">'
                 f"<m:ResponseCode>NoError</m:ResponseCode>"
-                f"<m:ResolutionSet><t:Resolution><t:Mailbox><t:EmailAddress>{entry}</t:EmailAddress></t:Mailbox></t:Resolution></m:ResolutionSet>"
+                f"<m:ResolutionSet>{''.join(resolutions)}</m:ResolutionSet>"
                 f"</m:ResolveNamesResponseMessage>"
                 f"</m:ResponseMessages>"
                 f"</m:ResolveNamesResponse>"
@@ -1055,7 +1147,7 @@ async def ews_aspx(request: Request):
                         email.is_deleted = False
                     db.commit()
                     moved_xml.append(
-                        f"<m:MovedItemId><t:ItemId Id=ITEM_{email.id} ChangeKey=0 /></m:MovedItemId>"
+                        f'<m:MovedItemId><t:ItemId Id="ITEM_{email.id}" ChangeKey="0"/></m:MovedItemId>'
                     )
             except Exception:
                 db.rollback()
@@ -1097,7 +1189,7 @@ async def ews_aspx(request: Request):
                     "".join(
                         [
                             "<t:FileAttachment>",
-                            f"<t:AttachmentId Id=ATT_{a.id} />",
+                            f'<t:AttachmentId Id="ATT_{a.id}"/>',
                             f"<t:Name>{_xml(a.filename or 'attachment')}</t:Name>",
                             f"<t:Content>{content_b64}</t:Content>",
                             "</t:FileAttachment>",
@@ -1144,7 +1236,7 @@ async def ews_aspx(request: Request):
                     db.add(att)
                     db.commit()
                     db.refresh(att)
-                    saved_att_xml.append(f"<m:AttachmentId Id=ATT_{att.id} />")
+                    saved_att_xml.append(f'<m:AttachmentId Id="ATT_{att.id}"/>')
                 except Exception:
                     db.rollback()
             body = (
