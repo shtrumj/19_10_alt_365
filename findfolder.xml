@@ -1,0 +1,11 @@
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <m:FindFolder xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                  Traversal="Shallow">
+      <m:FolderShape><t:BaseShape>IdOnly</t:BaseShape></m:FolderShape>
+      <m:IndexedPageFolderView MaxEntriesReturned="10" Offset="0" BasePoint="Beginning"/>
+      <m:ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:ParentFolderIds>
+    </m:FindFolder>
+  </s:Body>
+</s:Envelope>

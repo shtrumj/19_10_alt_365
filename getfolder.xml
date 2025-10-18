@@ -1,0 +1,9 @@
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <m:GetFolder xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                 xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:FolderShape><t:BaseShape>Default</t:BaseShape></m:FolderShape>
+      <m:FolderIds><t:DistinguishedFolderId Id="inbox"/></m:FolderIds>
+    </m:GetFolder>
+  </s:Body>
+</s:Envelope>
