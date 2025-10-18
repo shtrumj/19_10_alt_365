@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .database import Email, User
 from .email_delivery import email_delivery
 from .email_parser import get_email_preview, html_to_text
+from .ews_push import ews_push_hub
 from .mime_utils import build_mime_message, plain_to_html
 from .models import EmailCreate
 from .websocket_manager import manager
@@ -71,6 +72,19 @@ class EmailService:
 
                 # Send WebSocket notification to recipient
                 self._send_email_notification(recipient.id, email_record)
+                # Publish EWS streaming event (Inbox)
+                try:
+                    import asyncio
+
+                    asyncio.create_task(
+                        ews_push_hub.publish_new_mail(
+                            user_id=recipient.id,
+                            folder_id="DF_inbox",
+                            item_id=email_record.id,
+                        )
+                    )
+                except Exception:
+                    pass
 
                 logger.info(
                     f"Email sent internally from user {sender_id} to {email_data.recipient_email}"
@@ -192,8 +206,12 @@ class EmailService:
         if start_id is not None:
             query = query.filter(Email.id > start_id)
 
-        # For deterministic paging when using start_id, sort by id ascending
-        return query.order_by(Email.id.asc()).offset(offset).limit(limit).all()
+        # UI expectations:
+        # - OWA inbox should show newest first when browsing normally
+        # - When using start_id (paging/delta), use ascending id for stable ranges
+        if start_id is not None:
+            return query.order_by(Email.id.asc()).offset(offset).limit(limit).all()
+        return query.order_by(Email.created_at.desc()).offset(offset).limit(limit).all()
 
     def mark_as_read(self, email_id: int, user_id: int) -> bool:
         """Mark an email as read"""

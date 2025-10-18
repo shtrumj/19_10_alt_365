@@ -1,13 +1,14 @@
 import base64
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Request, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from ..auth import authenticate_user
-from ..database import Email, User, get_db
+from ..database import Email, EmailAttachment, SessionLocal
 from ..diagnostic_logger import log_ews
 from ..email_delivery import email_delivery
+from ..ews_push import ews_push_hub
 
 router = APIRouter(prefix="/EWS", tags=["ews"])
 
@@ -43,10 +44,11 @@ def ews_error(message: str) -> str:
 
 @router.get("/Exchange.asmx")
 @router.post("/Exchange.asmx")
-async def ews_aspx(request: Request, db: Session = Depends(get_db)):
+async def ews_aspx(request: Request):
     """Very minimal EWS endpoint to make Outlook probe pass. Supports FindItem on Inbox with a tiny response.
     This is not a full EWS; it only returns a small item list mapped from DB.
     """
+    db: Session = SessionLocal()
     try:
         # Basic authentication enforcement similar to IIS EWS behavior
         auth_header = request.headers.get("Authorization", "")
@@ -145,16 +147,17 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 + f_mail("outbox", "Outbox")
                 + f_mail("archive", "Archive")
                 + "<t:ContactsFolder>"
-                f'<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
-                f"<t:DisplayName>Contacts</t:DisplayName>"
-                f"<t:FolderClass>IPF.Contact</t:FolderClass>"
-                f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
-                f"</t:ContactsFolder>" + "<t:CalendarFolder>"
-                f'<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
-                f"<t:DisplayName>Calendar</t:DisplayName>"
-                f"<t:FolderClass>IPF.Appointment</t:FolderClass>"
-                f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
-                f"</t:CalendarFolder>"
+                + '<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
+                + "<t:DisplayName>Contacts</t:DisplayName>"
+                + "<t:FolderClass>IPF.Contact</t:FolderClass>"
+                + '<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                + "</t:ContactsFolder>"
+                + "<t:CalendarFolder>"
+                + '<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
+                + "<t:DisplayName>Calendar</t:DisplayName>"
+                + "<t:FolderClass>IPF.Appointment</t:FolderClass>"
+                + '<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                + "</t:CalendarFolder>"
             )
             body = (
                 f'<m:FindFolderResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
@@ -246,6 +249,18 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                         ]
                     )
                 else:
+
+                    def _has_atts(email_id: int) -> bool:
+                        try:
+                            return (
+                                db.query(EmailAttachment)
+                                .filter(EmailAttachment.email_id == email_id)
+                                .count()
+                                > 0
+                            )
+                        except Exception:
+                            return False
+
                     items_xml = "".join(
                         [
                             (
@@ -255,9 +270,9 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                                 f"<t:DateTimeReceived>{(e.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') if getattr(e,'created_at',None) else '')}</t:DateTimeReceived>"
                                 f"<t:ItemClass>IPM.Note</t:ItemClass>"
                                 f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>"
-                                f"<t:HasAttachments>false</t:HasAttachments>"
+                                f"<t:HasAttachments>{'true' if _has_atts(e.id) else 'false'}</t:HasAttachments>"
                                 f'<t:ParentFolderId Id="DF_inbox" ChangeKey="0"/>'
-                                f"<t:From><t:Mailbox><t:EmailAddress>{(getattr(e,'sender_email', None) or getattr(e,'external_sender', '') or '').replace('&','&amp;')}</t:EmailAddress></t:Mailbox></t:From>"
+                                f"<t:From><t:Mailbox><t:EmailAddress>{(getattr(e,'sender_email', None) or getattr(e, 'external_sender', '') or '').replace('&','&amp;')}</t:EmailAddress></t:Mailbox></t:From>"
                                 f"</t:Message>"
                             )
                             for e in emails
@@ -280,6 +295,104 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             resp = soap_envelope(body)
             log_ews("finditem_response", {"bytes": len(resp)})
             return Response(content=resp, media_type="text/xml")
+        if "Subscribe" in text and "StreamingSubscription" in text:
+            # Minimal Streaming Subscribe: capture FolderIds and return SubscriptionId + Watermark
+            import re
+
+            folder_ids = re.findall(r'<t:FolderId[^>]*Id="([^"]+)"', text)
+            sub = await ews_push_hub.subscribe(user.id, folder_ids)
+            body = (
+                f'<m:SubscribeResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:SubscribeResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"<m:StreamingSubscriptionResponse>"
+                f"<m:SubscriptionId>{sub.subscription_id}</m:SubscriptionId>"
+                f"<m:Watermark>{sub.last_watermark}</m:Watermark>"
+                f"</m:StreamingSubscriptionResponse>"
+                f"</m:SubscribeResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:SubscribeResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetStreamingEvents" in text:
+            # Long-poll up to ~30s for events; return any queued for the SubscriptionId
+            import asyncio
+            import re
+
+            m = re.search(r"<m:SubscriptionId>([^<]+)</m:SubscriptionId>", text)
+            sub_id = m.group(1) if m else ""
+            sub = await ews_push_hub.get(sub_id)
+            if not sub:
+                body = (
+                    f'<m:GetStreamingEventsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                    f"<m:ResponseMessages>"
+                    f'<m:GetStreamingEventsResponseMessageType ResponseClass="Success">'
+                    f"<m:ResponseCode>NoError</m:ResponseCode>"
+                    f"<m:Notifications/>"
+                    f"</m:GetStreamingEventsResponseMessageType>"
+                    f"</m:ResponseMessages>"
+                    f"</m:GetStreamingEventsResponse>"
+                )
+                return Response(content=soap_envelope(body), media_type="text/xml")
+
+            events = []
+            try:
+                # Wait briefly for at least one event
+                evt = await asyncio.wait_for(sub.queue.get(), timeout=30.0)
+                events.append(evt)
+                # Drain any additional immediately available
+                while True:
+                    try:
+                        events.append(sub.queue.get_nowait())
+                    except Exception:
+                        break
+            except asyncio.TimeoutError:
+                pass
+
+            def notif_xml(evt: dict) -> str:
+                return (
+                    f"<m:Notification>"
+                    f"<t:SubscriptionId>{sub.subscription_id}</t:SubscriptionId>"
+                    f"<t:PreviousWatermark>{sub.last_watermark}</t:PreviousWatermark>"
+                    f"<t:MoreEvents>false</t:MoreEvents>"
+                    f"<t:NewMailEvent>"
+                    f"<t:Watermark>{evt.get('watermark','')}</t:Watermark>"
+                    f"<t:TimeStamp>{int(evt.get('time',0))}</t:TimeStamp>"
+                    f"<t:FolderId Id={evt.get('folder_id','DF_inbox')} />"
+                    f"<t:ItemId Id=ITEM_{evt.get('item_id',0)} />"
+                    f"</t:NewMailEvent>"
+                    f"</m:Notification>"
+                )
+
+            notifications = "".join([notif_xml(e) for e in events])
+            body = (
+                f'<m:GetStreamingEventsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:GetStreamingEventsResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"<m:Notifications>{notifications}</m:Notifications>"
+                f"</m:GetStreamingEventsResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:GetStreamingEventsResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "Unsubscribe" in text:
+            import re
+
+            m = re.search(r"<m:SubscriptionId>([^<]+)</m:SubscriptionId>", text)
+            sub_id = m.group(1) if m else ""
+            await ews_push_hub.unsubscribe(sub_id)
+            body = (
+                f'<m:UnsubscribeResponse xmlns:m="{EWS_NS_MESSAGES}">'
+                f"<m:ResponseMessages>"
+                f'<m:UnsubscribeResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"</m:UnsubscribeResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:UnsubscribeResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
         if "GetFolder" in text:
             # Minimal folder tree: return FolderId for requested distinguished folders
             import re
@@ -390,26 +503,26 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 + f_mail("outbox", "Outbox")
                 + f_mail("archive", "Archive")
                 + (
-                    f"<t:Create><t:ContactsFolder>"
-                    f'<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
-                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
-                    f"<t:FolderClass>IPF.Contact</t:FolderClass>"
-                    f"<t:DisplayName>Contacts</t:DisplayName>"
-                    f"<t:TotalCount>0</t:TotalCount>"
-                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
-                    f"<t:UnreadCount>0</t:UnreadCount>"
-                    f"</t:ContactsFolder></t:Create>"
+                    "<t:Create><t:ContactsFolder>"
+                    + '<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
+                    + '<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    + "<t:FolderClass>IPF.Contact</t:FolderClass>"
+                    + "<t:DisplayName>Contacts</t:DisplayName>"
+                    + "<t:TotalCount>0</t:TotalCount>"
+                    + "<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    + "<t:UnreadCount>0</t:UnreadCount>"
+                    + "</t:ContactsFolder></t:Create>"
                 )
                 + (
-                    f"<t:Create><t:CalendarFolder>"
-                    f'<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
-                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
-                    f"<t:FolderClass>IPF.Appointment</t:FolderClass>"
-                    f"<t:DisplayName>Calendar</t:DisplayName>"
-                    f"<t:TotalCount>0</t:TotalCount>"
-                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
-                    f"<t:UnreadCount>0</t:UnreadCount>"
-                    f"</t:CalendarFolder></t:Create>"
+                    "<t:Create><t:CalendarFolder>"
+                    + '<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
+                    + '<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    + "<t:FolderClass>IPF.Appointment</t:FolderClass>"
+                    + "<t:DisplayName>Calendar</t:DisplayName>"
+                    + "<t:TotalCount>0</t:TotalCount>"
+                    + "<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    + "<t:UnreadCount>0</t:UnreadCount>"
+                    + "</t:CalendarFolder></t:Create>"
                 )
             )
             # If client sent SyncState, return empty Changes (already synced)
@@ -434,20 +547,55 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             log_ews("syncfolderhierarchy_response", {"bytes": len(resp)})
             return Response(content=resp, media_type="text/xml")
         if "SyncFolderItems" in text:
-            # Provide a minimal delta for Inbox: create a few ItemIds from DB
+            # Stateful delta sync per folder using last seen ITEM id watermark in SyncState
             import re
 
+            # Target folder
             mfolder = re.search(r'<t:FolderId[^>]*Id="([^"]+)"', text)
             folder_id = mfolder.group(1) if mfolder else "DF_inbox"
 
-            # Select emails based on target folder
-            query = db.query(Email)
+            # Base query by folder semantics
+            base_query = db.query(Email)
             if folder_id.endswith("sentitems") or folder_id == "DF_sentitems":
-                query = query.filter(Email.sender_id == user.id)
+                base_query = base_query.filter(Email.sender_id == user.id)
+            elif folder_id.endswith("deleteditems") or folder_id == "DF_deleteditems":
+                base_query = base_query.filter(
+                    Email.recipient_id == user.id, Email.is_deleted
+                )
             else:
-                # Default to Inbox semantics
-                query = query.filter(Email.recipient_id == user.id)
-            emails = query.order_by(Email.created_at.desc()).limit(10).all()
+                base_query = base_query.filter(
+                    Email.recipient_id == user.id, ~Email.is_deleted
+                )
+
+            # MaxChangesReturned (default 10)
+            mmax = re.search(r"<MaxChangesReturned>(\d+)</MaxChangesReturned>", text)
+            try:
+                max_changes = int(mmax.group(1)) if mmax else 10
+            except Exception:
+                max_changes = 10
+            if max_changes <= 0:
+                max_changes = 10
+
+            # Parse client SyncState watermark
+            mstate = re.search(r"<SyncState>(.*?)</SyncState>", text)
+            client_state = mstate.group(1) if mstate else None
+            last_seen_id = 0
+            if client_state and client_state.startswith("ITEMS_MAXID_"):
+                try:
+                    last_seen_id = int(client_state.split("_")[-1])
+                except Exception:
+                    last_seen_id = 0
+            # Treat 'ITEMS_BASE_1' as baseline (no watermark)
+
+            # Compute new items strictly newer than watermark
+            new_items = (
+                base_query.filter(Email.id > last_seen_id)
+                .order_by(Email.id.asc())
+                .limit(max_changes)
+                .all()
+            )
+
+            # Build changes
             creates = "".join(
                 [
                     (
@@ -456,28 +604,46 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                         f'<t:ParentFolderId Id="{folder_id}" ChangeKey="0"/>'
                         f"</t:Message></t:Create>"
                     )
-                    for e in emails
+                    for e in new_items
                 ]
             )
-            # If client sends SyncState, return empty delta to indicate up-to-date
-            has_state = re.search(r"<SyncState>(.*?)</SyncState>", text)
-            sync_state = has_state.group(1) if has_state else "ITEMS_BASE_1"
-            resp_changes = "" if has_state else creates
+
+            # Advance watermark to newest id we have seen (either returned or current DB max)
+            latest_id = last_seen_id
+            if new_items:
+                latest_id = max(last_seen_id, max(e.id for e in new_items))
+            else:
+                # No delta; keep existing watermark
+                latest_id = last_seen_id
+
+            # If no client_state (or baseline), initialize watermark to current folder max id
+            if client_state is None or client_state == "ITEMS_BASE_1":
+                try:
+                    max_id_in_folder = (
+                        base_query.order_by(Email.id.desc()).limit(1).first()
+                    )
+                    latest_id = max_id_in_folder.id if max_id_in_folder else latest_id
+                except Exception:
+                    pass
+
+            new_sync_state = f"ITEMS_MAXID_{latest_id}"
+
             body = (
                 f'<m:SyncFolderItemsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
                 f"<m:ResponseMessages>"
                 f'<m:SyncFolderItemsResponseMessageType ResponseClass="Success">'
                 f"<m:ResponseCode>NoError</m:ResponseCode>"
-                f"<m:SyncState>{sync_state}</m:SyncState>"
+                f"<m:SyncState>{new_sync_state}</m:SyncState>"
                 f"<m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>"
-                f"<m:Changes>{resp_changes}</m:Changes>"
+                f"<m:Changes>{creates}</m:Changes>"
                 f"</m:SyncFolderItemsResponseMessageType>"
                 f"</m:ResponseMessages>"
                 f"</m:SyncFolderItemsResponse>"
             )
             resp = soap_envelope(body)
             log_ews(
-                "syncfolderitems_response", {"count": len(emails), "bytes": len(resp)}
+                "syncfolderitems_response",
+                {"count": len(new_items), "bytes": len(resp)},
             )
             return Response(content=resp, media_type="text/xml")
         if "GetItem" in text:
@@ -497,6 +663,32 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 )
                 .all()
             )
+
+            def _attachments_xml(eid: int) -> str:
+                try:
+                    atts = (
+                        db.query(EmailAttachment)
+                        .filter(EmailAttachment.email_id == eid)
+                        .all()
+                    )
+                except Exception:
+                    atts = []
+                if not atts:
+                    return ""
+                parts = []
+                for a in atts:
+                    parts.append(
+                        "".join(
+                            [
+                                "<t:FileAttachment>",
+                                f"<t:AttachmentId Id=ATT_{a.id} />",
+                                f"<t:Name>{_xml(a.filename or 'attachment')}</t:Name>",
+                                "</t:FileAttachment>",
+                            ]
+                        )
+                    )
+                return "<t:Attachments>" + "".join(parts) + "</t:Attachments>"
+
             items_xml = "".join(
                 [
                     "".join(
@@ -512,7 +704,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                             f"<t:Sender><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:Sender>",
                             f"<t:ToRecipients><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:EmailAddress></t:Mailbox></t:ToRecipients>",
                             f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>",
-                            "<t:HasAttachments>false</t:HasAttachments>",
+                            f"<t:HasAttachments>{'true' if db.query(EmailAttachment).filter(EmailAttachment.email_id == e.id).count() > 0 else 'false'}</t:HasAttachments>",
                             # Body omitted in this path to avoid nested f-string pitfalls; GetItem returns Body
                             f"<t:InternetMessageId>&lt;ITEM_{e.id}@local&gt;</t:InternetMessageId>",
                             (
@@ -569,6 +761,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                             f"<t:InternetMessageHeader HeaderName=\"To\">{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:InternetMessageHeader>",
                             f"<t:InternetMessageHeader HeaderName=\"Subject\">{_xml(getattr(e, 'subject', ''))}</t:InternetMessageHeader>",
                             "</t:InternetMessageHeaders>",
+                            _attachments_xml(e.id),
                             "</t:Message>",
                         ]
                     )
@@ -639,7 +832,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             # Extract MimeContent
             mmime = re.search(r"<t:MimeContent>([\s\S]*?)</t:MimeContent>", text)
             new_item_xml = ""
-            queued_message_id = None
+            # queued_message_id kept for compatibility; value not used in response
             if disposition in ("saveonly", "sendandsavecopy") and mmime:
                 try:
                     raw_b64 = mmime.group(1).strip()
@@ -737,7 +930,7 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
 
                     body_for_send = body_html or body_text or ""
                     log_ews("createitem_detected_html", {"has_html": bool(body_html)})
-                    queued_message_id = email_delivery.queue_email(
+                    _ = email_delivery.queue_email(
                         sender_email=user.email,
                         recipient_email=to_addr,
                         subject=subj or "(no subject)",
@@ -761,6 +954,29 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             )
             return Response(content=soap_envelope(body), media_type="text/xml")
         if "UpdateItem" in text:
+            # Support setting IsRead true/false via SetItemField
+            import re
+
+            ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
+            is_read_match = re.search(r"<t:IsRead>(true|false)</t:IsRead>", text)
+            set_is_read = None
+            if is_read_match:
+                set_is_read = True if is_read_match.group(1) == "true" else False
+            updated_count = 0
+            try:
+                if ids and set_is_read is not None:
+                    for sid in ids:
+                        e = (
+                            db.query(Email)
+                            .filter(Email.id == int(sid), Email.recipient_id == user.id)
+                            .first()
+                        )
+                        if e:
+                            e.is_read = set_is_read
+                            updated_count += 1
+                    db.commit()
+            except Exception:
+                db.rollback()
             body = (
                 f'<m:UpdateItemResponse xmlns:m="{EWS_NS_MESSAGES}">'
                 f"<m:ResponseMessages>"
@@ -772,6 +988,35 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             )
             return Response(content=soap_envelope(body), media_type="text/xml")
         if "DeleteItem" in text:
+            # Implement HardDelete / SoftDelete / MoveToDeletedItems
+            import re
+
+            delete_type_match = re.search(r'DeleteType="([^"]+)"', text)
+            delete_type = (
+                delete_type_match.group(1)
+                if delete_type_match
+                else "MoveToDeletedItems"
+            ).lower()
+            ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
+            try:
+                for sid in ids:
+                    email = (
+                        db.query(Email)
+                        .filter(Email.id == int(sid), Email.recipient_id == user.id)
+                        .first()
+                    )
+                    if not email:
+                        continue
+                    if delete_type == "harddelete":
+                        db.delete(email)
+                    elif (
+                        delete_type == "softdelete"
+                        or delete_type == "movetodeleteditems"
+                    ):
+                        email.is_deleted = True
+                db.commit()
+            except Exception:
+                db.rollback()
             body = (
                 f'<m:DeleteItemResponse xmlns:m="{EWS_NS_MESSAGES}">'
                 f"<m:ResponseMessages>"
@@ -780,6 +1025,137 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 f"</m:DeleteItemResponseMessage>"
                 f"</m:ResponseMessages>"
                 f"</m:DeleteItemResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "MoveItem" in text:
+            # Move to Deleted Items by toggling is_deleted flag
+            import re
+
+            to_folder_match = re.search(
+                r'<t:(?:FolderId|DistinguishedFolderId)[^>]*Id="([^"]+)"', text
+            )
+            to_folder = to_folder_match.group(1) if to_folder_match else "deleteditems"
+            ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
+            moved_xml = []
+            try:
+                for sid in ids:
+                    email = (
+                        db.query(Email)
+                        .filter(Email.id == int(sid), Email.recipient_id == user.id)
+                        .first()
+                    )
+                    if not email:
+                        continue
+                    if (
+                        to_folder.endswith("deleteditems")
+                        or to_folder == "DF_deleteditems"
+                    ):
+                        email.is_deleted = True
+                    elif to_folder.endswith("inbox") or to_folder == "DF_inbox":
+                        email.is_deleted = False
+                    db.commit()
+                    moved_xml.append(
+                        f"<m:MovedItemId><t:ItemId Id=ITEM_{email.id} ChangeKey=0 /></m:MovedItemId>"
+                    )
+            except Exception:
+                db.rollback()
+            body = (
+                f'<m:MoveItemResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:MoveItemResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"{''.join(moved_xml)}"
+                f"</m:MoveItemResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:MoveItemResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetAttachment" in text:
+            # Return file content for requested AttachmentIds
+            import os
+            import re
+
+            ids = re.findall(r'<t:AttachmentId[^>]*Id="ATT_(\d+)"', text)
+            attachments = []
+            for aid in ids:
+                a = (
+                    db.query(EmailAttachment)
+                    .filter(EmailAttachment.id == int(aid))
+                    .first()
+                )
+                if not a:
+                    continue
+                content_b64 = ""
+                try:
+                    with open(a.file_path, "rb") as f:
+                        content_b64 = (
+                            __import__("base64").b64encode(f.read()).decode("ascii")
+                        )
+                except Exception:
+                    content_b64 = ""
+                attachments.append(
+                    "".join(
+                        [
+                            "<t:FileAttachment>",
+                            f"<t:AttachmentId Id=ATT_{a.id} />",
+                            f"<t:Name>{_xml(a.filename or 'attachment')}</t:Name>",
+                            f"<t:Content>{content_b64}</t:Content>",
+                            "</t:FileAttachment>",
+                        ]
+                    )
+                )
+            body = (
+                f'<m:GetAttachmentResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:GetAttachmentResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"<m:Attachments>{''.join(attachments)}</m:Attachments>"
+                f"</m:GetAttachmentResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:GetAttachmentResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "CreateAttachment" in text:
+            # Save file attachment to disk and DB, link to target item
+            import os
+            import re
+
+            mitem = re.search(r'<t:ParentItemId[^>]*Id="ITEM_(\d+)"', text)
+            parent_id = int(mitem.group(1)) if mitem else None
+            name_match = re.search(r"<t:Name>([\s\S]*?)</t:Name>", text)
+            content_match = re.search(r"<t:Content>([\s\S]*?)</t:Content>", text)
+            filename = name_match.group(1) if name_match else "attachment.bin"
+            raw_b64 = content_match.group(1).strip() if content_match else ""
+            saved_att_xml = []
+            if parent_id and raw_b64:
+                try:
+                    data = __import__("base64").b64decode(raw_b64)
+                    os.makedirs("data/attachments", exist_ok=True)
+                    path = f"data/attachments/EMAIL_{parent_id}_{filename}"
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    att = EmailAttachment(
+                        email_id=parent_id,
+                        filename=filename,
+                        content_type=None,
+                        file_path=path,
+                        file_size=len(data),
+                    )
+                    db.add(att)
+                    db.commit()
+                    db.refresh(att)
+                    saved_att_xml.append(f"<m:AttachmentId Id=ATT_{att.id} />")
+                except Exception:
+                    db.rollback()
+            body = (
+                f'<m:CreateAttachmentResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:CreateAttachmentResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"{''.join(saved_att_xml)}"
+                f"</m:CreateAttachmentResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:CreateAttachmentResponse>"
             )
             return Response(content=soap_envelope(body), media_type="text/xml")
         if "GetUserAvailability" in text:
@@ -798,3 +1174,8 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
         return Response(
             content=ews_error(str(e)), media_type="text/xml", status_code=500
         )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass

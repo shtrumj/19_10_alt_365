@@ -1,12 +1,29 @@
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Request, Response, status
 from sqlalchemy.orm import Session
 
+from ..auth import authenticate_user
 from ..database import CalendarEvent, Contact, get_db
 
 router = APIRouter(prefix="", tags=["caldav-carddav"])  # mounted directly
+
+
+async def _basic_auth(request: Request, db: Session) -> str | None:
+    """Return authenticated user's email, or None if not authenticated."""
+    try:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            return None
+        import base64
+
+        decoded = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
+        username, password = decoded.split(":", 1)
+        user = authenticate_user(db, username, password)
+        return user.email if user else None
+    except Exception:
+        return None
 
 
 def _iso(dt: datetime | None) -> str:
@@ -45,7 +62,8 @@ def _contact_to_vcard(c: Contact) -> str:
 
 # CardDAV collection (address book)
 @router.get("/carddav/addressbook/", name="carddav-collection")
-async def carddav_collection(db: Session = Depends(get_db)):
+async def carddav_collection(request: Request):
+    db: Session = next(get_db())
     contacts: List[Contact] = db.query(Contact).limit(50).all()
     body = "".join(_contact_to_vcard(c) for c in contacts)
     return Response(content=body, media_type="text/vcard")
@@ -90,7 +108,8 @@ async def carddav_propfind(request: Request):
 
 
 @router.api_route("/carddav/addressbook/", methods=["REPORT"])
-async def carddav_report(request: Request, db: Session = Depends(get_db)):
+async def carddav_report(request: Request):
+    db: Session = next(get_db())
     # Return all contacts inline as address-data in a multistatus
     contacts = db.query(Contact).limit(50).all()
     responses = []
@@ -128,7 +147,8 @@ async def well_known_caldav():
 
 # CardDAV single resource
 @router.get("/carddav/addressbook/{uid}.vcf")
-async def carddav_item(uid: str, db: Session = Depends(get_db)):
+async def carddav_item(uid: str, request: Request):
+    db: Session = next(get_db())
     if uid.startswith("CONTACT_"):
         cid = uid.split("_", 1)[1].split("@", 1)[0]
         contact = db.get(Contact, int(cid))
@@ -139,7 +159,8 @@ async def carddav_item(uid: str, db: Session = Depends(get_db)):
 
 # CalDAV calendar collection
 @router.get("/caldav/calendar/")
-async def caldav_collection(db: Session = Depends(get_db)):
+async def caldav_collection(request: Request):
+    db: Session = next(get_db())
     events: List[CalendarEvent] = (
         db.query(CalendarEvent)
         .order_by(CalendarEvent.start_time.desc())
@@ -152,7 +173,8 @@ async def caldav_collection(db: Session = Depends(get_db)):
 
 # CalDAV single resource
 @router.get("/caldav/calendar/{uid}.ics")
-async def caldav_item(uid: str, db: Session = Depends(get_db)):
+async def caldav_item(uid: str, request: Request):
+    db: Session = next(get_db())
     if uid.startswith("CAL_"):
         eid = uid.split("_", 1)[1].split("@", 1)[0]
         ev = db.get(CalendarEvent, int(eid))
@@ -175,7 +197,15 @@ async def caldav_options():
 
 @router.api_route("/caldav/", methods=["PROPFIND"])
 async def caldav_home_propfind(request: Request):
-    # Advertise the calendar-home-set for the current user
+    db: Session = next(get_db())
+    # Advertise the calendar-home-set and current-user-principal
+    user_email = await _basic_auth(request, db)
+    home = "/caldav/calendar/" if not user_email else f"/caldav/{user_email}/calendar/"
+    principal = (
+        "/principals/users/default/"
+        if not user_email
+        else f"/principals/users/{user_email}/"
+    )
     xml = (
         """
 <?xml version="1.0" encoding="utf-8"?>
@@ -185,7 +215,12 @@ async def caldav_home_propfind(request: Request):
     <d:propstat>
       <d:prop>
         <d:resourcetype><d:collection/></d:resourcetype>
-        <cal:calendar-home-set><d:href>/caldav/calendar/</d:href></cal:calendar-home-set>
+        <cal:calendar-home-set><d:href>"""
+        + home
+        + """</d:href></cal:calendar-home-set>
+        <d:current-user-principal><d:href>"""
+        + principal
+        + """</d:href></d:current-user-principal>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -198,7 +233,19 @@ async def caldav_home_propfind(request: Request):
 
 @router.api_route("/carddav/", methods=["PROPFIND"])
 async def carddav_home_propfind(request: Request):
-    # Advertise the addressbook-home-set for the current user
+    db: Session = next(get_db())
+    # Advertise the addressbook-home-set and current-user-principal
+    user_email = await _basic_auth(request, db)
+    home = (
+        "/carddav/addressbook/"
+        if not user_email
+        else f"/carddav/{user_email}/addressbook/"
+    )
+    principal = (
+        "/principals/users/default/"
+        if not user_email
+        else f"/principals/users/{user_email}/"
+    )
     xml = (
         """
 <?xml version="1.0" encoding="utf-8"?>
@@ -208,7 +255,94 @@ async def carddav_home_propfind(request: Request):
     <d:propstat>
       <d:prop>
         <d:resourcetype><d:collection/></d:resourcetype>
-        <card:addressbook-home-set><d:href>/carddav/addressbook/</d:href></card:addressbook-home-set>
+        <card:addressbook-home-set><d:href>"""
+        + home
+        + """</d:href></card:addressbook-home-set>
+        <d:current-user-principal><d:href>"""
+        + principal
+        + """</d:href></d:current-user-principal>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.options("/caldav/")
+async def caldav_root_options():
+    return Response(
+        status_code=204,
+        headers={"DAV": "1, 2, calendar-access", "Allow": "OPTIONS, PROPFIND"},
+    )
+
+
+@router.options("/carddav/")
+async def carddav_root_options():
+    return Response(
+        status_code=204, headers={"DAV": "1, addressbook", "Allow": "OPTIONS, PROPFIND"}
+    )
+
+
+@router.api_route("/principals/users/{user_email}/", methods=["PROPFIND"])
+async def dav_principal(user_email: str):
+    xml = (
+        f"""
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:response>
+    <d:href>/principals/users/{user_email}/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:principal/></d:resourcetype>
+        <cal:calendar-home-set><d:href>/caldav/{user_email}/calendar/</d:href></cal:calendar-home-set>
+        <card:addressbook-home-set><d:href>/carddav/{user_email}/addressbook/</d:href></card:addressbook-home-set>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.api_route("/carddav/{user_email}/addressbook/", methods=["PROPFIND"])
+async def carddav_user_addressbook_propfind(user_email: str):
+    xml = (
+        f"""
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:response>
+    <d:href>/carddav/{user_email}/addressbook/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>
+        <d:displayname>Address Book</d:displayname>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.api_route("/caldav/{user_email}/calendar/", methods=["PROPFIND"])
+async def caldav_user_calendar_propfind(user_email: str):
+    xml = (
+        f"""
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/caldav/{user_email}/calendar/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+        <d:displayname>Calendar</d:displayname>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -243,7 +377,8 @@ async def caldav_propfind(request: Request):
 
 
 @router.api_route("/caldav/calendar/", methods=["REPORT"])
-async def caldav_report(request: Request, db: Session = Depends(get_db)):
+async def caldav_report(request: Request):
+    db: Session = next(get_db())
     # Return all events as calendar-data in a multistatus
     events: List[CalendarEvent] = (
         db.query(CalendarEvent)
