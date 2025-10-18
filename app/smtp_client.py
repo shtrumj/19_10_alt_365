@@ -2,123 +2,165 @@
 SMTP Client for External Email Delivery
 Handles sending emails to external SMTP servers
 """
-import smtplib
-import ssl
-import logging
+
 import asyncio
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
+import logging
+import smtplib
+import socket
+import ssl
+import time
 from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from typing import Dict, List, Optional, Tuple
-import socket
-import time
+
 from .smtp_logger import smtp_logger
 
 logger = logging.getLogger(__name__)
 
+
 class SMTPDeliveryResult:
     """Result of SMTP delivery attempt"""
-    
-    def __init__(self, success: bool, error_message: str = None, response_code: int = None):
+
+    def __init__(
+        self, success: bool, error_message: str = None, response_code: int = None
+    ):
         self.success = success
         self.error_message = error_message
         self.response_code = response_code
         self.timestamp = time.time()
 
+
 class SMTPClient:
     """SMTP client for external email delivery"""
-    
+
     def __init__(self, timeout: int = 30, max_retries: int = 3):
         self.timeout = timeout
         self.max_retries = max_retries
         self.connection_pool = {}  # Connection pooling for efficiency
-    
-    def create_email_message(self, 
-                           sender: str, 
-                           recipient: str, 
-                           subject: str, 
-                           body: str,
-                           headers: Dict = None) -> MIMEMultipart:
+
+    def create_email_message(
+        self, sender: str, recipient: str, subject: str, body: str, headers: Dict = None
+    ) -> MIMEMultipart:
         """
         Create email message object
-        
+
         Args:
             sender: Sender email address
             recipient: Recipient email address
             subject: Email subject
             body: Email body
             headers: Additional headers
-            
+
         Returns:
             MIMEMultipart message object
         """
         try:
             # Create message
-            msg = MIMEMultipart('alternative')
-            msg['From'] = sender
-            msg['To'] = recipient
-            msg['Subject'] = subject
+            msg = MIMEMultipart("alternative")
+            msg["From"] = sender
+            msg["To"] = recipient
+            msg["Subject"] = subject
 
             # RFC compliance headers
             provided_headers = headers or {}
-            message_id = provided_headers.get('Message-ID') or make_msgid(domain=sender.split('@')[-1])
-            msg['Message-ID'] = message_id
-            msg['Date'] = formatdate(localtime=True)
-            msg['MIME-Version'] = '1.0'
+            message_id = provided_headers.get("Message-ID") or make_msgid(
+                domain=sender.split("@")[-1]
+            )
+            msg["Message-ID"] = message_id
+            msg["Date"] = formatdate(localtime=True)
+            msg["MIME-Version"] = "1.0"
 
             # Add custom headers
             if provided_headers:
                 for key, value in provided_headers.items():
-                    if key.lower() not in ['from', 'to', 'subject', 'message-id', 'date', 'mime-version']:
+                    if key.lower() not in [
+                        "from",
+                        "to",
+                        "subject",
+                        "message-id",
+                        "date",
+                        "mime-version",
+                    ]:
                         msg[key] = value
-            
-            # Add body
+
+            # Add body (UTF-8). If looks like HTML, include plain-text fallback.
             if body:
-                # Try to detect if body is HTML
-                if '<html>' in body.lower() or '<body>' in body.lower():
-                    msg.attach(MIMEText(body, 'html'))
+                lowered = body.lower()
+                looks_html = any(
+                    tag in lowered
+                    for tag in [
+                        "<html",
+                        "<body",
+                        "<div",
+                        "<span",
+                        "<table",
+                        "<p",
+                        "<br",
+                        "<meta",
+                        "<!doctype",
+                    ]
+                )
+                if looks_html:
+                    # naive plain fallback
+                    try:
+                        import html as htmlmod
+                        import re
+
+                        plain_fallback = re.sub(r"<[^>]+>", "", body)
+                        plain_fallback = htmlmod.unescape(plain_fallback)
+                    except Exception:
+                        plain_fallback = ""
+                    msg.attach(
+                        MIMEText(plain_fallback or "(HTML message)", "plain", "utf-8")
+                    )
+                    msg.attach(MIMEText(body, "html", "utf-8"))
                 else:
-                    msg.attach(MIMEText(body, 'plain'))
-            
+                    msg.attach(MIMEText(body, "plain", "utf-8"))
+
             logger.debug(f"Created email message from {sender} to {recipient}")
             return msg
-            
+
         except Exception as e:
             logger.error(f"Error creating email message: {e}")
             raise
-    
-    def connect_to_server(self, hostname: str, port: int = 25, use_tls: bool = True) -> Optional[smtplib.SMTP]:
+
+    def connect_to_server(
+        self, hostname: str, port: int = 25, use_tls: bool = True
+    ) -> Optional[smtplib.SMTP]:
         """
         Connect to SMTP server
-        
+
         Args:
             hostname: SMTP server hostname
             port: SMTP server port
             use_tls: Whether to use TLS
-            
+
         Returns:
             SMTP connection object or None if failed
         """
         try:
             logger.info(f"Connecting to SMTP server {hostname}:{port}")
-            
+
             # Create connection
             server = smtplib.SMTP(hostname, port, timeout=self.timeout)
             server.set_debuglevel(0)  # Set to 1 for debug output
-            
+
             # Start TLS if requested
             if use_tls:
                 try:
                     server.starttls()
                     logger.info(f"Started TLS with {hostname}")
                 except Exception as e:
-                    logger.warning(f"TLS failed with {hostname}, continuing without: {e}")
-            
+                    logger.warning(
+                        f"TLS failed with {hostname}, continuing without: {e}"
+                    )
+
             logger.info(f"Successfully connected to {hostname}:{port}")
             return server
-            
+
         except socket.timeout:
             logger.error(f"Connection timeout to {hostname}:{port}")
             return None
@@ -131,34 +173,32 @@ class SMTPClient:
         except Exception as e:
             logger.error(f"Unexpected error connecting to {hostname}: {e}")
             return None
-    
-    def send_email(self, 
-                   server: smtplib.SMTP,
-                   sender: str, 
-                   recipient: str, 
-                   message: MIMEMultipart) -> SMTPDeliveryResult:
+
+    def send_email(
+        self, server: smtplib.SMTP, sender: str, recipient: str, message: MIMEMultipart
+    ) -> SMTPDeliveryResult:
         """
         Send email through SMTP server
-        
+
         Args:
             server: SMTP server connection
             sender: Sender email address
             recipient: Recipient email address
             message: Email message object
-            
+
         Returns:
             SMTPDeliveryResult object
         """
         try:
             logger.info(f"Sending email from {sender} to {recipient}")
-            
+
             # Send email
             text = message.as_string()
             server.sendmail(sender, recipient, text)
-            
+
             logger.info(f"Successfully sent email from {sender} to {recipient}")
             return SMTPDeliveryResult(success=True)
-            
+
         except smtplib.SMTPRecipientsRefused as e:
             error_msg = f"Recipient refused: {e}"
             logger.error(error_msg)
@@ -175,18 +215,20 @@ class SMTPClient:
             error_msg = f"Unexpected error: {e}"
             logger.error(error_msg)
             return SMTPDeliveryResult(success=False, error_message=error_msg)
-    
-    def deliver_email(self, 
-                     sender: str, 
-                     recipient: str, 
-                     subject: str, 
-                     body: str,
-                     headers: Dict = None,
-                     mx_server: str = None,
-                     mx_port: int = 25) -> SMTPDeliveryResult:
+
+    def deliver_email(
+        self,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        headers: Dict = None,
+        mx_server: str = None,
+        mx_port: int = 25,
+    ) -> SMTPDeliveryResult:
         """
         Deliver email to external server
-        
+
         Args:
             sender: Sender email address
             recipient: Recipient email address
@@ -195,38 +237,39 @@ class SMTPClient:
             headers: Additional headers
             mx_server: MX server hostname
             mx_port: MX server port
-            
+
         Returns:
             SMTPDeliveryResult object
         """
         if not mx_server:
             return SMTPDeliveryResult(
-                success=False, 
-                error_message="No MX server provided"
+                success=False, error_message="No MX server provided"
             )
-        
+
         server = None
         try:
             # Create email message
-            message = self.create_email_message(sender, recipient, subject, body, headers)
-            
+            message = self.create_email_message(
+                sender, recipient, subject, body, headers
+            )
+
             # Connect to server
             server = self.connect_to_server(mx_server, mx_port)
             if not server:
                 return SMTPDeliveryResult(
                     success=False,
-                    error_message=f"Failed to connect to {mx_server}:{mx_port}"
+                    error_message=f"Failed to connect to {mx_server}:{mx_port}",
                 )
-            
+
             # Send email
             result = self.send_email(server, sender, recipient, message)
             return result
-            
+
         except Exception as e:
             error_msg = f"Delivery error: {e}"
             logger.error(error_msg)
             return SMTPDeliveryResult(success=False, error_message=error_msg)
-        
+
         finally:
             # Close connection
             if server:
@@ -235,15 +278,15 @@ class SMTPClient:
                     logger.debug(f"Closed connection to {mx_server}")
                 except:
                     pass
-    
+
     def test_connection(self, hostname: str, port: int = 25) -> bool:
         """
         Test connection to SMTP server
-        
+
         Args:
             hostname: SMTP server hostname
             port: SMTP server port
-            
+
         Returns:
             True if connection successful
         """
@@ -256,6 +299,7 @@ class SMTPClient:
         except Exception as e:
             logger.error(f"Connection test failed for {hostname}:{port}: {e}")
             return False
+
 
 # Global SMTP client instance
 smtp_client = SMTPClient()

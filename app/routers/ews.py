@@ -628,6 +628,13 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 if target_folder.startswith("DF_")
                 else f"DF_{target_folder}"
             )
+            log_ews(
+                "createitem_start",
+                {
+                    "disposition": disposition,
+                    "target_folder": target_folder,
+                },
+            )
 
             # Extract MimeContent
             mmime = re.search(r"<t:MimeContent>([\s\S]*?)</t:MimeContent>", text)
@@ -642,6 +649,14 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                     msg = Parser().parsestr(raw_mime)
                     subj = msg.get("Subject", "")
                     to_addr = msg.get("To", "")
+                    log_ews(
+                        "createitem_parsed",
+                        {
+                            "subject": (subj or "")[:120],
+                            "to": (to_addr or "")[:200],
+                            "mime_len": len(raw_mime or ""),
+                        },
+                    )
 
                     body_text = ""
                     body_html = ""
@@ -681,12 +696,17 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                     db.add(email_row)
                     db.commit()
                     db.refresh(email_row)
+                    log_ews(
+                        "createitem_saved_copy",
+                        {"item_id": email_row.id, "folder": folder_xml_id},
+                    )
                     new_item_xml = (
                         f'<t:Message><t:ItemId Id="ITEM_{email_row.id}" ChangeKey="0"/>'
                         f'<t:ParentFolderId Id="{folder_xml_id}" ChangeKey="0"/></t:Message>'
                     )
-                except Exception:
+                except Exception as e:
                     db.rollback()
+                    log_ews("createitem_save_error", {"error": str(e)})
 
             # If the request asked to send, queue it for external delivery
             try:
@@ -699,28 +719,35 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                     subj = msg.get("Subject", "")
                     to_addr = (msg.get("To", "") or "").split(",")[0].strip()
                     body_text = ""
+                    body_html = ""
                     if msg.is_multipart():
                         for part in msg.walk():
                             if part.get_content_type() == "text/plain":
                                 payload = part.get_payload(decode=True)
                                 if payload is not None:
                                     body_text = payload.decode(errors="ignore")
-                                    break
+                            if part.get_content_type() == "text/html":
+                                payload = part.get_payload(decode=True)
+                                if payload is not None:
+                                    body_html = payload.decode(errors="ignore")
                     else:
                         payload = msg.get_payload(decode=True)
                         if payload is not None:
                             body_text = payload.decode(errors="ignore")
 
+                    body_for_send = body_html or body_text or ""
+                    log_ews("createitem_detected_html", {"has_html": bool(body_html)})
                     queued_message_id = email_delivery.queue_email(
                         sender_email=user.email,
                         recipient_email=to_addr,
                         subject=subj or "(no subject)",
-                        body=body_text or "",
+                        body=body_for_send,
                     )
                     # Kick the delivery loop immediately (best-effort)
                     await email_delivery.process_queue(db)
-            except Exception:
-                pass
+                    log_ews("createitem_queue_processed", {})
+            except Exception as e:
+                log_ews("createitem_queue_error", {"error": str(e)})
 
             body = (
                 f'<m:CreateItemResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
