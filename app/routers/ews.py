@@ -98,16 +98,62 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
 
         text = raw.decode("utf-8", errors="ignore")
         # Naive routing based on method names in SOAP
+        def _xml(s: str) -> str:
+            if s is None:
+                return ""
+            return (
+                str(s)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+        def _as_email(val, fallback: str = "") -> str:
+            try:
+                if not val:
+                    return fallback
+                if isinstance(val, str):
+                    return val
+                for attr in ("email", "user_email", "address", "mail"):
+                    v = getattr(val, attr, None)
+                    if isinstance(v, str) and v:
+                        return v
+                return fallback or str(val)
+            except Exception:
+                return fallback
         if "FindFolder" in text or "<m:FindFolder" in text:
-            # Enumerate key folders under root, including Contacts and Calendar
+            # Return a shallow listing of default folders under msgfolderroot
+            # Include mail, contacts, and calendar folders with minimal metadata
+            def f_mail(fid: str, name: str) -> str:
+                return (
+                    f"<t:Folder>"
+                    f'<t:FolderId Id="DF_{fid}" ChangeKey="0"/>'
+                    f"<t:DisplayName>{name}</t:DisplayName>"
+                    f"<t:FolderClass>IPF.Note</t:FolderClass>"
+                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    f"<t:TotalCount>0</t:TotalCount>"
+                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    f"</t:Folder>"
+                )
+
             folders_xml = (
-                f'<t:ContactsFolder xmlns:t="{EWS_NS_TYPES}">'
+                f_mail("inbox", "Inbox")
+                + f_mail("drafts", "Drafts")
+                + f_mail("sentitems", "Sent Items")
+                + f_mail("deleteditems", "Deleted Items")
+                + f_mail("junkemail", "Junk Email")
+                + f_mail("outbox", "Outbox")
+                + f_mail("archive", "Archive")
+                + f"<t:ContactsFolder>"
                 f'<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
                 f"<t:DisplayName>Contacts</t:DisplayName>"
-                f"</t:ContactsFolder>"
-                f'<t:CalendarFolder xmlns:t="{EWS_NS_TYPES}">'
+                f"<t:FolderClass>IPF.Contact</t:FolderClass>"
+                f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                f"</t:ContactsFolder>" + f"<t:CalendarFolder>"
                 f'<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
                 f"<t:DisplayName>Calendar</t:DisplayName>"
+                f"<t:FolderClass>IPF.Appointment</t:FolderClass>"
+                f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
                 f"</t:CalendarFolder>"
             )
             body = (
@@ -115,17 +161,25 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 f"<m:ResponseMessages>"
                 f'<m:FindFolderResponseMessage ResponseClass="Success">'
                 f"<m:ResponseCode>NoError</m:ResponseCode>"
-                f'<m:RootFolder TotalItemsInView="2" IncludesLastItemInRange="true">'
+                f'<m:RootFolder TotalItemsInView="9" IncludesLastItemInRange="true">'
                 f"<t:Folders>{folders_xml}</t:Folders>"
                 f"</m:RootFolder>"
                 f"</m:FindFolderResponseMessage>"
                 f"</m:ResponseMessages>"
                 f"</m:FindFolderResponse>"
             )
-            return Response(content=soap_envelope(body), media_type="text/xml")
+            resp = soap_envelope(body)
+            log_ews("findfolder_response", {"bytes": len(resp)})
+            return Response(content=resp, media_type="text/xml")
         if "FindItem" in text:
-            # Return last 10 emails as items; if client requests IdOnly return ItemId only
-            emails = db.query(Email).order_by(Email.created_at.desc()).limit(10).all()
+            # Return last 10 emails owned by the authenticated user; if client requests IdOnly return ItemId only
+            emails = (
+                db.query(Email)
+                .filter(Email.recipient_id == user.id)
+                .order_by(Email.created_at.desc())
+                .limit(10)
+                .all()
+            )
             wants_id_only = "<t:BaseShape>IdOnly</t:BaseShape>" in text
             # Determine target folder
             import re
@@ -194,7 +248,16 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
                 else:
                     items_xml = "".join(
                         [
-                            f'<t:Message xmlns:t="{EWS_NS_TYPES}"><t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/><t:Subject>{(e.subject or "").replace("&","&amp;")}</t:Subject></t:Message>'
+                            f'<t:Message xmlns:t="{EWS_NS_TYPES}">'
+                            f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>'
+                            f"<t:Subject>{(e.subject or '').replace('&','&amp;')}</t:Subject>"
+                            f"<t:DateTimeReceived>{(e.created_at.strftime('%Y-%m-%dT%H:%M:%SZ') if getattr(e,'created_at',None) else '')}</t:DateTimeReceived>"
+                            f"<t:ItemClass>IPM.Note</t:ItemClass>"
+                            f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>"
+                            f"<t:HasAttachments>false</t:HasAttachments>"
+                            f"<t:ParentFolderId Id=\"DF_inbox\" ChangeKey=\"0\"/>"
+                            f"<t:From><t:Mailbox><t:EmailAddress>{(getattr(e,'sender_email', None) or getattr(e,'external_sender', '') or '').replace('&','&amp;')}</t:EmailAddress></t:Mailbox></t:From>"
+                            f"</t:Message>"
                             for e in emails
                         ]
                     )
@@ -236,44 +299,230 @@ async def ews_aspx(request: Request, db: Session = Depends(get_db)):
             def folder_xml(fid: str) -> str:
                 name = display_map.get(fid, fid)
                 if fid == "contacts":
-                    return f'<t:ContactsFolder xmlns:t="{EWS_NS_TYPES}"><t:FolderId Id="DF_contacts" ChangeKey="0"/><t:DisplayName>{name}</t:DisplayName><t:FolderClass>IPF.Contact</t:FolderClass></t:ContactsFolder>'
+                    return f'<t:ContactsFolder xmlns:t="{EWS_NS_TYPES}"><t:FolderId Id="DF_contacts" ChangeKey="0"/><t:ParentFolderId Id="DF_root" ChangeKey="0"/><t:FolderClass>IPF.Contact</t:FolderClass><t:DisplayName>{name}</t:DisplayName><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount><t:UnreadCount>0</t:UnreadCount></t:ContactsFolder>'
                 if fid == "calendar":
-                    return f'<t:CalendarFolder xmlns:t="{EWS_NS_TYPES}"><t:FolderId Id="DF_calendar" ChangeKey="0"/><t:DisplayName>{name}</t:DisplayName><t:FolderClass>IPF.Appointment</t:FolderClass></t:CalendarFolder>'
+                    return f'<t:CalendarFolder xmlns:t="{EWS_NS_TYPES}"><t:FolderId Id="DF_calendar" ChangeKey="0"/><t:ParentFolderId Id="DF_root" ChangeKey="0"/><t:FolderClass>IPF.Appointment</t:FolderClass><t:DisplayName>{name}</t:DisplayName><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount><t:UnreadCount>0</t:UnreadCount></t:CalendarFolder>'
                 if fid == "msgfolderroot":
                     # Advertise child count so clients attempt discovery
                     return f'<t:Folder><t:FolderId Id="DF_root" ChangeKey="0"/><t:DisplayName>{name}</t:DisplayName><t:ChildFolderCount>2</t:ChildFolderCount></t:Folder>'
-                return f'<t:Folder><t:FolderId Id="DF_{fid}" ChangeKey="0"/><t:DisplayName>{name}</t:DisplayName></t:Folder>'
+                # add basic counts; compute inbox total from DB
+                total = 0
+                if fid == "inbox":
+                    try:
+                        total = (
+                            db.query(Email)
+                            .filter(Email.recipient_id == user.id)
+                            .count()
+                        )
+                    except Exception:
+                        total = 0
+                return (
+                    f"<t:Folder>"
+                    f'<t:FolderId Id="DF_{fid}" ChangeKey="0"/>'
+                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    f"<t:FolderClass>IPF.Note</t:FolderClass>"
+                    f"<t:DisplayName>{name}</t:DisplayName>"
+                    f"<t:TotalCount>{total}</t:TotalCount>"
+                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    f"<t:UnreadCount>0</t:UnreadCount>"
+                    f"</t:Folder>"
+                )
 
-            folders_xml = "".join([folder_xml(fid) for fid in requested_ids])
+            # Per EWS, return one ResponseMessage per requested folder
+            response_messages = "".join(
+                [
+                    (
+                        f'<m:GetFolderResponseMessage ResponseClass="Success">'
+                        f"<m:ResponseCode>NoError</m:ResponseCode>"
+                        f"<m:Folders>{folder_xml(fid)}</m:Folders>"
+                        f"</m:GetFolderResponseMessage>"
+                    )
+                    for fid in requested_ids
+                ]
+            )
             body = (
                 f'<m:GetFolderResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
                 f"<m:ResponseMessages>"
-                f'<m:GetFolderResponseMessage ResponseClass="Success">'
-                f"<m:ResponseCode>NoError</m:ResponseCode>"
-                f"<m:Folders>{folders_xml}</m:Folders>"
-                f"</m:GetFolderResponseMessage>"
+                f"{response_messages}"
                 f"</m:ResponseMessages>"
                 f"</m:GetFolderResponse>"
             )
-            return Response(content=soap_envelope(body), media_type="text/xml")
-        if "GetItem" in text:
-            # Return a single dummy item with body preview
-            email = db.query(Email).order_by(Email.created_at.desc()).first()
-            subj = (email.subject if email else "(no subject)").replace("&", "&amp;")
-            body_txt = (email.body if (email and email.body) else "").replace(
-                "&", "&amp;"
+            resp = soap_envelope(body)
+            log_ews("getfolder_response", {"bytes": len(resp)})
+            return Response(content=resp, media_type="text/xml")
+        if "SyncFolderHierarchy" in text:
+            # Return full default tree as "Create" changes with a static sync state
+            def f_mail(fid: str, name: str) -> str:
+                return (
+                    f"<t:Create>"
+                    f"<t:Folder>"
+                    f'<t:FolderId Id="DF_{fid}" ChangeKey="0"/>'
+                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    f"<t:FolderClass>IPF.Note</t:FolderClass>"
+                    f"<t:DisplayName>{name}</t:DisplayName>"
+                    f"<t:TotalCount>0</t:TotalCount>"
+                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    f"<t:UnreadCount>0</t:UnreadCount>"
+                    f"</t:Folder>"
+                    f"</t:Create>"
+                )
+
+            changes = (
+                f_mail("inbox", "Inbox")
+                + f_mail("drafts", "Drafts")
+                + f_mail("sentitems", "Sent Items")
+                + f_mail("deleteditems", "Deleted Items")
+                + f_mail("junkemail", "Junk Email")
+                + f_mail("outbox", "Outbox")
+                + f_mail("archive", "Archive")
+                + (
+                    f"<t:Create><t:ContactsFolder>"
+                    f'<t:FolderId Id="DF_contacts" ChangeKey="0"/>'
+                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    f"<t:FolderClass>IPF.Contact</t:FolderClass>"
+                    f"<t:DisplayName>Contacts</t:DisplayName>"
+                    f"<t:TotalCount>0</t:TotalCount>"
+                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    f"<t:UnreadCount>0</t:UnreadCount>"
+                    f"</t:ContactsFolder></t:Create>"
+                )
+                + (
+                    f"<t:Create><t:CalendarFolder>"
+                    f'<t:FolderId Id="DF_calendar" ChangeKey="0"/>'
+                    f'<t:ParentFolderId Id="DF_root" ChangeKey="0"/>'
+                    f"<t:FolderClass>IPF.Appointment</t:FolderClass>"
+                    f"<t:DisplayName>Calendar</t:DisplayName>"
+                    f"<t:TotalCount>0</t:TotalCount>"
+                    f"<t:ChildFolderCount>0</t:ChildFolderCount>"
+                    f"<t:UnreadCount>0</t:UnreadCount>"
+                    f"</t:CalendarFolder></t:Create>"
+                )
             )
+            # If client sent SyncState, return empty Changes (already synced)
+            import re
+
+            has_state = re.search(r"<SyncState>(.*?)</SyncState>", text)
+            sync_state = has_state.group(1) if has_state else "HIER_BASE_1"
+            resp_changes = "" if has_state else changes
+            body = (
+                f'<m:SyncFolderHierarchyResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:SyncFolderHierarchyResponseMessage ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"<m:SyncState>{sync_state}</m:SyncState>"
+                f"<m:IncludesLastFolderInRange>true</m:IncludesLastFolderInRange>"
+                f"<m:Changes>{resp_changes}</m:Changes>"
+                f"</m:SyncFolderHierarchyResponseMessage>"
+                f"</m:ResponseMessages>"
+                f"</m:SyncFolderHierarchyResponse>"
+            )
+            resp = soap_envelope(body)
+            log_ews("syncfolderhierarchy_response", {"bytes": len(resp)})
+            return Response(content=resp, media_type="text/xml")
+        if "SyncFolderItems" in text:
+            # Provide a minimal delta for Inbox: create a few ItemIds from DB
+            import re
+
+            mfolder = re.search(r'<t:FolderId[^>]*Id="([^"]+)"', text)
+            folder_id = mfolder.group(1) if mfolder else "DF_inbox"
+
+            emails = (
+                db.query(Email)
+                .filter(Email.recipient_id == user.id)
+                .order_by(Email.created_at.desc())
+                .limit(10)
+                .all()
+            )
+            creates = "".join(
+                [
+                    (
+                        f"<t:Create><t:Message>"
+                        f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>'
+                        f'<t:ParentFolderId Id="{folder_id}" ChangeKey="0"/>'
+                        f"</t:Message></t:Create>"
+                    )
+                    for e in emails
+                ]
+            )
+            # If client sends SyncState, return empty delta to indicate up-to-date
+            has_state = re.search(r"<SyncState>(.*?)</SyncState>", text)
+            sync_state = has_state.group(1) if has_state else "ITEMS_BASE_1"
+            resp_changes = "" if has_state else creates
+            body = (
+                f'<m:SyncFolderItemsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:SyncFolderItemsResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"<m:SyncState>{sync_state}</m:SyncState>"
+                f"<m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>"
+                f"<m:Changes>{resp_changes}</m:Changes>"
+                f"</m:SyncFolderItemsResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:SyncFolderItemsResponse>"
+            )
+            resp = soap_envelope(body)
+            log_ews(
+                "syncfolderitems_response", {"count": len(emails), "bytes": len(resp)}
+            )
+            return Response(content=resp, media_type="text/xml")
+        if "GetItem" in text:
+            # Return requested items mapped from DB for the authenticated user
+            import re
+
+            def iso(dt):
+                return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else ""
+
+            ids = re.findall(r'<t:ItemId[^>]*Id="ITEM_(\d+)"', text)
+            emails = (
+                db.query(Email)
+                .filter(
+                    Email.recipient_id == user.id,
+                    Email.id.in_([int(i) for i in ids] if ids else [-1]),
+                )
+                .all()
+            )
+            items_xml = "".join(
+                [
+                    (
+                        f'<t:Message xmlns:t="{EWS_NS_TYPES}">'
+                        f'<t:ItemId Id="ITEM_{e.id}" ChangeKey="0"/>'
+                        f"<t:Subject>{_xml(getattr(e, 'subject', ''))}</t:Subject>"
+                        f"<t:DateTimeSent>{iso(getattr(e, 'created_at', None))}</t:DateTimeSent>"
+                        f"<t:DateTimeReceived>{iso(getattr(e, 'created_at', None))}</t:DateTimeReceived>"
+                        f"<t:ItemClass>IPM.Note</t:ItemClass>"
+                        f"<t:Size>{getattr(e, 'size', 0) or 0}</t:Size>"
+                        f"<t:From><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:From>"
+                        f"<t:Sender><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:EmailAddress></t:Mailbox></t:Sender>"
+                        f"<t:ToRecipients><t:Mailbox><t:EmailAddress>{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:EmailAddress></t:Mailbox></t:ToRecipients>"
+                        f"<t:IsRead>{'true' if getattr(e, 'is_read', True) else 'false'}</t:IsRead>"
+                        f"<t:HasAttachments>false</t:HasAttachments>"
+                        f"<t:InternetMessageId>&lt;ITEM_{e.id}@local&gt;</t:InternetMessageId>"
+                        f"<t:InternetMessageHeaders>"
+                        f'<t:InternetMessageHeader HeaderName="X-Server">365-Email-System</t:InternetMessageHeader>'
+                        f"<t:InternetMessageHeader HeaderName=\"From\">{_xml(getattr(e, 'sender_email', None) or getattr(e, 'external_sender', '') or '')}</t:InternetMessageHeader>"
+                        f"<t:InternetMessageHeader HeaderName=\"To\">{_xml(getattr(e, 'recipient_email', None) or getattr(e, 'external_recipient', '') or getattr(user,'email',''))}</t:InternetMessageHeader>"
+                        f"<t:InternetMessageHeader HeaderName=\"Subject\">{_xml(getattr(e, 'subject', ''))}</t:InternetMessageHeader>"
+                        f"</t:InternetMessageHeaders>"
+                        f"</t:Message>"
+                    )
+                    for e in emails
+                ]
+            )
+            if not items_xml:
+                items_xml = ""
             body = (
                 f'<m:GetItemResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
                 f"<m:ResponseMessages>"
                 f'<m:GetItemResponseMessage ResponseClass="Success">'
                 f"<m:ResponseCode>NoError</m:ResponseCode>"
-                f'<m:Items><t:Message><t:Subject>{subj}</t:Subject><t:Body BodyType="Text">{body_txt[:512]}</t:Body></t:Message></m:Items>'
+                f"<m:Items>{items_xml}</m:Items>"
                 f"</m:GetItemResponseMessage>"
                 f"</m:ResponseMessages>"
                 f"</m:GetItemResponse>"
             )
-            return Response(content=soap_envelope(body), media_type="text/xml")
+            resp = soap_envelope(body)
+            log_ews("getitem_response", {"count": len(emails), "bytes": len(resp)})
+            return Response(content=resp, media_type="text/xml")
         if "ResolveNames" in text:
             # Echo back an email address from request if found
             import re

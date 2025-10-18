@@ -19,10 +19,13 @@ from app.database import (
 )
 from app.email_queue import Base as QueueBase
 from app.queue_processor import queue_processor
+
+# Import ActiveSync from its own module
 from app.routers import (
+    activesync,
     auth,
-    caldav_carddav,
     autodiscover,
+    caldav_carddav,
     calendar,
     contacts,
     debug,
@@ -40,8 +43,6 @@ from app.routers import websocket as ws_router
 from app.routers import (
     websocket_simple,
 )
-# Import ActiveSync from its own module
-from app.routers import activesync
 from app.smtp_server import start_smtp_server_25, stop_smtp_server_25
 
 

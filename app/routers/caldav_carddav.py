@@ -4,7 +4,7 @@ from typing import List
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
-from ..database import get_db, CalendarEvent, Contact
+from ..database import CalendarEvent, Contact, get_db
 
 router = APIRouter(prefix="", tags=["caldav-carddav"])  # mounted directly
 
@@ -14,6 +14,7 @@ def _iso(dt: datetime | None) -> str:
 
 
 def _event_to_ical(ev: CalendarEvent) -> str:
+    subject_clean = (ev.subject or "").replace("\n", " ")
     return (
         "BEGIN:VCALENDAR\r\n"
         "VERSION:2.0\r\n"
@@ -23,7 +24,7 @@ def _event_to_ical(ev: CalendarEvent) -> str:
         f"DTSTAMP:{_iso(ev.created_at)}\r\n"
         f"DTSTART:{_iso(ev.start_time)}\r\n"
         f"DTEND:{_iso(ev.end_time)}\r\n"
-        f"SUMMARY:{(ev.subject or '').replace('\n',' ')}\r\n"
+        f"SUMMARY:{subject_clean}\r\n"
         "END:VEVENT\r\n"
         "END:VCALENDAR\r\n"
     )
@@ -50,16 +51,79 @@ async def carddav_collection(db: Session = Depends(get_db)):
     return Response(content=body, media_type="text/vcard")
 
 
+# CardDAV WebDAV discovery for Thunderbird
+@router.options("/carddav/addressbook/")
+async def carddav_options():
+    return Response(
+        status_code=204,
+        headers={
+            "DAV": "1, addressbook",
+            "Allow": "OPTIONS, PROPFIND, REPORT, GET",
+        },
+    )
+
+
+@router.api_route("/carddav/addressbook/", methods=["PROPFIND"])
+async def carddav_propfind(request: Request):
+    # Minimal multistatus describing the addressbook collection
+    xml = (
+        """
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:response>
+    <d:href>/carddav/addressbook/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype>
+          <d:collection/>
+          <card:addressbook/>
+        </d:resourcetype>
+        <d:displayname>Address Book</d:displayname>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+ </d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.api_route("/carddav/addressbook/", methods=["REPORT"])
+async def carddav_report(request: Request, db: Session = Depends(get_db)):
+    # Return all contacts inline as address-data in a multistatus
+    contacts = db.query(Contact).limit(50).all()
+    responses = []
+    for c in contacts:
+        uid = f"CONTACT_{c.id}.vcf"
+        vcard = _contact_to_vcard(c)
+        # Simple, weak ETag based on id
+        etag = f'"{c.id}"'
+        responses.append(
+            f"<d:response><d:href>/carddav/addressbook/{uid}</d:href>"
+            f"<d:propstat><d:prop>"
+            f"<d:getetag>{etag}</d:getetag>"
+            f'<card:address-data xmlns:card="urn:ietf:params:xml:ns:carddav">{vcard}</card:address-data>'
+            f"</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+        )
+    body = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">'
+        + "".join(responses)
+        + "</d:multistatus>"
+    )
+    return Response(content=body, media_type="application/xml", status_code=207)
+
+
 # Well-known discovery endpoints so clients can find the collections
 @router.get("/.well-known/carddav")
 async def well_known_carddav():
-    # Minimal redirect-like hint using 301 would need RedirectResponse, but to keep simple
-    return Response(status_code=200, content="/carddav/addressbook/", media_type="text/plain")
+    return Response(status_code=301, headers={"Location": "/carddav/addressbook/"})
 
 
 @router.get("/.well-known/caldav")
 async def well_known_caldav():
-    return Response(status_code=200, content="/caldav/calendar/", media_type="text/plain")
+    return Response(status_code=301, headers={"Location": "/caldav/calendar/"})
 
 
 # CardDAV single resource
@@ -77,7 +141,10 @@ async def carddav_item(uid: str, db: Session = Depends(get_db)):
 @router.get("/caldav/calendar/")
 async def caldav_collection(db: Session = Depends(get_db)):
     events: List[CalendarEvent] = (
-        db.query(CalendarEvent).order_by(CalendarEvent.start_time.desc()).limit(50).all()
+        db.query(CalendarEvent)
+        .order_by(CalendarEvent.start_time.desc())
+        .limit(50)
+        .all()
     )
     body = "".join(_event_to_ical(e) for e in events)
     return Response(content=body, media_type="text/calendar")
@@ -92,3 +159,114 @@ async def caldav_item(uid: str, db: Session = Depends(get_db)):
         if ev:
             return Response(content=_event_to_ical(ev), media_type="text/calendar")
     return Response(status_code=status.HTTP_404_NOT_FOUND)
+
+
+# CalDAV WebDAV discovery
+@router.options("/caldav/calendar/")
+async def caldav_options():
+    return Response(
+        status_code=204,
+        headers={
+            "DAV": "1, 2, calendar-access",
+            "Allow": "OPTIONS, PROPFIND, REPORT, GET",
+        },
+    )
+
+
+@router.api_route("/caldav/", methods=["PROPFIND"])
+async def caldav_home_propfind(request: Request):
+    # Advertise the calendar-home-set for the current user
+    xml = (
+        """
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/caldav/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/></d:resourcetype>
+        <cal:calendar-home-set><d:href>/caldav/calendar/</d:href></cal:calendar-home-set>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.api_route("/carddav/", methods=["PROPFIND"])
+async def carddav_home_propfind(request: Request):
+    # Advertise the addressbook-home-set for the current user
+    xml = (
+        """
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+  <d:response>
+    <d:href>/carddav/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/></d:resourcetype>
+        <card:addressbook-home-set><d:href>/carddav/addressbook/</d:href></card:addressbook-home-set>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.api_route("/caldav/calendar/", methods=["PROPFIND"])
+async def caldav_propfind(request: Request):
+    # Describe the calendar collection
+    xml = (
+        """
+<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/caldav/calendar/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+        <d:displayname>Calendar</d:displayname>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+    ).strip()
+    return Response(content=xml, media_type="application/xml", status_code=207)
+
+
+@router.api_route("/caldav/calendar/", methods=["REPORT"])
+async def caldav_report(request: Request, db: Session = Depends(get_db)):
+    # Return all events as calendar-data in a multistatus
+    events: List[CalendarEvent] = (
+        db.query(CalendarEvent)
+        .order_by(CalendarEvent.start_time.desc())
+        .limit(50)
+        .all()
+    )
+    responses = []
+    for e in events:
+        uid = f"CAL_{e.id}.ics"
+        ical = _event_to_ical(e)
+        etag = f'"{e.id}"'
+        responses.append(
+            f"<d:response><d:href>/caldav/calendar/{uid}</d:href>"
+            f"<d:propstat><d:prop>"
+            f"<d:getetag>{etag}</d:getetag>"
+            f'<cal:calendar-data xmlns:cal="urn:ietf:params:xml:ns:caldav">{ical}</cal:calendar-data>'
+            f"</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+        )
+    body = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">'
+        + "".join(responses)
+        + "</d:multistatus>"
+    )
+    return Response(content=body, media_type="application/xml", status_code=207)
