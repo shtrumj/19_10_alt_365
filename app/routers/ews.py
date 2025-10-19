@@ -10,6 +10,7 @@ from ..database import Email, EmailAttachment, SessionLocal
 from ..diagnostic_logger import log_ews
 from ..email_delivery import email_delivery
 from ..ews_push import ews_push_hub
+from ..services.gal_service import GalService
 
 router = APIRouter(prefix="/EWS", tags=["ews"])
 
@@ -864,13 +865,97 @@ async def ews_aspx(request: Request):
             resp = soap_envelope(body)
             log_ews("getitem_response", {"count": len(emails), "bytes": len(resp)})
             return Response(content=resp, media_type="text/xml")
+        if "FindPeople" in text:
+            import re
+
+            q_match = re.search(r"<t:QueryString>([\s\S]*?)</t:QueryString>", text)
+            query = q_match.group(1).strip() if q_match else ""
+            try:
+                gal_service = GalService(db)
+                people = gal_service.search(query, limit=50)
+            except Exception:
+                people = []
+
+            def _persona(entry) -> str:
+                phone_xml = []
+                if entry.business_phone:
+                    phone_xml.append(
+                        f'<t:Entry Key="BusinessPhone">{_xml(entry.business_phone)}</t:Entry>'
+                    )
+                if entry.mobile_phone:
+                    phone_xml.append(
+                        f'<t:Entry Key="MobilePhone">{_xml(entry.mobile_phone)}</t:Entry>'
+                    )
+                titles_xml = (
+                    f"<t:Titles><t:String>{_xml(entry.job_title)}</t:String></t:Titles>"
+                    if entry.job_title
+                    else ""
+                )
+                companies_xml = (
+                    f"<t:CompanyNames><t:String>{_xml(entry.company)}</t:String></t:CompanyNames>"
+                    if entry.company
+                    else ""
+                )
+                office_xml = (
+                    f"<t:OfficeLocations><t:String>{_xml(entry.office_location)}</t:String></t:OfficeLocations>"
+                    if entry.office_location
+                    else ""
+                )
+                email_xml = (
+                    "<t:EmailAddresses>"
+                    f'<t:Entry Key="EmailAddress1">{_xml(entry.email)}</t:Entry>'
+                    "</t:EmailAddresses>"
+                )
+                phone_block = (
+                    f"<t:PhoneNumbers>{''.join(phone_xml)}</t:PhoneNumbers>"
+                    if phone_xml
+                    else ""
+                )
+                dept_xml = (
+                    f"<t:Departments><t:String>{_xml(entry.department)}</t:String></t:Departments>"
+                    if entry.department
+                    else ""
+                )
+                return (
+                    "<t:Persona>"
+                    f'<t:PersonaId Id="GAL_{entry.uuid}" ChangeKey="0"/>'
+                    "<t:PersonaType>Person</t:PersonaType>"
+                    f"<t:DisplayName>{_xml(entry.display_name or entry.email)}</t:DisplayName>"
+                    f"{email_xml}"
+                    f"{titles_xml}"
+                    f"{companies_xml}"
+                    f"{dept_xml}"
+                    f"{office_xml}"
+                    f"{phone_block}"
+                    "</t:Persona>"
+                )
+
+            personas_xml = "".join([_persona(p) for p in people])
+            body = (
+                f'<m:FindPeopleResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:FindPeopleResponseMessage ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"<m:People>"
+                f"<t:TotalNumberOfPeopleInView>{len(people)}</t:TotalNumberOfPeopleInView>"
+                f"<t:FirstMatchingRowIndex>0</t:FirstMatchingRowIndex>"
+                f"<t:FirstLoadedRowIndex>0</t:FirstLoadedRowIndex>"
+                f"<t:People>{personas_xml}</t:People>"
+                f"</m:People>"
+                f"</m:FindPeopleResponseMessage>"
+                f"</m:ResponseMessages>"
+                f"</m:FindPeopleResponse>"
+            )
+            log_ews("findpeople_response", {"count": len(people)})
+            return Response(content=soap_envelope(body), media_type="text/xml")
         if "ResolveNames" in text:
-            # Search personal contacts first; fall back to echo of entry
+            # Search personal contacts and organisation-wide GAL entries.
             import re
 
             m = re.search(r"<UnresolvedEntry>([^<]+)</UnresolvedEntry>", text)
             entry = (m.group(1) if m else "").strip()
             resolutions = []
+            seen_addresses = set()
             try:
                 from ..database import Contact
 
@@ -886,15 +971,61 @@ async def ews_aspx(request: Request):
                         .all()
                     )
                     for c in q:
+                        email_value = (c.email_address_1 or "").strip()
+                        if not email_value:
+                            continue
+                        seen_addresses.add(email_value.lower())
                         resolutions.append(
-                            f"<t:Resolution><t:Mailbox><t:Name>{_xml(c.display_name or '')}</t:Name><t:EmailAddress>{_xml(c.email_address_1 or '')}</t:EmailAddress></t:Mailbox></t:Resolution>"
+                            "<t:Resolution>"
+                            "<t:Mailbox>"
+                            f"<t:Name>{_xml(c.display_name or email_value)}</t:Name>"
+                            f"<t:EmailAddress>{_xml(email_value)}</t:EmailAddress>"
+                            "<t:RoutingType>SMTP</t:RoutingType>"
+                            "<t:MailboxType>Mailbox</t:MailboxType>"
+                            "</t:Mailbox>"
+                            "</t:Resolution>"
                         )
             except Exception:
                 pass
+
+            try:
+                gal_service = GalService(db)
+                gal_results = (
+                    gal_service.search(entry, limit=10)
+                    if entry
+                    else gal_service.get_all(limit=25)
+                )
+                for gal in gal_results:
+                    gal_email = (gal.email or "").strip()
+                    if not gal_email:
+                        continue
+                    if gal_email.lower() in seen_addresses:
+                        continue
+                    seen_addresses.add(gal_email.lower())
+                    name = gal.display_name or gal_email
+                    resolutions.append(
+                        "<t:Resolution>"
+                        "<t:Mailbox>"
+                        f"<t:Name>{_xml(name)}</t:Name>"
+                        f"<t:EmailAddress>{_xml(gal_email)}</t:EmailAddress>"
+                        "<t:RoutingType>SMTP</t:RoutingType>"
+                        "<t:MailboxType>Mailbox</t:MailboxType>"
+                        "</t:Mailbox>"
+                        "</t:Resolution>"
+                    )
+            except Exception:
+                pass
+
             if not resolutions:
-                # Fallback to echo
+                target = entry or "user@example.com"
                 resolutions.append(
-                    f"<t:Resolution><t:Mailbox><t:EmailAddress>{_xml(entry or 'user@example.com')}</t:EmailAddress></t:Mailbox></t:Resolution>"
+                    "<t:Resolution>"
+                    "<t:Mailbox>"
+                    f"<t:EmailAddress>{_xml(target)}</t:EmailAddress>"
+                    "<t:RoutingType>SMTP</t:RoutingType>"
+                    "<t:MailboxType>Mailbox</t:MailboxType>"
+                    "</t:Mailbox>"
+                    "</t:Resolution>"
                 )
             body = (
                 f'<m:ResolveNamesResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'

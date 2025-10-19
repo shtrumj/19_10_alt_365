@@ -28,6 +28,7 @@ from ..mapi_protocol import (
     session_manager,
 )
 from ..mapi_store import message_store
+from ..services.gal_service import GalService
 
 try:
     import gssapi  # Kerberos (Negotiate) acceptor
@@ -750,31 +751,45 @@ async def mapi_nspi(request: Request, db: Session = Depends(get_db)):
             if operation == 0x01:  # NspiGetMatches (GAL search)
                 log_mapi("nspi_get_matches", {"request_id": request_id})
 
-                # Get users for GAL
-                users = db.query(User).order_by(User.full_name.asc()).limit(100).all()
+                gal_service = GalService(db)
+                search_term = ""
+                if len(body) > 8:
+                    candidate = body[8:]
+                    try:
+                        search_term = (
+                            candidate.decode("utf-16-le", errors="ignore")
+                            .strip("\x00")
+                            .strip()
+                        )
+                    except Exception:
+                        search_term = (
+                            candidate.decode("utf-8", errors="ignore")
+                            .strip("\x00")
+                            .strip()
+                        )
+                entries = gal_service.search(search_term or None, limit=100)
 
                 # Build NSPI response with user data
                 response_data = struct.pack("<I", 0)  # Success status
-                response_data += struct.pack("<I", len(users))  # User count
+                response_data += struct.pack("<I", len(entries))  # Entry count
 
-                for user in users:
-                    # Add user properties (simplified NSPI format)
-                    display_name = (user.full_name or user.username or "").encode(
-                        "utf-8"
-                    )[:64]
-                    email = (user.email or "").encode("utf-8")[:128]
+                def _pack_string(value: str, max_len: int = 255) -> bytes:
+                    encoded = (value or "").encode("utf-8")[:max_len]
+                    return struct.pack("<H", len(encoded)) + encoded
 
-                    response_data += struct.pack("<H", len(display_name))
-                    response_data += display_name
-                    response_data += struct.pack("<H", len(email))
-                    response_data += email
+                for entry in entries:
+                    response_data += _pack_string(entry.display_name or entry.email)
+                    response_data += _pack_string(entry.email)
+                    response_data += _pack_string(entry.company or "")
+                    response_data += _pack_string(entry.department or "")
 
                 log_mapi(
                     "nspi_response",
                     {
                         "request_id": request_id,
-                        "user_count": len(users),
+                        "user_count": len(entries),
                         "operation": "GetMatches",
+                        "query": search_term,
                     },
                 )
 

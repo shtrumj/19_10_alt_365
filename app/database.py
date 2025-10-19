@@ -441,6 +441,46 @@ class Contact(Base):
         return self.folder.uuid if self.folder else None
 
 
+class GlobalAddressEntry(Base):
+    __tablename__ = "global_address_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    display_name = Column(String, index=True, nullable=False)
+    given_name = Column(String)
+    surname = Column(String)
+    email = Column(String, unique=True, index=True, nullable=False)
+    company = Column(String)
+    department = Column(String)
+    job_title = Column(String)
+    office_location = Column(String)
+    business_phone = Column(String)
+    mobile_phone = Column(String)
+    is_active = Column(Boolean, default=True, nullable=False)
+    source = Column(String, default="user")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="gal_entry", uselist=False)
+
+    def update_from_user(self, user: "User"):
+        display = user.full_name or user.username or user.email
+        self.display_name = display
+        if display:
+            parts = display.split(" ", 1)
+            self.given_name = parts[0]
+            self.surname = parts[1] if len(parts) > 1 else None
+        else:
+            self.given_name = None
+            self.surname = None
+        self.email = user.email
+        if not self.company:
+            self.company = settings.DOMAIN
+        self.is_active = user.is_active
+        self.updated_at = datetime.utcnow()
+
+
 class ContactFolder(Base):
     __tablename__ = "contact_folders"
     id = Column(Integer, primary_key=True, index=True)
@@ -654,6 +694,7 @@ def create_tables():
     except Exception as exc:
         print(f"⚠️ Failed to ensure queue tables: {exc}")
     ensure_email_mime_columns()
+    ensure_global_address_list()
 
 
 def _ensure_uuid_for_table(conn, table_name: str):
@@ -870,6 +911,59 @@ def ensure_email_mime_columns():
         pass
 
 
+def sync_gal_entry_for_user(db_session, user: User):
+    """Ensure a Global Address List entry exists for the specified user."""
+    if not user or not user.email:
+        return None
+
+    entry = (
+        db_session.query(GlobalAddressEntry)
+        .filter(GlobalAddressEntry.user_id == user.id)
+        .one_or_none()
+    )
+    if entry is None:
+        entry = GlobalAddressEntry(
+            user_id=user.id,
+            display_name=user.full_name or user.username or user.email,
+            email=user.email,
+            source="user",
+        )
+        db_session.add(entry)
+
+    entry.update_from_user(user)
+    return entry
+
+
+def ensure_global_address_list():
+    """Synchronize the GAL table with current users."""
+    session = SessionLocal()
+    try:
+        GlobalAddressEntry.__table__.create(bind=engine, checkfirst=True)
+        users = session.query(User).all()
+        seen_ids: set[int] = set()
+        for user in users:
+            entry = sync_gal_entry_for_user(session, user)
+            if entry:
+                session.flush()
+                seen_ids.add(entry.id)
+
+        if seen_ids:
+            (
+                session.query(GlobalAddressEntry)
+                .filter(
+                    GlobalAddressEntry.user_id.isnot(None),
+                    ~GlobalAddressEntry.id.in_(seen_ids),
+                )
+                .update({"is_active": False}, synchronize_session=False)
+            )
+        session.commit()
+    except Exception as exc:
+        print(f"⚠️ Failed to synchronize GAL entries: {exc}")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def set_admin_user(email: str, username: str | None = None):
     """Set a given user as admin by email or username if provided."""
     db = SessionLocal()
@@ -881,6 +975,7 @@ def set_admin_user(email: str, username: str | None = None):
             user = db.query(User).filter(User.username == username).first()
         if user and not getattr(user, "admin", False):
             user.admin = True
+            sync_gal_entry_for_user(db, user)
             db.commit()
     except Exception:
         db.rollback()

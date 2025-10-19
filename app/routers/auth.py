@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from datetime import timedelta
-from ..database import get_db, User
+from ..database import get_db, User, sync_gal_entry_for_user
 from ..models import UserCreate, UserResponse, Token
 from ..auth import authenticate_user, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES
 from ..language import get_language, get_translation, get_direction, get_all_translations
@@ -64,7 +64,9 @@ def api_register(user: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    
+    sync_gal_entry_for_user(db, db_user)
+    db.commit()
+
     return db_user
 
 @router.post("/api/login", response_model=Token)
@@ -157,6 +159,8 @@ async def web_register(request: Request, db: Session = Depends(get_db)):
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
+        sync_gal_entry_for_user(db, db_user)
+        db.commit()
         
         # Auto-login after registration
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
