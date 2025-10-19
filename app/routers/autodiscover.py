@@ -149,6 +149,7 @@ async def autodiscover(request: Request):
     escaped_as = html.escape(activesync_url)
     escaped_mapi = html.escape(mapi_url)
     escaped_oab = html.escape(oab_url)
+    escaped_smtp_port = html.escape(str(settings.SMTP_PORT))
     server_dn = html.escape(server_dn_raw)
     mailbox_dn = html.escape(mailbox_dn_raw)
 
@@ -260,8 +261,9 @@ async def autodiscover(request: Request):
       <Protocol>
         <Type>SMTP</Type>
         <Server>{escaped_host}</Server>
-        <Port>25</Port>
-        <SSL>Off</SSL>
+        <Port>{escaped_smtp_port}</Port>
+        <SSL>On</SSL>
+        <Encryption>TLS</Encryption>
         <SPA>Off</SPA>
         <AuthPackage>Basic</AuthPackage>
         <LoginName>{escaped_email}</LoginName>
@@ -438,8 +440,9 @@ async def autodiscover_json(email_address: str, request: Request):
                 {
                     "Type": "SMTP",
                     "Server": host,
-                    "Port": 25,
-                    "SSL": "Off",
+                    "Port": settings.SMTP_PORT,
+                    "SSL": "On",
+                    "Encryption": "TLS",
                     "SPA": "Off",
                     "AuthPackage": "Basic",
                     "LoginName": email_address,

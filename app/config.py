@@ -14,7 +14,10 @@ class Settings:
     SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production-make-it-long-and-random")
     
     # Database
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./email_system.db")
+    DATABASE_URL = os.getenv(
+        "DATABASE_URL",
+        "postgresql+psycopg2://postgres:postgres@localhost:5432/email_system",
+    )
     
     # Domain and Hostname
     DOMAIN = os.getenv("DOMAIN", "owa.shtrum.com")

@@ -91,6 +91,7 @@ class EmailHandler:
                     break
 
                 line_text = line_bytes.decode("utf-8", errors="ignore")
+                upper_line = line_text.strip().upper()
 
                 if data_mode:
                     stripped = line_text.rstrip("\r\n")
@@ -118,19 +119,53 @@ class EmailHandler:
                 command = line_text.strip()
                 logger.info(f"🔗 [{connection_id}] Command: {command}")
 
-                if command.upper().startswith("EHLO") or command.upper().startswith(
-                    "HELO"
-                ):
-                    # For now, don't advertise STARTTLS to avoid TLS issues
-                    writer.write(
-                        b"250-Hello\r\n250-SIZE 33554432\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250 HELP\r\n"
-                    )
+                if upper_line.startswith("EHLO"):
+                    capabilities = [
+                        "250-Hello",
+                        "250-SIZE 33554432",
+                        "250-8BITMIME",
+                        "250-SMTPUTF8",
+                    ]
+                    if self.ssl_context and not tls_started:
+                        capabilities.insert(
+                            1,
+                            "250-STARTTLS",
+                        )
+                    capabilities.append("250 HELP")
+                    writer.write(("\r\n".join(capabilities) + "\r\n").encode())
                     await writer.drain()
 
-                elif command.upper() == "STARTTLS":
-                    # TLS not implemented yet
-                    writer.write(b"454 TLS not available\r\n")
+                elif upper_line.startswith("HELO"):
+                    writer.write(b"250 Hello\r\n")
                     await writer.drain()
+
+                elif upper_line == "STARTTLS":
+                    if not self.ssl_context:
+                        writer.write(b"454 TLS not available\r\n")
+                        await writer.drain()
+                        continue
+                    if tls_started or writer.get_extra_info("ssl_object"):
+                        writer.write(b"503 TLS already active\r\n")
+                        await writer.drain()
+                        continue
+
+                    writer.write(b"220 Ready to start TLS\r\n")
+                    await writer.drain()
+
+                    try:
+                        await writer.start_tls(self.ssl_context)
+                        tls_started = True
+                        mail_from = None
+                        rcpt_to = []
+                        data_mode = False
+                        data_buffer = []
+                        logger.info(f"🔗 [{connection_id}] TLS negotiation successful")
+                    except Exception as tls_error:
+                        logger.error(
+                            f"❌ [{connection_id}] TLS negotiation failed: {tls_error}"
+                        )
+                        writer.write(b"454 TLS not available\r\n")
+                        await writer.drain()
 
                 elif command.upper().startswith("MAIL FROM:"):
                     raw_from = command[10:].strip()
@@ -410,7 +445,10 @@ class EmailHandler:
                 safe_subject = subject if subject else "(no subject)"
                 if not plain_body and body:
                     lowered = body.lower()
-                    if any(tag in lowered for tag in ("<html", "<body", "<div", "<p", "<table", "<br")):
+                    if any(
+                        tag in lowered
+                        for tag in ("<html", "<body", "<div", "<p", "<table", "<br")
+                    ):
                         plain_body = html_to_text(body)
                         html_body = body
                     else:
@@ -433,7 +471,7 @@ class EmailHandler:
                     raw_source_bytes = data_content.encode("utf-8", errors="ignore")
 
                 mime_content_b64 = base64.b64encode(raw_source_bytes).decode("ascii")
-                
+
                 email_record = Email(
                     subject=safe_subject,
                     body=plain_body or body,
@@ -452,12 +490,15 @@ class EmailHandler:
                 # CRITICAL: Trigger ActiveSync push notification immediately
                 # This notifies any connected iPhone/device via Ping command
                 try:
-                    from .push_notifications import notify_new_email
                     import asyncio
-                    
+
+                    from .push_notifications import notify_new_email
+
                     # Notify ActiveSync devices about new email
-                    asyncio.create_task(notify_new_email(recipient_user.id, folder_id="1"))
-                    
+                    asyncio.create_task(
+                        notify_new_email(recipient_user.id, folder_id="1")
+                    )
+
                     logger.info(
                         f"📱 Triggered ActiveSync push notification for user {recipient_user.id}"
                     )
@@ -476,7 +517,9 @@ class EmailHandler:
                     "id": email_record.id,
                     "subject": email_record.subject,
                     "sender": sender,
-                    "preview": get_email_preview((email_record.body_html or email_record.body or ""), 100),
+                    "preview": get_email_preview(
+                        (email_record.body_html or email_record.body or ""), 100
+                    ),
                     "is_read": email_record.is_read,
                     "created_at": email_record.created_at.isoformat(),
                 }

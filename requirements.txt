@@ -19,3 +19,4 @@ ntlm-auth==1.5.0
 pyotp==2.9.0
 qrcode[pil]==7.4.2
 authlib==1.2.1
+psycopg2-binary==2.9.9
