@@ -49,6 +49,7 @@ from activesync.wbxml_builder import (
     SyncBatch,
     WBXMLWriter,
     _prepare_body_payload,
+    _safe_aslog,
     build_foldersync_no_changes,
     build_foldersync_with_folders,
     build_provision_response,
@@ -4502,3 +4503,9 @@ def get_folder_emails(
             for email in emails
         ],
     }
+def _aslog(category: str, event: str, **fields: Any) -> None:
+    """Safe logging wrapper (mirrors grommunio/z-push behaviour)."""
+    try:
+        _safe_aslog(category, event, **fields)
+    except Exception:
+        pass
