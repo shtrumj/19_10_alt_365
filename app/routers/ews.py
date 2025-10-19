@@ -1,4 +1,5 @@
 import base64
+import re
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import Response
@@ -91,15 +92,29 @@ async def ews_aspx(request: Request):
 
         raw = await request.body()
         ua = request.headers.get("User-Agent")
+        preview = raw.decode("utf-8", errors="ignore")
         log_ews(
             "request",
             {
                 "ua": ua,
-                "preview": raw.decode("utf-8", errors="ignore")[:1000],
+                "preview": preview[:1000],
             },
         )
 
-        text = raw.decode("utf-8", errors="ignore")
+        text = preview
+
+        operation_name = "Unknown"
+        try:
+            op_match = re.search(
+                r"<(?:soap|s):Body[^>]*>\s*<([\w:]+)",
+                text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if op_match:
+                operation_name = op_match.group(1).split(":")[-1]
+        except Exception:
+            operation_name = "Unknown"
+        log_ews("operation_detected", {"operation": operation_name})
 
         # Naive routing based on method names in SOAP
         def _xml(s: str) -> str:
@@ -1258,8 +1273,14 @@ async def ews_aspx(request: Request):
             )
             return Response(content=soap_envelope(body), media_type="text/xml")
         # Default minimal
+        log_ews(
+            "not_implemented",
+            {
+                "operation": operation_name,
+                "preview": preview[:200],
+            },
+        )
         err = ews_error("NotImplemented")
-        log_ews("not_implemented", {})
         return Response(content=err, media_type="text/xml", status_code=200)
     except Exception as e:
         log_ews("exception", {"msg": str(e)})
