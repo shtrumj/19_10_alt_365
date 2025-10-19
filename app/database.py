@@ -31,7 +31,10 @@ DATABASE_URL = os.getenv(
     ),
 )
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -644,11 +647,20 @@ class MapiSyncState(Base):
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
+    try:
+        from .email_queue import Base as QueueBase
+
+        QueueBase.metadata.create_all(bind=engine)
+    except Exception as exc:
+        print(f"⚠️ Failed to ensure queue tables: {exc}")
     ensure_email_mime_columns()
 
 
 def _ensure_uuid_for_table(conn, table_name: str):
+    """Ensure a uuid column exists for SQLite tables; no-op for other dialects."""
     try:
+        if engine.dialect.name != "sqlite":
+            return
         result = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         columns = {row[1] for row in result}
         if "uuid" not in columns:

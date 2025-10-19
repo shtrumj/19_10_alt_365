@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from .database import User, get_db
+from .email_parser import html_to_text
 from .email_queue import EmailQueueStatus, QueuedEmail, email_queue
 from .mime_utils import build_mime_message, plain_to_html
 from .mx_lookup import mx_lookup
@@ -175,8 +176,13 @@ class EmailDeliveryService:
                 email_queue.mark_as_failed(queued_email.message_id, error_msg)
                 return
 
-            plain_body = queued_email.body or ""
-            body_html = plain_body and plain_to_html(plain_body) or ""
+            is_html = self._is_html_content(queued_email)
+            if is_html:
+                body_html = queued_email.body or ""
+                plain_body = html_to_text(body_html) if body_html else ""
+            else:
+                plain_body = queued_email.body or ""
+                body_html = plain_body and plain_to_html(plain_body) or ""
             mime_content, mime_type = build_mime_message(
                 queued_email.subject,
                 queued_email.sender_email,
@@ -253,7 +259,6 @@ class EmailDeliveryService:
                 headers=queued_email.headers or {},
                 mx_server=delivery_info["best_mx_server"],
                 mx_port=delivery_info["port"],
-                is_html_body=queued_email.is_html_body,
             )
 
             if result.success:
@@ -276,6 +281,38 @@ class EmailDeliveryService:
         except Exception as e:
             logger.error(f"Error delivering external email: {e}")
             email_queue.mark_as_failed(queued_email.message_id, str(e))
+
+    def _is_html_content(self, queued_email: QueuedEmail) -> bool:
+        """Heuristically determine if the queued email body is HTML."""
+        try:
+            headers = queued_email.headers or {}
+            if isinstance(headers, dict):
+                content_type = (
+                    headers.get("Content-Type")
+                    or headers.get("content-type")
+                    or ""
+                )
+                if isinstance(content_type, str) and "html" in content_type.lower():
+                    return True
+        except Exception:
+            pass
+
+        body = queued_email.body or ""
+        if not body:
+            return False
+        lowered = body.lower()
+        html_markers = (
+            "<html",
+            "<body",
+            "<div",
+            "<span",
+            "<table",
+            "<p",
+            "<br",
+            "<!doctype",
+            "<meta",
+        )
+        return any(marker in lowered for marker in html_markers)
 
     def queue_email(
         self,

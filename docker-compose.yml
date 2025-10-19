@@ -8,7 +8,7 @@ services:
     environment:
       # Core Configuration (override in .env file)
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/email_system.db}
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/email_system}
       - LOGS_DIR=${LOGS_DIR:-/app/logs}
       - HOSTNAME=${HOSTNAME:-owa.shtrum.com}
       - DOMAIN=${DOMAIN:-owa.shtrum.com}
@@ -30,6 +30,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # Nginx Reverse Proxy
   nginx:
@@ -48,6 +51,8 @@ services:
     depends_on:
       email-system:
         condition: service_healthy
+      data-service:
+        condition: service_started
     networks:
       - email-network
 
@@ -72,6 +77,43 @@ services:
     profiles:
       - ssl  # Only start if explicitly requested: docker-compose --profile ssl up
 
+  data-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.data-service
+    container_name: 365-data-service
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/email_system}
+      - DATA_SERVICE_TOKEN=${DATA_SERVICE_TOKEN:-change-me}
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - email-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: 365-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=email_system
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - email-network
+
 networks:
   email-network:
     driver: bridge
@@ -79,3 +121,4 @@ networks:
 volumes:
   email-data:
   email-logs:
+  postgres-data:

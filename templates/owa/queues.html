@@ -34,8 +34,11 @@
   </div>
   <div class="col-md-8">
     <div class="card border-0 shadow-sm mb-3">
-      <div class="card-header bg-white border-0">
+      <div class="card-header bg-white border-0 d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="fas fa-arrow-up text-success"></i> הודעות יוצאות (Queue)</h5>
+        <button class="btn btn-outline-danger btn-sm" onclick="clearQueue()">
+          <i class="fas fa-trash-alt"></i> נקה את כל התור
+        </button>
       </div>
       <div class="card-body">
         {% if queued_emails %}
@@ -68,9 +71,15 @@
               </td>
               <td>
                 <div class="d-flex flex-column gap-1">
+                  {% if e.status == 'sent' %}
+                  <button class="btn btn-outline-danger btn-sm" onclick='removeQueuedEmail({{ e.message_id|tojson }})'>
+                    <i class="fas fa-trash"></i> מחק מהרשימה
+                  </button>
+                  {% else %}
                   <button class="btn btn-outline-success btn-sm" onclick='resendQueuedEmail({{ e.message_id|tojson }})'>
                     <i class="fas fa-paper-plane"></i> שלח שוב
                   </button>
+                  {% endif %}
                   <small class="text-muted">{{ e.message_id }}</small>
                 </div>
               </td>
@@ -133,6 +142,49 @@ async function resendQueuedEmail(messageId){
       window.location.reload();
     } else {
       alert('שגיאה בהחזרה לתור: ' + (data.detail || JSON.stringify(data)));
+    }
+  } catch (err){
+    alert('שגיאת רשת: ' + err.message);
+  }
+}
+
+async function removeQueuedEmail(messageId){
+  if(!messageId){
+    return;
+  }
+  if(!confirm('האם למחוק פריט זה מהתור? הפעולה בלתי ניתנת לשחזור.')){
+    return;
+  }
+  try{
+    const res = await fetch('/owa/admin/actions/queue/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_id: messageId })
+    });
+    const data = await res.json();
+    if(res.ok){
+      alert('הפריט הוסר מהתור.');
+      window.location.reload();
+    } else {
+      alert('שגיאה במחיקה: ' + (data.detail || JSON.stringify(data)));
+    }
+  } catch (err){
+    alert('שגיאת רשת: ' + err.message);
+  }
+}
+
+async function clearQueue(){
+  if(!confirm('האם לנקות את כל ההודעות מהתור? הפעולה תמחק את כל הרשומות.')){
+    return;
+  }
+  try{
+    const res = await fetch('/owa/admin/actions/queue/clear', { method: 'POST' });
+    const data = await res.json();
+    if(res.ok){
+      alert('התור נוקה (' + (data.deleted || 0) + ' פריטים).');
+      window.location.reload();
+    } else {
+      alert('שגיאה בניקוי התור: ' + (data.detail || JSON.stringify(data)));
     }
   } catch (err){
     alert('שגיאת רשת: ' + err.message);

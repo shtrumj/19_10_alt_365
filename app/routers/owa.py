@@ -565,6 +565,27 @@ async def owa_admin_action_queue_flush(
     return {"status": "flushed", "fast_forwarded": updated, "cycles": cycles}
 
 
+@router.post("/admin/actions/queue/clear")
+async def owa_admin_action_queue_clear(
+    request: Request,
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+):
+    """Remove all queued email entries regardless of status."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, "admin", False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        deleted = db.query(QueuedEmail).delete(synchronize_session=False)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed clearing queue: {exc}")
+    return {"status": "cleared", "deleted": deleted}
+
+
 @router.post("/admin/actions/queue/resend")
 async def owa_admin_action_queue_resend(
     request: Request,
@@ -616,6 +637,54 @@ async def owa_admin_action_queue_resend(
 
     return {
         "status": "resent",
+        "message_id": queued.message_id,
+        "subject": queued.subject,
+        "recipient": queued.recipient_email,
+    }
+
+
+@router.post("/admin/actions/queue/delete")
+async def owa_admin_action_queue_delete(
+    request: Request,
+    payload: dict = Body(...),
+    current_user: Union[User, RedirectResponse] = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+):
+    """Delete a specific queued email entry."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, "admin", False):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    message_id = payload.get("message_id")
+    queue_id = payload.get("id")
+    if not message_id and queue_id is None:
+        raise HTTPException(status_code=400, detail="message_id or id required")
+
+    query = db.query(QueuedEmail)
+    if message_id:
+        raw = message_id.strip()
+        candidates = {raw}
+        if not raw.startswith("<"):
+            candidates.add(f"<{raw}>")
+        if raw.startswith("<") and raw.endswith(">"):
+            candidates.add(raw.strip("<>"))
+        query = query.filter(QueuedEmail.message_id.in_(list(candidates)))
+    else:
+        try:
+            queue_id = int(queue_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid queue id")
+        query = query.filter(QueuedEmail.id == queue_id)
+
+    queued = query.first()
+    if not queued:
+        raise HTTPException(status_code=404, detail="Queued email not found")
+
+    db.delete(queued)
+    db.commit()
+    return {
+        "status": "deleted",
         "message_id": queued.message_id,
         "subject": queued.subject,
         "recipient": queued.recipient_email,
