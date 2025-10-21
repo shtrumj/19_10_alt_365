@@ -6,7 +6,13 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 from ..database import get_db, User
 from ..models import UserCreate, UserResponse, Token
-from ..auth import authenticate_user, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES
+from ..auth import (
+    authenticate_user,
+    create_access_token,
+    get_password_hash,
+    compute_ntlm_hash,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+)
 
 templates = Jinja2Templates(directory="templates")
 
@@ -35,7 +41,8 @@ def api_register(user: UserCreate, db: Session = Depends(get_db)):
         username=user.username,
         email=user.email,
         hashed_password=hashed_password,
-        full_name=user.full_name
+        full_name=user.full_name,
+        ntlm_hash=compute_ntlm_hash(user.password),
     )
     
     db.add(db_user)
@@ -120,7 +127,8 @@ async def web_register(request: Request, db: Session = Depends(get_db)):
             username=form_data.get("username"),
             email=form_data.get("email"),
             hashed_password=hashed_password,
-            full_name=form_data.get("full_name")
+            full_name=form_data.get("full_name"),
+            ntlm_hash=compute_ntlm_hash(form_data.get("password")),
         )
         
         db.add(db_user)

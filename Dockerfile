@@ -1,15 +1,11 @@
-# syntax=docker/dockerfile:1.4
-
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+# Use Python 3.11 slim image (mirror to avoid Docker Hub outages)
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (using BuildKit cache mounts to avoid disk errors)
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update \
+# Install system dependencies
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         gcc \
         g++ \

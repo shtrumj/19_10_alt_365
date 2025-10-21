@@ -1,5 +1,8 @@
 import base64
+import time
 import re
+from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import Response
@@ -118,7 +121,7 @@ async def ews_aspx(request: Request):
         log_ews("operation_detected", {"operation": operation_name})
 
         # Naive routing based on method names in SOAP
-        def _xml(s: str) -> str:
+        def _xml(s: str | None) -> str:
             if s is None:
                 return ""
             return (
@@ -138,6 +141,29 @@ async def ews_aspx(request: Request):
                 return fallback or str(val)
             except Exception:
                 return fallback
+
+        def _isoformat(dt: datetime | None) -> str:
+            if not dt:
+                return ""
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        def _parse_dt(value: str | None) -> datetime | None:
+            if not value:
+                return None
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    return dt
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            except ValueError:
+                return None
 
         if "FindFolder" in text or "<m:FindFolder" in text:
             # Return a shallow listing of default folders under msgfolderroot
@@ -366,15 +392,25 @@ async def ews_aspx(request: Request):
             except asyncio.TimeoutError:
                 pass
 
+            def iso_ts(epoch: float) -> str:
+                try:
+                    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%S.%fZ"
+                    )
+                except Exception:
+                    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
             def notif_xml(evt: dict) -> str:
+                previous = evt.get("previous_watermark", "WM_0")
+                timestamp = iso_ts(evt.get("time", time.time()))
                 return (
                     f"<m:Notification>"
                     f"<t:SubscriptionId>{sub.subscription_id}</t:SubscriptionId>"
-                    f"<t:PreviousWatermark>{sub.last_watermark}</t:PreviousWatermark>"
+                    f"<t:PreviousWatermark>{previous}</t:PreviousWatermark>"
                     f"<t:MoreEvents>false</t:MoreEvents>"
                     f"<t:NewMailEvent>"
                     f"<t:Watermark>{evt.get('watermark','')}</t:Watermark>"
-                    f"<t:TimeStamp>{int(evt.get('time',0))}</t:TimeStamp>"
+                    f"<t:TimeStamp>{timestamp}</t:TimeStamp>"
                     f"<t:FolderId Id=\"{evt.get('folder_id','DF_inbox')}\" ChangeKey=\"0\"/>"
                     f"<t:ItemId Id=\"ITEM_{evt.get('item_id',0)}\" ChangeKey=\"0\"/>"
                     f"</t:NewMailEvent>"
@@ -388,6 +424,7 @@ async def ews_aspx(request: Request):
                 f'<m:GetStreamingEventsResponseMessageType ResponseClass="Success">'
                 f"<m:ResponseCode>NoError</m:ResponseCode>"
                 f"<m:Notifications>{notifications}</m:Notifications>"
+                f"<m:ConnectionStatus>OK</m:ConnectionStatus>"
                 f"</m:GetStreamingEventsResponseMessageType>"
                 f"</m:ResponseMessages>"
                 f"</m:GetStreamingEventsResponse>"
@@ -407,6 +444,331 @@ async def ews_aspx(request: Request):
                 f"</m:UnsubscribeResponseMessageType>"
                 f"</m:ResponseMessages>"
                 f"</m:UnsubscribeResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetServiceConfiguration" in text:
+            ns = {"m": EWS_NS_MESSAGES, "t": EWS_NS_TYPES}
+            requested: set[str] = set()
+            try:
+                root = ET.fromstring(text)
+                for node in root.findall(".//t:ConfigurationName", ns):
+                    name = (node.text or "").strip()
+                    if name:
+                        requested.add(name.lower())
+            except ET.ParseError:
+                pass
+
+            include_mailtips = not requested or "mailtips" in requested
+            domain_part = "local"
+            if getattr(user, "email", None) and "@" in user.email:
+                domain_part = user.email.split("@", 1)[1].lower()
+
+            sections: list[str] = []
+            if include_mailtips:
+                sections.append(
+                    "<m:MailTipsConfiguration>"
+                    "<t:MailTipsConfiguration>"
+                    f"<t:InternalDomains><t:Domain Name=\"{_xml(domain_part)}\" IncludeSubdomains=\"true\"/></t:InternalDomains>"
+                    "<t:MaxRecipientsPerGetMailTipsRequest>50</t:MaxRecipientsPerGetMailTipsRequest>"
+                    "<t:MaxMessageSize>10485760</t:MaxMessageSize>"
+                    "<t:LargeAudienceThreshold>25</t:LargeAudienceThreshold>"
+                    "<t:LargeAudienceCap>25</t:LargeAudienceCap>"
+                    "<t:MailTipsEnabled>true</t:MailTipsEnabled>"
+                    "<t:PolicyTipsEnabled>false</t:PolicyTipsEnabled>"
+                    "<t:ShowExternalRecipientCount>false</t:ShowExternalRecipientCount>"
+                    "</t:MailTipsConfiguration>"
+                    "</m:MailTipsConfiguration>"
+                )
+
+            body = (
+                f'<m:GetServiceConfigurationResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:ServiceConfigurationResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"{''.join(sections)}"
+                f"</m:ServiceConfigurationResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:GetServiceConfigurationResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetInboxRules" in text:
+            body = (
+                f'<m:GetInboxRulesResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:OutlookRuleBlobExists>false</m:OutlookRuleBlobExists>"
+                f"</m:GetInboxRulesResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetMailTips" in text:
+            from sqlalchemy import func
+            from ..database import OofSettings, User
+
+            ns = {"m": EWS_NS_MESSAGES, "t": EWS_NS_TYPES}
+            recipients: list[str] = []
+            try:
+                root = ET.fromstring(text)
+                for node in root.findall(".//t:Recipients//t:EmailAddress", ns):
+                    value = (node.text or "").strip()
+                    if value:
+                        recipients.append(value)
+            except ET.ParseError:
+                pass
+            if not recipients and getattr(user, "email", None):
+                recipients.append(user.email)
+
+            def fetch_oof(address: str):
+                normalized = address.strip().lower()
+                if not normalized:
+                    return None, None
+                target = (
+                    db.query(User)
+                    .filter(func.lower(User.email) == normalized)
+                    .first()
+                )
+                if not target:
+                    return None, None
+                settings = (
+                    db.query(OofSettings)
+                    .filter(OofSettings.user_id == target.id)
+                    .first()
+                )
+                return target, settings
+
+            def mailtip_for(address: str) -> str:
+                _, settings = fetch_oof(address)
+                state_map = {0: "Disabled", 1: "Enabled", 2: "Scheduled"}
+                state = "Disabled"
+                reply_msg = ""
+                duration_xml = ""
+                if settings:
+                    state = state_map.get(settings.oof_state or 0, "Disabled")
+                    reply_msg = settings.internal_message or settings.external_message or ""
+                    if settings.oof_state == 2:
+                        start = _isoformat(settings.start_time)
+                        end = _isoformat(settings.end_time)
+                        if start and end:
+                            duration_xml = (
+                                "<t:Duration>"
+                                f"<t:StartTime>{start}</t:StartTime>"
+                                f"<t:EndTime>{end}</t:EndTime>"
+                                "</t:Duration>"
+                            )
+                return (
+                    '<m:MailTipsResponseMessageType ResponseClass="Success">'
+                    "<m:ResponseCode>NoError</m:ResponseCode>"
+                    "<m:MailTips>"
+                    f"<t:RecipientAddress><t:EmailAddress>{_xml(address)}</t:EmailAddress></t:RecipientAddress>"
+                    "<t:OutOfOffice>"
+                    f"<t:OofState>{state}</t:OofState>"
+                    "<t:OofReply>"
+                    f"<t:Message>{_xml(reply_msg)}</t:Message>"
+                    "</t:OofReply>"
+                    f"{duration_xml}"
+                    "</t:OutOfOffice>"
+                    "</m:MailTips>"
+                    "</m:MailTipsResponseMessageType>"
+                )
+
+            responses = "".join(mailtip_for(addr) for addr in recipients)
+            body = (
+                f'<m:GetMailTipsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>{responses}</m:ResponseMessages>"
+                f"</m:GetMailTipsResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetUserConfiguration" in text:
+            ns = {"m": EWS_NS_MESSAGES, "t": EWS_NS_TYPES}
+            config_name = "UserOptions"
+            try:
+                root = ET.fromstring(text)
+                node = root.find(".//t:UserConfigurationName", ns)
+                if node is not None and "Name" in node.attrib:
+                    config_name = node.attrib["Name"]
+            except ET.ParseError:
+                pass
+            user_config = (
+                f"<m:UserConfiguration>"
+                f'<t:UserConfigurationName Name="{_xml(config_name)}">'
+                "<t:DistinguishedFolderId Id=\"msgfolderroot\"/>"
+                "</t:UserConfigurationName>"
+                "<t:Dictionary/>"
+                "<t:XmlData/>"
+                "<t:BinaryData/>"
+                "</m:UserConfiguration>"
+            )
+            body = (
+                f'<m:GetUserConfigurationResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                f"<m:ResponseMessages>"
+                f'<m:GetUserConfigurationResponseMessageType ResponseClass="Success">'
+                f"<m:ResponseCode>NoError</m:ResponseCode>"
+                f"{user_config}"
+                f"</m:GetUserConfigurationResponseMessageType>"
+                f"</m:ResponseMessages>"
+                f"</m:GetUserConfigurationResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "GetUserOofSettings" in text:
+            from ..database import OofSettings
+
+            ns = {"m": EWS_NS_MESSAGES, "t": EWS_NS_TYPES}
+            target_address = getattr(user, "email", None) or getattr(user, "username", "")
+            try:
+                root = ET.fromstring(text)
+                node = root.find(".//t:Mailbox/t:Address", ns)
+                if node is not None and node.text:
+                    target_address = node.text.strip()
+            except ET.ParseError:
+                pass
+
+            normalized = (target_address or "").strip().lower()
+            if normalized and getattr(user, "email", None):
+                allowed = user.email.lower()
+            else:
+                allowed = normalized
+
+            if normalized and allowed and normalized != allowed:
+                body = (
+                    f'<m:GetUserOofSettingsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                    f"<m:ResponseMessage ResponseClass=\"Error\">"
+                    f"<m:MessageText>Access denied</m:MessageText>"
+                    f"<m:ResponseCode>ErrorAccessDenied</m:ResponseCode>"
+                    f"</m:ResponseMessage>"
+                    f"</m:GetUserOofSettingsResponse>"
+                )
+                return Response(content=soap_envelope(body), media_type="text/xml")
+
+            settings = (
+                db.query(OofSettings).filter(OofSettings.user_id == user.id).first()
+            )
+            if not settings:
+                settings = OofSettings(user_id=user.id)
+                db.add(settings)
+                db.commit()
+                db.refresh(settings)
+
+            state_map = {0: "Disabled", 1: "Enabled", 2: "Scheduled"}
+            audience_map = {0: "None", 1: "Known", 2: "All"}
+            state = state_map.get(settings.oof_state or 0, "Disabled")
+            audience = audience_map.get(settings.external_audience or 0, "None")
+            duration_xml = ""
+            if settings.oof_state == 2 and settings.start_time and settings.end_time:
+                start = _isoformat(settings.start_time)
+                end = _isoformat(settings.end_time)
+                if start and end:
+                    duration_xml = (
+                        "<t:Duration>"
+                        f"<t:StartTime>{start}</t:StartTime>"
+                        f"<t:EndTime>{end}</t:EndTime>"
+                        "</t:Duration>"
+                    )
+
+            body = (
+                f'<m:GetUserOofSettingsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                "<m:ResponseMessage ResponseClass=\"Success\">"
+                "<m:ResponseCode>NoError</m:ResponseCode>"
+                "</m:ResponseMessage>"
+                "<m:OofSettings>"
+                f"<t:OofState>{state}</t:OofState>"
+                f"<t:ExternalAudience>{audience}</t:ExternalAudience>"
+                f"<t:AllowExternalOof>{'true' if settings.external_enabled else 'false'}</t:AllowExternalOof>"
+                f"<t:InternalReply><t:Message>{_xml(settings.internal_message or '')}</t:Message></t:InternalReply>"
+                f"<t:ExternalReply><t:Message>{_xml(settings.external_message or '')}</t:Message></t:ExternalReply>"
+                f"{duration_xml}"
+                "</m:OofSettings>"
+                "</m:GetUserOofSettingsResponse>"
+            )
+            return Response(content=soap_envelope(body), media_type="text/xml")
+        if "SetUserOofSettings" in text:
+            from ..database import OofSettings
+
+            ns = {"m": EWS_NS_MESSAGES, "t": EWS_NS_TYPES}
+            try:
+                root = ET.fromstring(text)
+            except ET.ParseError:
+                return Response(content=ews_error("Invalid OOF payload"), media_type="text/xml")
+
+            mailbox_node = root.find(".//t:Mailbox/t:Address", ns)
+            target_address = (mailbox_node.text or "").strip() if mailbox_node is not None else ""
+            if target_address and getattr(user, "email", None):
+                if target_address.strip().lower() != user.email.lower():
+                    body = (
+                        f'<m:SetUserOofSettingsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                        "<m:ResponseMessage ResponseClass=\"Error\">"
+                        "<m:ResponseCode>ErrorAccessDenied</m:ResponseCode>"
+                        "</m:ResponseMessage>"
+                        "</m:SetUserOofSettingsResponse>"
+                    )
+                    return Response(content=soap_envelope(body), media_type="text/xml")
+
+            settings_node = root.find(".//t:OofSettings", ns)
+            if settings_node is None:
+                return Response(content=ews_error("Missing OOF settings"), media_type="text/xml")
+
+            state_text = "Disabled"
+            state_node = settings_node.find("t:OofState", ns)
+            if state_node is not None and state_node.text:
+                state_text = state_node.text.strip()
+            state_map = {"Disabled": 0, "Enabled": 1, "Scheduled": 2}
+            oof_state = state_map.get(state_text, 0)
+
+            allow_external_node = settings_node.find("t:AllowExternalOof", ns)
+            allow_external = (
+                allow_external_node is not None
+                and (allow_external_node.text or "").strip().lower() == "true"
+            )
+
+            external_audience_node = settings_node.find("t:ExternalAudience", ns)
+            audience_map = {"None": 0, "Known": 1, "All": 2}
+            external_audience = audience_map.get(
+                (external_audience_node.text or "None").strip() if external_audience_node is not None else "None",
+                0,
+            )
+
+            internal_reply_node = settings_node.find("t:InternalReply/t:Message", ns)
+            external_reply_node = settings_node.find("t:ExternalReply/t:Message", ns)
+
+            duration_node = settings_node.find("t:Duration", ns)
+            start_dt = None
+            end_dt = None
+            if duration_node is not None:
+                start_node = duration_node.find("t:StartTime", ns)
+                end_node = duration_node.find("t:EndTime", ns)
+                start_dt = _parse_dt(start_node.text if start_node is not None else None)
+                end_dt = _parse_dt(end_node.text if end_node is not None else None)
+
+            settings = (
+                db.query(OofSettings).filter(OofSettings.user_id == user.id).first()
+            )
+            if not settings:
+                settings = OofSettings(user_id=user.id)
+                db.add(settings)
+
+            settings.oof_state = oof_state
+            settings.internal_message = (
+                internal_reply_node.text.strip()
+                if internal_reply_node is not None and internal_reply_node.text
+                else ""
+            )
+            settings.external_message = (
+                external_reply_node.text.strip()
+                if external_reply_node is not None and external_reply_node.text
+                else ""
+            )
+            settings.external_enabled = allow_external
+            settings.external_audience = external_audience
+            settings.start_time = start_dt
+            settings.end_time = end_dt
+            settings.reply_once_per_sender = True
+
+            db.add(settings)
+            db.commit()
+            db.refresh(settings)
+
+            body = (
+                f'<m:SetUserOofSettingsResponse xmlns:m="{EWS_NS_MESSAGES}" xmlns:t="{EWS_NS_TYPES}">'
+                "<m:ResponseMessage ResponseClass=\"Success\">"
+                "<m:ResponseCode>NoError</m:ResponseCode>"
+                "</m:ResponseMessage>"
+                "</m:SetUserOofSettingsResponse>"
             )
             return Response(content=soap_envelope(body), media_type="text/xml")
         if "GetFolder" in text:

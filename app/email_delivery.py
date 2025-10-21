@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from .database import User, get_db
 from .email_parser import html_to_text
 from .email_queue import EmailQueueStatus, QueuedEmail, email_queue
+from .ews_push import trigger_ews_push
 from .mime_utils import build_mime_message, plain_to_html
 from .mx_lookup import mx_lookup
 from .smtp_client import SMTPDeliveryResult, smtp_client
@@ -212,11 +213,26 @@ class EmailDeliveryService:
 
             db.add(email_record)
             db.commit()
+            db.refresh(email_record)
 
             logger.info(
                 f"Delivered internal email {queued_email.message_id} to {queued_email.recipient_email}"
             )
             email_queue.mark_as_sent(queued_email.message_id)
+
+            # Notify streaming subscribers about the new mail event
+            try:
+                trigger_ews_push(
+                    user_id=recipient_user.id,
+                    folder_id="DF_inbox",
+                    item_id=email_record.id,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "EWS push notification scheduling failed for %s: %s",
+                    queued_email.message_id,
+                    exc,
+                )
 
         except Exception as e:
             logger.error(f"Error delivering internal email: {e}")

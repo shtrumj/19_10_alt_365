@@ -25,6 +25,7 @@ from fastapi.security import (
 )
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from passlib.hash import nthash
 from sqlalchemy.orm import Session
 
 from .database import User, get_db
@@ -61,6 +62,11 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
+def compute_ntlm_hash(password: str) -> str:
+    """Return NTLM hash (MD4 of UTF-16LE password) for challenge/response auth."""
+    return nthash.hash(password)
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
@@ -82,6 +88,16 @@ def authenticate_user(db: Session, username: str, password: str):
         return False
     if not verify_password(password, user.hashed_password):
         return False
+    nt_hash = compute_ntlm_hash(password)
+    if getattr(user, "ntlm_hash", None) != nt_hash:
+        try:
+            user.ntlm_hash = nt_hash
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        except Exception:
+            db.rollback()
+            raise
     return user
 
 

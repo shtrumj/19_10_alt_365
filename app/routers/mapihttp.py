@@ -1,14 +1,17 @@
 import base64
+import hashlib
 import logging
 import os
 import struct
 import time
 import uuid
+import hmac
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..auth import authenticate_user
@@ -29,6 +32,7 @@ from ..mapi_protocol import (
 )
 from ..mapi_store import message_store
 from ..services.gal_service import GalService
+from ..config import settings
 
 try:
     import gssapi  # Kerberos (Negotiate) acceptor
@@ -40,6 +44,9 @@ router = APIRouter(prefix="/mapi", tags=["mapihttp"])
 
 # Also create a router without prefix for root-level MAPI endpoints
 root_router = APIRouter(tags=["mapihttp-root"])
+
+NTLM_CHALLENGE_TTL = 300  # seconds
+_ntlm_challenge_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 
 def log_mapi(event: str, details: dict):
@@ -110,6 +117,32 @@ def _extract_auth_info(auth_header: Optional[str]) -> Tuple[str, Optional[str], 
     return scheme_lower, token or None, raw
 
 
+# Shared challenge headers used to mirror grommunio/gromox auth flow
+def _build_auth_challenge_response(request_id: str, ntlm_token: Optional[str] = None) -> Response:
+    response = Response(
+        status_code=401,
+        media_type="application/mapi-http",
+        headers={
+            "Content-Type": "application/mapi-http",
+            "X-ClientInfo": "365-Email-System/1.0",
+            "X-RequestId": request_id,
+            "X-RequestType": "Connect",
+            "Cache-Control": "private",
+            "Connection": "close",
+            "Persistent-Auth": "true",
+            "X-ServerApplication": "365-Email-System/1.0",
+        },
+    )
+    # Outlook expects each challenge as a separate header (grommunio parity)
+    response.headers.append("WWW-Authenticate", "Negotiate")
+    if ntlm_token:
+        response.headers.append("WWW-Authenticate", f"NTLM {ntlm_token}")
+    else:
+        response.headers.append("WWW-Authenticate", "NTLM")
+    response.headers.append("WWW-Authenticate", 'Basic realm="365-Email-System"')
+    return response
+
+
 # Initialize RPC processor
 rpc_processor = None
 
@@ -133,10 +166,8 @@ def _filetime_now() -> bytes:
     return struct.pack("<Q", ft)
 
 
-def _build_ntlm_type2(hostname: str) -> str:
-    """Build a NTLM Type 2 challenge token with common AV pairs.
-    Not a full implementation; sufficient for client negotiation.
-    """
+def _generate_ntlm_type2(hostname: str) -> Tuple[str, bytes]:
+    """Build a NTLM Type 2 challenge token with common AV pairs and return (b64_token, challenge)."""
     signature = b"NTLMSSP\x00"
     msg_type = struct.pack("<I", 2)
 
@@ -227,7 +258,256 @@ def _build_ntlm_type2(hostname: str) -> str:
         + payload
         + version
     )
-    return base64.b64encode(type2).decode("ascii")
+    return base64.b64encode(type2).decode("ascii"), challenge
+
+
+def _ntlm_cache_key(request: Request) -> Tuple[str, str]:
+    client_ip = request.client.host if request.client else "unknown"
+    host = request.headers.get("Host", "server").split(":")[0].lower()
+    return client_ip, host
+
+
+def _prune_ntlm_challenges() -> None:
+    now = time.time()
+    stale = [
+        key
+        for key, value in _ntlm_challenge_cache.items()
+        if now - value.get("timestamp", 0) > NTLM_CHALLENGE_TTL
+    ]
+    for key in stale:
+        _ntlm_challenge_cache.pop(key, None)
+
+
+def _store_ntlm_challenge(key: Tuple[str, str], challenge: bytes) -> None:
+    _prune_ntlm_challenges()
+    _ntlm_challenge_cache[key] = {"challenge": challenge, "timestamp": time.time()}
+
+
+def _get_ntlm_challenge_for_request(request: Request) -> Optional[bytes]:
+    key = _ntlm_cache_key(request)
+    info = _ntlm_challenge_cache.get(key)
+    if not info:
+        return None
+    if time.time() - info.get("timestamp", 0) > NTLM_CHALLENGE_TTL:
+        _ntlm_challenge_cache.pop(key, None)
+        return None
+    return info.get("challenge")
+
+
+def _clear_ntlm_challenge(request: Request) -> None:
+    key = _ntlm_cache_key(request)
+    _ntlm_challenge_cache.pop(key, None)
+
+
+def _issue_ntlm_challenge(request: Request, request_id: str, stage: str = "type1") -> Response:
+    host = request.headers.get("Host", "server").split(":")[0]
+    ntlm_token, challenge = _generate_ntlm_type2(host)
+    _store_ntlm_challenge(_ntlm_cache_key(request), challenge)
+    log_mapi(
+        "ntlm_type2_sent",
+        {
+            "request_id": request_id,
+            "len": len(ntlm_token),
+            "head": ntlm_token[:60],
+            "stage": stage,
+        },
+    )
+    return _build_auth_challenge_response(request_id, ntlm_token)
+
+
+def _read_security_buffer(data: bytes, offset: int) -> bytes:
+    if offset + 8 > len(data):
+        return b""
+    length, alloc, buf_offset = struct.unpack_from("<HHI", data, offset)
+    end = buf_offset + length
+    if end > len(data):
+        return b""
+    return data[buf_offset:end]
+
+
+def _parse_ntlm_type3(token: bytes) -> Dict[str, Any]:
+    if not token.startswith(b"NTLMSSP\x00"):
+        raise ValueError("Invalid NTLM signature")
+    if len(token) < 64:
+        raise ValueError("NTLM message too short")
+    msg_type = struct.unpack_from("<I", token, 8)[0]
+    if msg_type != 3:
+        raise ValueError(f"Unexpected NTLM message type {msg_type}")
+
+    domain_bytes = _read_security_buffer(token, 28)
+    user_bytes = _read_security_buffer(token, 36)
+    workstation_bytes = _read_security_buffer(token, 44)
+    nt_response = _read_security_buffer(token, 20)
+    lm_response = _read_security_buffer(token, 12)
+    session_key = _read_security_buffer(token, 52)
+    flags = struct.unpack_from("<I", token, 60)[0] if len(token) >= 64 else 0
+
+    return {
+        "domain": domain_bytes.decode("utf-16le", errors="ignore"),
+        "username": user_bytes.decode("utf-16le", errors="ignore"),
+        "workstation": workstation_bytes.decode("utf-16le", errors="ignore"),
+        "nt_response": nt_response,
+        "lm_response": lm_response,
+        "session_key": session_key,
+        "flags": flags,
+    }
+
+
+def _compute_ntlm_v2_hash(nt_hash: bytes, username: str, domain: str) -> bytes:
+    identity = (username.upper() + domain.upper()).encode("utf-16le")
+    return hmac.new(nt_hash, identity, hashlib.md5).digest()
+
+
+def _verify_ntlm_v2_response(
+    nt_hash: bytes,
+    username: str,
+    domain: str,
+    server_challenge: bytes,
+    nt_response: bytes,
+) -> bool:
+    if len(nt_response) < 16:
+        return False
+    nt_proof = nt_response[:16]
+    blob = nt_response[16:]
+    if not blob:
+        return False
+    v2_hash = _compute_ntlm_v2_hash(nt_hash, username, domain)
+    expected = hmac.new(v2_hash, server_challenge + blob, hashlib.md5).digest()
+    return hmac.compare_digest(expected, nt_proof)
+
+
+def _lookup_ntlm_user(db: Session, username: str, domain: str) -> Optional[User]:
+    if not username:
+        return None
+
+    lowered_username = username.lower()
+    user = db.query(User).filter(func.lower(User.username) == lowered_username).first()
+    if user:
+        return user
+
+    if "@" in username:
+        user = db.query(User).filter(func.lower(User.email) == lowered_username).first()
+        if user:
+            return user
+
+    if domain:
+        candidate = f"{username}@{domain}".lower()
+        user = db.query(User).filter(func.lower(User.email) == candidate).first()
+        if user:
+            return user
+
+    if settings.DOMAIN:
+        candidate = f"{username}@{settings.DOMAIN}".lower()
+        user = db.query(User).filter(func.lower(User.email) == candidate).first()
+        if user:
+            return user
+
+    return None
+
+
+def _ntlm_success_response(request_id: str) -> Response:
+    return Response(
+        status_code=200,
+        headers={
+            "Content-Type": "application/mapi-http",
+            "X-RequestType": "Connect",
+            "X-ClientInfo": "365-Email-System/1.0",
+            "X-RequestId": request_id,
+            "X-ResponseCode": "0",
+            "Cache-Control": "private",
+            "Persistent-Auth": "true",
+            "X-ServerApplication": "365-Email-System/1.0",
+            "X-ServerVersion": "15.01.2507.000",
+            "X-ClientApplication": "SkyShift-Exchange/1.0",
+            "Content-Length": "0",
+        },
+    )
+
+
+def _finalize_ntlm_authentication(
+    request: Request, request_id: str, token_bytes: bytes
+) -> Response:
+    challenge = _get_ntlm_challenge_for_request(request)
+    if not challenge:
+        log_mapi(
+            "ntlm_challenge_missing",
+            {"request_id": request_id, "client_ip": request.client.host if request.client else "unknown"},
+        )
+        return _issue_ntlm_challenge(request, request_id, stage="missing_challenge")
+
+    try:
+        ntlm_fields = _parse_ntlm_type3(token_bytes)
+    except Exception as exc:
+        log_mapi(
+            "ntlm_parse_error",
+            {"request_id": request_id, "error": str(exc)},
+        )
+        return _issue_ntlm_challenge(request, request_id, stage="parse_error")
+
+    username = ntlm_fields["username"]
+    domain = ntlm_fields["domain"] or ""
+    workstation = ntlm_fields["workstation"]
+
+    db = SessionLocal()
+    try:
+        user = _lookup_ntlm_user(db, username, domain)
+        if not user or not getattr(user, "ntlm_hash", None):
+            log_mapi(
+                "ntlm_user_not_found",
+                {"request_id": request_id, "username": username, "domain": domain},
+            )
+            outlook_diagnostics.log_authentication_flow(
+                "NTLM",
+                "authentication_failed",
+                False,
+                {"request_id": request_id, "reason": "user_not_found", "username": username},
+            )
+            return _issue_ntlm_challenge(request, request_id, stage="user_not_found")
+
+        try:
+            nt_hash = bytes.fromhex(user.ntlm_hash)
+        except ValueError:
+            log_mapi(
+                "ntlm_hash_invalid",
+                {"request_id": request_id, "username": username},
+            )
+            return _issue_ntlm_challenge(request, request_id, stage="invalid_hash")
+
+        if not _verify_ntlm_v2_response(
+            nt_hash, username, domain, challenge, ntlm_fields["nt_response"]
+        ):
+            log_mapi(
+                "ntlm_auth_failed",
+                {"request_id": request_id, "username": username, "domain": domain},
+            )
+            outlook_diagnostics.log_authentication_flow(
+                "NTLM",
+                "authentication_failed",
+                False,
+                {"request_id": request_id, "username": username, "reason": "invalid_response"},
+            )
+            return _issue_ntlm_challenge(request, request_id, stage="invalid_response")
+
+        _clear_ntlm_challenge(request)
+        log_mapi(
+            "ntlm_authenticated",
+            {
+                "request_id": request_id,
+                "stage": "type3_validated",
+                "username": username,
+                "domain": domain,
+                "workstation": workstation,
+            },
+        )
+        outlook_diagnostics.log_authentication_flow(
+            "NTLM",
+            "authentication_successful",
+            True,
+            {"request_id": request_id, "username": username, "domain": domain},
+        )
+        return _ntlm_success_response(request_id)
+    finally:
+        db.close()
 
 
 @router.post("/emsmdb")
@@ -301,6 +581,24 @@ async def mapi_emsmdb(request: Request):
                 except:
                     pass
 
+            if auth_scheme == "basic" and len(body) == 0:
+                log_mapi(
+                    "basic_auth_probe_challenged",
+                    {
+                        "request_id": request_id,
+                        "username_hint": auth_header.split(" ")[1][:8]
+                        if auth_header
+                        else "",
+                    },
+                )
+                outlook_diagnostics.log_authentication_flow(
+                    "Basic",
+                    "probe_challenged",
+                    False,
+                    {"request_id": request_id},
+                )
+                return _issue_ntlm_challenge(request, request_id, stage="basic_probe")
+
         elif len(body) == 0:
             # Empty request without auth - send NTLM challenge
             log_mapi(
@@ -319,19 +617,7 @@ async def mapi_emsmdb(request: Request):
                 {"request_id": request_id, "reason": "no_auth_header"},
             )
 
-            return Response(
-                status_code=401,
-                headers={
-                    "WWW-Authenticate": 'Basic realm="365-Email-System"',
-                    "Content-Type": "application/mapi-http",
-                    "X-ClientInfo": "365-Email-System/1.0",
-                    "X-RequestId": request_id,
-                    "Persistent-Auth": "true",
-                    "X-ServerApplication": "365-Email-System/1.0",
-                    "Connection": "close",
-                    "Cache-Control": "private",
-                },
-            )
+            return _build_auth_challenge_response(request_id)
 
         # Log the raw request for debugging
         log_mapi(
@@ -392,15 +678,7 @@ async def mapi_emsmdb(request: Request):
                 if gssapi is None:
                     log_mapi("gss_not_available", {"request_id": request_id})
             # If we've reached here, force NTLM fallback
-            return Response(
-                status_code=401,
-                headers={
-                    "WWW-Authenticate": "NTLM",
-                    "Content-Type": "application/mapi-http",
-                    "Persistent-Auth": "true",
-                    "Connection": "close",
-                },
-            )
+            return _build_auth_challenge_response(request_id)
 
         if auth_scheme == "ntlm" and len(body) == 0:
             # Distinguish NTLM Type1 (negotiate) vs Type3 (authenticate) by token length
@@ -423,32 +701,8 @@ async def mapi_emsmdb(request: Request):
                     {"request_id": request_id, "next_step": "send_type2_challenge"},
                 )
 
-                # Generate Type 2 challenge dynamically based on host
-                host = request.headers.get("Host", "server")
-                ntlm_type2 = _build_ntlm_type2(host.split(":")[0])
-                log_mapi(
-                    "ntlm_type2_sent",
-                    {
-                        "request_id": request_id,
-                        "len": len(ntlm_type2),
-                        "head": ntlm_type2[:60],
-                    },
-                )
-
-                return Response(
-                    status_code=401,
-                    headers={
-                        "WWW-Authenticate": f"NTLM {ntlm_type2}",
-                        "Content-Type": "application/mapi-http",
-                        "X-ClientInfo": "365-Email-System/1.0",
-                        "X-RequestId": request_id,
-                        "X-RequestType": "Connect",
-                        "Cache-Control": "private",
-                        "Connection": "close",
-                        "Persistent-Auth": "true",
-                        "X-ServerApplication": "365-Email-System/1.0",
-                    },
-                )
+                # Issue NTLM Type 2 challenge and cache it for the next step
+                return _issue_ntlm_challenge(request, request_id, stage="type1")
             else:
                 # Detect NTLM Type 3 by message type field
                 try:
@@ -461,34 +715,19 @@ async def mapi_emsmdb(request: Request):
                     is_ntlm = False
                     msg_type = 0
                 if is_ntlm and msg_type == 3:
-                    # NTLM Type 3 authenticate received -> accept and return Connect success
-                    log_mapi(
-                        "ntlm_authenticated",
-                        {
-                            "request_id": request_id,
-                            "stage": "type3_received",
-                            "token_len": len(token),
-                        },
-                    )
                     outlook_diagnostics.log_authentication_flow(
-                        "NTLM", "type3_received", True, {"request_id": request_id}
+                        "NTLM",
+                        "type3_received",
+                        True,
+                        {"request_id": request_id, "token_len": len(token)},
                     )
-                return Response(
-                    status_code=200,
-                    headers={
-                        "Content-Type": "application/mapi-http",
-                        "X-RequestType": "Connect",
-                        "X-ClientInfo": "365-Email-System/1.0",
-                        "X-RequestId": request_id,
-                        "X-ResponseCode": "0",
-                        "Cache-Control": "private",
-                        "Persistent-Auth": "true",
-                        "X-ServerApplication": "365-Email-System/1.0",
-                        "X-ServerVersion": "15.01.2507.000",
-                        "X-ClientApplication": "SkyShift-Exchange/1.0",
-                        "Content-Length": "0",
-                    },
+                    return _finalize_ntlm_authentication(request, request_id, raw)
+
+                log_mapi(
+                    "ntlm_unrecognized_token",
+                    {"request_id": request_id, "token_len": len(token) if token else 0},
                 )
+                return _issue_ntlm_challenge(request, request_id, stage="invalid_token")
 
         # Parse MAPI/HTTP request with improved error handling
         if len(body) > 0:
@@ -523,80 +762,35 @@ async def mapi_emsmdb(request: Request):
                 else:
                     raise parse_error
         else:
-            # Empty body with Basic auth - authenticate the user
-            if auth_header and auth_header.startswith("Basic"):
-                # Authenticate the user with Basic auth
-                db = SessionLocal()
-                try:
-                    user = authenticate_basic_auth(auth_header, db)
-                    if user:
-                        log_mapi(
-                            "basic_auth_success",
-                            {
-                                "request_id": request_id,
-                                "username": user.username,
-                                "message": "Basic auth successful - proceeding with MAPI",
-                            },
-                        )
-                        outlook_diagnostics.log_authentication_flow(
-                            "Basic",
-                            "authentication_successful",
-                            True,
-                            {"request_id": request_id, "username": user.username},
-                        )
-
-                        # Return a successful MAPI response
-                        return Response(
-                            status_code=200,
-                            headers={
-                                "Content-Type": "application/mapi-http",
-                                "X-ClientInfo": "365-Email-System/1.0",
-                                "X-RequestId": request_id,
-                                "X-RequestType": "Connect",
-                                "Cache-Control": "private",
-                                "Connection": "close",
-                                "Persistent-Auth": "true",
-                                "X-ServerApplication": "365-Email-System/1.0",
-                                "X-ServerVersion": "15.01.2507.000",
-                                "X-ClientApplication": "SkyShift-Exchange/1.0",
-                            },
-                            content=b"\x00\x00\x00\x00",  # Empty MAPI response
-                        )
-                    else:
-                        log_mapi(
-                            "basic_auth_failed",
-                            {
-                                "request_id": request_id,
-                                "message": "Basic auth failed - invalid credentials",
-                            },
-                        )
-                        outlook_diagnostics.log_authentication_flow(
-                            "Basic",
-                            "authentication_failed",
-                            False,
-                            {"request_id": request_id},
-                        )
-                        return Response(
-                            status_code=401,
-                            headers={
-                                "WWW-Authenticate": "Basic",
-                                "Content-Type": "application/mapi-http",
-                                "X-RequestId": request_id,
-                            },
-                        )
-                finally:
-                    db.close()
-            else:
-                # Empty body without any valid auth - this is an error
-                log_outlook_connection_issue(
-                    "invalid_empty_request",
-                    "Received empty MAPI request without valid auth",
+            # Empty body probes must be challenged (Outlook expects 401)
+            if auth_scheme == "basic":
+                log_mapi(
+                    "basic_auth_probe_challenged",
                     {
                         "request_id": request_id,
-                        "auth_header": auth_header[:50] if auth_header else "none",
+                        "username_hint": auth_header.split(" ")[1][:8]
+                        if auth_header
+                        else "",
                     },
                 )
-                raise HTTPException(status_code=400, detail="Invalid MAPI request")
+                outlook_diagnostics.log_authentication_flow(
+                    "Basic",
+                    "probe_challenged",
+                    False,
+                    {"request_id": request_id},
+                )
+                return _build_auth_challenge_response(request_id)
+
+            # Empty body without any valid auth - this is an error
+            log_outlook_connection_issue(
+                "invalid_empty_request",
+                "Received empty MAPI request without valid auth",
+                {
+                    "request_id": request_id,
+                    "auth_header": auth_header[:50] if auth_header else "none",
+                },
+            )
+            raise HTTPException(status_code=400, detail="Invalid MAPI request")
 
         logger.info(f"MAPI EMSMDB request: {parsed_request.get('type')}")
 
@@ -604,21 +798,30 @@ async def mapi_emsmdb(request: Request):
         response_builder = MapiHttpResponse()
 
         if parsed_request["type"] == "connect":
-            # Handle Connect request
             user_dn = parsed_request.get("user_dn", "")
+            user_email, display_name = _resolve_user_from_dn(user_dn)
+            if not user_email and request.headers.get("Authorization", "").startswith("Basic "):
+                db = SessionLocal()
+                try:
+                    auth_user = authenticate_basic_auth(request.headers.get("Authorization"), db)
+                    if auth_user:
+                        user_email = auth_user.email or user_email
+                        if auth_user.full_name:
+                            display_name = auth_user.full_name
+                finally:
+                    db.close()
 
-            # Extract email from DN or use default
-            user_email = "yonatan@shtrum.com"  # TODO: Extract from DN or authenticate
+            if not user_email:
+                user_email = display_name if "@" in display_name else f"{display_name}@{settings.DOMAIN or 'local'}"
 
-            # For simplified requests, use a default DN
-            if parsed_request.get("simplified"):
-                user_dn = f"/o=First Organization/ou=Exchange Administrative Group/cn=Recipients/cn={user_email.split('@')[0]}"
-
-            # Create session
             session_cookie = session_manager.create_session(user_dn, user_email)
+            dn_prefix = user_dn.rsplit("/", 1)[0] if "/" in user_dn else user_dn
 
-            # Build Connect response
-            response_data = response_builder.build_connect_response(session_cookie)
+            response_data = response_builder.build_connect_response(
+                dn_prefix=dn_prefix,
+                display_name=display_name,
+                aux_out=b"",
+            )
 
             headers = {
                 "Content-Type": "application/mapi-http",
@@ -633,11 +836,27 @@ async def mapi_emsmdb(request: Request):
                 "X-ClientApplication": "SkyShift-Exchange/1.0",
             }
 
-            log_mapi("connect_success", {"session": session_cookie, "user_dn": user_dn})
+            log_mapi(
+                "connect_success",
+                {
+                    "session": session_cookie,
+                    "user_dn": user_dn,
+                    "email": user_email,
+                },
+            )
 
         elif parsed_request["type"] == "execute":
             # Handle Execute request
-            session_cookie = parsed_request.get("session_cookie", "")
+            session_cookie = (
+                request.headers.get("X-SessionCookie")
+                or parsed_request.get("session_cookie", "")
+            )
+            if not session_cookie:
+                log_mapi(
+                    "missing_session_cookie",
+                    {"request_id": request_id, "stage": "execute"},
+                )
+                return Response(status_code=401)
             rpc_data = parsed_request.get("rpc_data", b"")
 
             # Validate session
@@ -655,10 +874,19 @@ async def mapi_emsmdb(request: Request):
 
             # Process RPC data
             processor = get_rpc_processor()
-            rpc_response = processor.process_rpc(session_cookie, rpc_data)
+            rpc_response = processor.process_rpc(
+                session_cookie,
+                rpc_data,
+                max_response_size=parsed_request.get("max_response", 0),
+                request_flags=parsed_request.get("flags", 0),
+                aux_in=parsed_request.get("aux_in", b""),
+            )
 
             # Build Execute response
-            response_data = response_builder.build_execute_response(rpc_response)
+            response_data = response_builder.build_execute_response(
+                rpc_response,
+                flags=parsed_request.get("flags", 0),
+            )
 
             headers = {
                 "Content-Type": "application/mapi-http",
@@ -673,13 +901,19 @@ async def mapi_emsmdb(request: Request):
 
         elif parsed_request["type"] == "disconnect":
             # Handle Disconnect request
-            session_cookie = parsed_request.get("session_cookie", "")
+            session_cookie = (
+                request.headers.get("X-SessionCookie")
+                or parsed_request.get("session_cookie", "")
+            )
 
-            # Remove session
-            if session_cookie in session_manager.sessions:
-                del session_manager.sessions[session_cookie]
+            if session_cookie:
+                session_manager.remove_session(session_cookie)
+            else:
+                log_mapi(
+                    "missing_session_cookie",
+                    {"request_id": request_id, "stage": "disconnect"},
+                )
 
-            # Build Disconnect response
             response_data = response_builder.build_disconnect_response()
 
             headers = {
@@ -688,6 +922,7 @@ async def mapi_emsmdb(request: Request):
                 "X-ClientInfo": "365-Email-System/1.0",
                 "X-RequestId": str(uuid.uuid4()),
                 "Cache-Control": "private",
+                "X-SessionCookie": session_cookie,
             }
 
             log_mapi("disconnect", {"session": session_cookie})
@@ -851,20 +1086,7 @@ async def mapi_emsmdb_get(request: Request):
             "outlook_detected": "outlook" in ua.lower(),
         },
     )
-    return Response(
-        status_code=401,
-        headers={
-            "WWW-Authenticate": 'Basic realm="365-Email-System"',
-            "Content-Type": "application/mapi-http",
-            "X-RequestType": "Connect",
-            "X-ClientInfo": "365-Email-System/1.0",
-            "X-RequestId": request_id,
-            "Cache-Control": "private",
-            "Connection": "close",
-            "Persistent-Auth": "true",
-            "X-ServerApplication": "365-Email-System/1.0",
-        },
-    )
+    return _build_auth_challenge_response(request_id)
 
 
 @router.head("/emsmdb")
@@ -877,20 +1099,7 @@ async def mapi_emsmdb_head(request: Request):
             "client_ip": request.client.host if request.client else "unknown",
         },
     )
-    return Response(
-        status_code=401,
-        headers={
-            "WWW-Authenticate": 'Basic realm="365-Email-System"',
-            "Content-Type": "application/mapi-http",
-            "X-RequestType": "Connect",
-            "X-ClientInfo": "365-Email-System/1.0",
-            "X-RequestId": request_id,
-            "Cache-Control": "private",
-            "Connection": "close",
-            "Persistent-Auth": "true",
-            "X-ServerApplication": "365-Email-System/1.0",
-        },
-    )
+    return _build_auth_challenge_response(request_id)
 
 
 @router.options("/emsmdb")
@@ -929,20 +1138,7 @@ async def mapi_emsmdb_get_root(request: Request):
             "client_ip": request.client.host if request.client else "unknown",
         },
     )
-    return Response(
-        status_code=401,
-        headers={
-            "WWW-Authenticate": 'Basic realm="365-Email-System"',
-            "Content-Type": "application/mapi-http",
-            "X-RequestType": "Connect",
-            "X-ClientInfo": "365-Email-System/1.0",
-            "X-RequestId": request_id,
-            "Cache-Control": "private",
-            "Connection": "close",
-            "Persistent-Auth": "true",
-            "X-ServerApplication": "365-Email-System/1.0",
-        },
-    )
+    return _build_auth_challenge_response(request_id)
 
 
 @root_router.head("/mapi/emsmdb")
@@ -955,20 +1151,7 @@ async def mapi_emsmdb_head_root(request: Request):
             "client_ip": request.client.host if request.client else "unknown",
         },
     )
-    return Response(
-        status_code=401,
-        headers={
-            "WWW-Authenticate": 'Basic realm="365-Email-System"',
-            "Content-Type": "application/mapi-http",
-            "X-RequestType": "Connect",
-            "X-ClientInfo": "365-Email-System/1.0",
-            "X-RequestId": request_id,
-            "Cache-Control": "private",
-            "Connection": "close",
-            "Persistent-Auth": "true",
-            "X-ServerApplication": "365-Email-System/1.0",
-        },
-    )
+    return _build_auth_challenge_response(request_id)
 
 
 @root_router.options("/mapi/emsmdb")
@@ -1005,3 +1188,45 @@ async def root_mapi_emsmdb(request: Request):
 async def root_mapi_nspi(request: Request):
     """Root-level MAPI/HTTP NSPI endpoint"""
     return await mapi_nspi(request)
+def _extract_local_from_dn(user_dn: str) -> str:
+    if not user_dn:
+        return ""
+    parts = [p for p in user_dn.split("/") if p]
+    for part in reversed(parts):
+        if part.lower().startswith("cn="):
+            return part[3:]
+    return parts[-1] if parts else ""
+
+
+def _resolve_user_from_dn(user_dn: str) -> tuple[str, str]:
+    local_part = _extract_local_from_dn(user_dn)
+    domain = (settings.DOMAIN or "").split(";")[0]
+    db = SessionLocal()
+    try:
+        if local_part:
+            user = (
+                db.query(User)
+                .filter(func.lower(User.username) == local_part.lower())
+                .first()
+            )
+            if not user and domain:
+                candidate = f"{local_part}@{domain}".lower()
+                user = (
+                    db.query(User)
+                    .filter(func.lower(User.email) == candidate)
+                    .first()
+                )
+            if user:
+                display = user.full_name or user.username or user.email
+                return user.email or candidate or "", display
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    fallback_email = ""
+    if local_part and domain:
+        fallback_email = f"{local_part}@{domain}"
+    display_name = fallback_email or local_part or "Mailbox"
+    return fallback_email, display_name

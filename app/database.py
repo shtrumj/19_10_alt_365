@@ -16,6 +16,7 @@ from sqlalchemy import (
     create_engine,
     text,
 )
+from sqlalchemy import inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
@@ -86,6 +87,9 @@ class User(Base):
     # Client Certificate
     client_cert_serial = Column(String, nullable=True)
     client_cert_issuer = Column(String, nullable=True)
+
+    # NTLM challenge/response support (stores NT hash)
+    ntlm_hash = Column(String, nullable=True)
 
     # Last login tracking
     last_login = Column(DateTime, nullable=True)
@@ -693,8 +697,28 @@ def create_tables():
         QueueBase.metadata.create_all(bind=engine)
     except Exception as exc:
         print(f"⚠️ Failed to ensure queue tables: {exc}")
+    ensure_ntlm_hash_column()
     ensure_email_mime_columns()
     ensure_global_address_list()
+
+
+def ensure_ntlm_hash_column():
+    """Ensure users table contains ntlm_hash column for NTLM authentication."""
+    try:
+        inspector = inspect(engine)
+        if "users" not in inspector.get_table_names():
+            return
+        columns = {col["name"] for col in inspector.get_columns("users")}
+        if "ntlm_hash" in columns:
+            return
+        with engine.begin() as conn:
+            if engine.dialect.name == "sqlite":
+                conn.execute(text("ALTER TABLE users ADD COLUMN ntlm_hash TEXT"))
+            else:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS ntlm_hash TEXT"))
+            print("✅ Added ntlm_hash column to users table")
+    except Exception as exc:
+        print(f"⚠️ Failed to ensure ntlm_hash column: {exc}")
 
 
 def _ensure_uuid_for_table(conn, table_name: str):
@@ -712,6 +736,8 @@ def _ensure_uuid_for_table(conn, table_name: str):
 
 def ensure_uuid_columns_and_backfill():
     """Ensure uuid column exists for key tables and backfill missing values using raw SQL."""
+    if engine.dialect.name != "sqlite":
+        return
     try:
         with engine.connect() as conn:
             # Drop and recreate calendar tables to ensure correct schema
@@ -880,6 +906,8 @@ def ensure_uuid_columns_and_backfill():
 
 def ensure_admin_column():
     """Ensure the users.admin column exists (SQLite-safe)."""
+    if engine.dialect.name != "sqlite":
+        return
     try:
         # Check pragma table info for users
         with engine.connect() as conn:
@@ -894,6 +922,8 @@ def ensure_admin_column():
 
 def ensure_email_mime_columns():
     """Ensure extended body/mime columns exist on the emails table."""
+    if engine.dialect.name != "sqlite":
+        return
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("PRAGMA table_info(emails)")).fetchall()
@@ -981,6 +1011,10 @@ def set_admin_user(email: str, username: str | None = None):
         db.rollback()
     finally:
         db.close()
+
+
+# Ensure critical schema adjustments run on import
+ensure_ntlm_hash_column()
 
 
 def get_db():

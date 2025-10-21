@@ -12,10 +12,17 @@ services:
       - LOGS_DIR=${LOGS_DIR:-/app/logs}
       - HOSTNAME=${HOSTNAME:-owa.shtrum.com}
       - DOMAIN=${DOMAIN:-owa.shtrum.com}
+      - EWS_PUSH_ENDPOINT=${EWS_PUSH_ENDPOINT:-http://ews-service:8100/internal/ews/push}
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
     ports:
       - "25:25"
       - "8001:8001"
       - "8004:8004"
+    depends_on:
+      nginx:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -30,9 +37,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Nginx Reverse Proxy
   nginx:
@@ -49,8 +53,6 @@ services:
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
     depends_on:
-      ui-service:
-        condition: service_healthy
       ews-service:
         condition: service_healthy
       activesync-service:
@@ -89,7 +91,10 @@ services:
     restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
       - DATA_SERVICE_TOKEN=${DATA_SERVICE_TOKEN:-change-me}
+      - EWS_PUSH_ENDPOINT=${EWS_PUSH_ENDPOINT:-http://ews-service:8100/internal/ews/push}
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
     ports:
       - "9000:9000"
     depends_on:
@@ -105,6 +110,8 @@ services:
     command: ["python", "run_ews.py"]
     environment:
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - EWS_PUSH_ENDPOINT=${EWS_PUSH_ENDPOINT:-http://ews-service:8100/internal/ews/push}
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
     ports:
       - "8100:8100"
     depends_on:

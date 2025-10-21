@@ -7,7 +7,7 @@ import os
 sys.path.append('/Users/jonathanshtrum/Downloads/365')
 
 from app.database import SessionLocal, User
-from app.auth import get_password_hash
+from app.auth import get_password_hash, compute_ntlm_hash
 
 def reset_user_password():
     """Reset password for yonatan user"""
@@ -18,6 +18,7 @@ def reset_user_password():
             # Set a simple password
             new_password = "password123"
             user.hashed_password = get_password_hash(new_password)
+            user.ntlm_hash = compute_ntlm_hash(new_password)
             db.commit()
             print(f"Password reset for user {user.username}")
             print(f"New password: {new_password}")

@@ -1,8 +1,12 @@
 import asyncio
+import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+import requests
 
 
 @dataclass
@@ -30,6 +34,11 @@ class EwsPushHub:
     def __init__(self) -> None:
         self._subs: Dict[str, StreamingSubscription] = {}
         self._lock = asyncio.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Register the event loop that owns hub state for thread-safe scheduling."""
+        self._loop = loop
 
     async def subscribe(
         self, user_id: int, folder_ids: List[str]
@@ -71,18 +80,85 @@ class EwsPushHub:
                     not sub.folder_ids or folder_id in sub.folder_ids
                 ):
                     try:
+                        previous = sub.last_watermark
                         sub.last_watermark = payload["watermark"]
-                        sub.queue.put_nowait(payload)
+                        payload_for_sub = dict(payload)
+                        payload_for_sub["previous_watermark"] = previous
+                        sub.queue.put_nowait(payload_for_sub)
                     except asyncio.QueueFull:
-                        # Drop oldest by draining one
+                        # Drop oldest by draining one entry, then retry
                         try:
                             _ = sub.queue.get_nowait()
                         except Exception:
                             pass
                         try:
-                            sub.queue.put_nowait(payload)
+                            payload_for_sub = dict(payload)
+                            payload_for_sub["previous_watermark"] = previous
+                            sub.queue.put_nowait(payload_for_sub)
                         except Exception:
                             pass
+
+    def schedule_publish_new_mail(
+        self, user_id: int, folder_id: str, item_id: int
+    ) -> bool:
+        """Thread-safe helper to enqueue a notification from non-async contexts."""
+        loop = self._loop
+        if not loop or not loop.is_running():
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.publish_new_mail(
+                    user_id=user_id, folder_id=folder_id, item_id=item_id
+                ),
+                loop,
+            )
+            return True
+        except Exception:
+            # Ignore scheduling errors so transactional flow is not interrupted
+            return False
+
+
+logger = logging.getLogger(__name__)
+
+
+def _post_push_event(endpoint: str, token: Optional[str], payload: dict) -> None:
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        requests.post(endpoint, json=payload, timeout=3, headers=headers)
+    except Exception as exc:
+        logger.debug("EWS push HTTP notify failed: %s", exc)
+
+
+def trigger_ews_push(user_id: int, folder_id: str, item_id: int) -> None:
+    """Notify the EWS hub about new mail, with cross-process fallback."""
+
+    if ews_push_hub.schedule_publish_new_mail(user_id, folder_id, item_id):
+        return
+
+    endpoint = os.getenv(
+        "EWS_PUSH_ENDPOINT", "http://127.0.0.1:8100/internal/ews/push"
+    )
+    if not endpoint:
+        return
+
+    token = os.getenv("EWS_PUSH_TOKEN")
+    payload = {
+        "user_id": user_id,
+        "folder_id": folder_id,
+        "item_id": item_id,
+    }
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        loop.run_in_executor(None, _post_push_event, endpoint, token, payload)
+    else:
+        _post_push_event(endpoint, token, payload)
 
 
 # Global singleton

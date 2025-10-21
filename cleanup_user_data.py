@@ -66,8 +66,9 @@ def cleanup_user_data(email: str):
             db.delete(email)
 
         # 4. Delete calendar events
+        # Calendar events are owned via owner_id
         calendar_events = (
-            db.query(CalendarEvent).filter(CalendarEvent.user_id == user_id).all()
+            db.query(CalendarEvent).filter(CalendarEvent.owner_id == user_id).all()
         )
         print(f"Deleting {len(calendar_events)} calendar events...")
         for event in calendar_events:

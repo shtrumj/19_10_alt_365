@@ -168,9 +168,9 @@ class MapiHttpRequest:
                         logger.info(f"MAPI Parser: Detected Execute request (session cookie)")
                         self.request_type = MapiHttpRequestType.EXECUTE
                         return self._parse_execute_request()
-                    elif first_length == data_length and data_length < 200:
-                        # Connect request: DN string only
-                        logger.info(f"MAPI Parser: Detected Connect request (DN string)")
+                    elif data_length >= 16:
+                        # Likely Connect request with structured payload
+                        logger.info("MAPI Parser: Detected Connect request (structured)")
                         self.request_type = MapiHttpRequestType.CONNECT
                         return self._parse_outlook_connect_request(data_length)
                     else:
@@ -201,32 +201,59 @@ class MapiHttpRequest:
             logger.error(f"Error parsing MAPI request: {e}")
             raise
     
+    def _read_uint32(self, blob: bytes, offset: int) -> Tuple[int, int]:
+        if offset + 4 > len(blob):
+            raise ValueError("Truncated MAPI request payload")
+        value = struct.unpack_from('<I', blob, offset)[0]
+        return value, offset + 4
+
+    def _read_counted_string(self, blob: bytes, offset: int) -> Tuple[str, int]:
+        length, offset = self._read_uint32(blob, offset)
+        if offset + length > len(blob):
+            raise ValueError("String exceeds payload length")
+        raw = blob[offset : offset + length]
+        offset += length
+        return raw.decode('utf-8', errors='ignore').rstrip('\x00'), offset
+
     def _parse_outlook_connect_request(self, data_length: int) -> Dict[str, Any]:
-        """Parse Outlook-style Connect request with DN"""
+        """Parse Outlook-style Connect request (EcDoConnectEx)."""
+        data = self.data[self.offset : self.offset + data_length]
+        offset = 0
+
         try:
-            # Read the DN string
-            if self.offset + data_length > len(self.data):
-                raise ValueError("DN data extends beyond request")
-            
-            dn_data = self.data[self.offset:self.offset + data_length]
-            
-            # Try to decode as UTF-8, fallback to latin-1
-            try:
-                user_dn = dn_data.decode('utf-8').rstrip('\x00')
-            except UnicodeDecodeError:
-                user_dn = dn_data.decode('latin-1', errors='ignore').rstrip('\x00')
-            
-            logger.info(f"Parsed Connect request: DN='{user_dn}', length={data_length}")
-            
+            user_dn, offset = self._read_counted_string(data, offset)
+            flags, offset = self._read_uint32(data, offset)
+            cpid, offset = self._read_uint32(data, offset)
+            lcid_string, offset = self._read_uint32(data, offset)
+            lcid_sort, offset = self._read_uint32(data, offset)
+            aux_len, offset = self._read_uint32(data, offset)
+            if offset + aux_len > len(data):
+                raise ValueError("Auxiliary buffer exceeds payload length")
+            aux_data = data[offset : offset + aux_len]
+            offset += aux_len
+
+            logger.info(
+                "Parsed Connect request: dn=%s flags=0x%08x cpid=%d lcid_string=%d",
+                user_dn,
+                flags,
+                cpid,
+                lcid_string,
+            )
+            self.offset += data_length
+
             return {
-                'type': 'connect',
-                'user_dn': user_dn,
-                'outlook_format': True
+                "type": "connect",
+                "user_dn": user_dn,
+                "flags": flags,
+                "cpid": cpid,
+                "lcid_string": lcid_string,
+                "lcid_sort": lcid_sort,
+                "aux_in": aux_data,
             }
-            
-        except Exception as e:
-            logger.error(f"Error parsing Outlook Connect request: {e}")
-            raise ValueError(f"Invalid Connect request: {e}")
+
+        except Exception as exc:
+            logger.error("Error parsing Connect request: %s", exc)
+            raise ValueError(f"Invalid Connect request: {exc}")
     
     def _parse_connect_request(self) -> Dict[str, Any]:
         """Parse Connect request (traditional format)"""
@@ -251,153 +278,139 @@ class MapiHttpRequest:
         }
     
     def _parse_execute_request(self) -> Dict[str, Any]:
-        """Parse Execute request"""
-        # Session context cookie length (4 bytes)
-        if self.offset + 4 > len(self.data):
-            return {'type': 'execute', 'rpc_data': b'', 'session_cookie': ''}
-            
-        cookie_length = struct.unpack('<I', self.data[self.offset:self.offset+4])[0]
-        self.offset += 4
-        
-        # Session context cookie
-        session_cookie = ""
-        if cookie_length > 0 and self.offset + cookie_length <= len(self.data):
-            session_cookie = self.data[self.offset:self.offset+cookie_length].decode('utf-8', errors='ignore')
-            self.offset += cookie_length
-        
-        # RPC data length (4 bytes)
-        if self.offset + 4 > len(self.data):
-            rpc_data = b''
-        else:
-            rpc_length = struct.unpack('<I', self.data[self.offset:self.offset+4])[0]
-            self.offset += 4
-            
-            # RPC data
-            if self.offset + rpc_length <= len(self.data):
-                rpc_data = self.data[self.offset:self.offset+rpc_length]
-            else:
-                rpc_data = self.data[self.offset:]
-        
-        return {
-            'type': 'execute',
-            'session_cookie': session_cookie,
-            'rpc_data': rpc_data
-        }
+        """Parse Execute (EcDoRpcExt2) request."""
+        # Remaining payload is execute structure
+        remaining = self.data[self.offset :]
+        offset = 0
+
+        try:
+            flags, offset = self._read_uint32(remaining, offset)
+            rpc_length, offset = self._read_uint32(remaining, offset)
+            if offset + rpc_length > len(remaining):
+                raise ValueError("RPC payload truncated")
+            rpc_data = remaining[offset : offset + rpc_length]
+            offset += rpc_length
+
+            max_response, offset = self._read_uint32(remaining, offset)
+            aux_len, offset = self._read_uint32(remaining, offset)
+            if offset + aux_len > len(remaining):
+                raise ValueError("Auxiliary payload truncated")
+            aux_data = remaining[offset : offset + aux_len]
+            offset += aux_len
+
+            self.offset += offset
+
+            return {
+                "type": "execute",
+                "flags": flags,
+                "rpc_data": rpc_data,
+                "max_response": max_response,
+                "aux_in": aux_data,
+            }
+
+        except Exception as exc:
+            logger.error("Error parsing Execute request: %s", exc)
+            raise ValueError(f"Invalid Execute request: {exc}")
     
     def _parse_disconnect_request(self) -> Dict[str, Any]:
         """Parse Disconnect request"""
-        # Session context cookie length (4 bytes)
-        if self.offset + 4 > len(self.data):
-            return {'type': 'disconnect', 'session_cookie': ''}
-            
-        cookie_length = struct.unpack('<I', self.data[self.offset:self.offset+4])[0]
-        self.offset += 4
-        
-        # Session context cookie
-        session_cookie = ""
-        if cookie_length > 0 and self.offset + cookie_length <= len(self.data):
-            session_cookie = self.data[self.offset:self.offset+cookie_length].decode('utf-8', errors='ignore')
-        
-        return {
-            'type': 'disconnect',
-            'session_cookie': session_cookie
-        }
+        remaining = self.data[self.offset :]
+        offset = 0
+        try:
+            aux_len, offset = self._read_uint32(remaining, offset)
+            if offset + aux_len > len(remaining):
+                raise ValueError("Auxiliary payload truncated")
+            aux_data = remaining[offset : offset + aux_len]
+            offset += aux_len
+
+            self.offset += offset
+
+            return {
+                "type": "disconnect",
+                "aux_in": aux_data,
+            }
+        except Exception as exc:
+            logger.error("Error parsing Disconnect request: %s", exc)
+            raise ValueError(f"Invalid Disconnect request: {exc}")
 
 class MapiHttpResponse:
     """MAPI/HTTP response builder"""
-    
+
     def __init__(self):
         self.status_code = 0
         self.error_code = 0
         self.flags = 0
         self.data = b''
-        
-    def build_connect_response(self, session_cookie: str, poll_interval: int = 15) -> bytes:
-        """Build Connect response with proper RPC context"""
-        # Status code (4 bytes) - 0 = success
-        response = struct.pack('<I', 0)
-        
-        # Error code (4 bytes) - 0 = no error
-        response += struct.pack('<I', 0)
-        
-        # Flags (4 bytes)
-        response += struct.pack('<I', 0)
-        
-        # Session context cookie length (4 bytes)
-        cookie_bytes = session_cookie.encode('utf-8')
-        response += struct.pack('<I', len(cookie_bytes))
-        
-        # Session context cookie
-        response += cookie_bytes
-        
-        # Poll interval in milliseconds (4 bytes)
-        response += struct.pack('<I', poll_interval * 1000)
-        
-        # Additional RPC context information that Outlook expects
-        # RPC context handle (20 bytes) - UUID + attributes
-        import uuid
-        context_handle = uuid.uuid4().bytes + struct.pack('<I', 1)  # 16 bytes UUID + 4 bytes attributes
-        response += context_handle
-        
-        # Server capabilities (4 bytes)
-        # Bit flags indicating what the server supports
-        server_caps = 0x00000001  # Basic MAPI operations supported
-        response += struct.pack('<I', server_caps)
-        
-        # Maximum request size (4 bytes)
-        max_request_size = 1048576  # 1MB
-        response += struct.pack('<I', max_request_size)
-        
-        # Server version (4 bytes)
-        server_version = 0x000F0000  # Exchange 2013 compatible
-        response += struct.pack('<I', server_version)
-        
-        return response
-    
-    def build_execute_response(self, rpc_response_data: bytes) -> bytes:
-        """Build Execute response"""
-        # Status code (4 bytes) - 0 = success
-        response = struct.pack('<I', 0)
-        
-        # Error code (4 bytes) - 0 = no error
-        response += struct.pack('<I', 0)
-        
-        # Flags (4 bytes)
-        response += struct.pack('<I', 0)
-        
-        # RPC response data length (4 bytes)
-        response += struct.pack('<I', len(rpc_response_data))
-        
-        # RPC response data
+
+    def _pack_ascii(self, value: str) -> bytes:
+        data = value.encode("utf-8")
+        # Include terminating null as per RPC EXT pack format
+        return struct.pack("<I", len(data) + 1) + data + b"\x00"
+
+    def _pack_utf16(self, value: str) -> bytes:
+        data = value.encode("utf-16le")
+        return struct.pack("<I", len(data) + 2) + data + b"\x00\x00"
+
+    def build_connect_response(
+        self,
+        *,
+        dn_prefix: str,
+        display_name: str,
+        max_polls: int = 60,
+        max_retry: int = 0,
+        retry_delay: int = 0,
+        aux_out: bytes = b"",
+    ) -> bytes:
+        """Build Connect response (EcDoConnectEx)."""
+
+        response = bytearray()
+        response += struct.pack("<I", 0)  # status
+        response += struct.pack("<I", 0)  # result (ecSuccess)
+        response += struct.pack("<I", max_polls)
+        response += struct.pack("<I", max_retry)
+        response += struct.pack("<I", retry_delay)
+        response += self._pack_ascii(dn_prefix or "")
+        response += self._pack_utf16(display_name or "Mailbox")
+        response += struct.pack("<I", len(aux_out))
+        response += aux_out
+        return bytes(response)
+
+    def build_execute_response(
+        self,
+        rpc_response_data: bytes,
+        *,
+        flags: int = 0,
+        aux_out: bytes = b"",
+    ) -> bytes:
+        """Build Execute response (EcDoRpcExt2)."""
+
+        response = bytearray()
+        response += struct.pack("<I", 0)  # status
+        response += struct.pack("<I", 0)  # result
+        response += struct.pack("<I", flags)
+        response += struct.pack("<I", len(rpc_response_data))
         response += rpc_response_data
-        
-        return response
-    
-    def build_disconnect_response(self) -> bytes:
-        """Build Disconnect response"""
-        # Status code (4 bytes) - 0 = success
-        response = struct.pack('<I', 0)
-        
-        # Error code (4 bytes) - 0 = no error
-        response += struct.pack('<I', 0)
-        
-        # Flags (4 bytes)
-        response += struct.pack('<I', 0)
-        
-        return response
-    
+        response += struct.pack("<I", len(aux_out))
+        response += aux_out
+        return bytes(response)
+
+    def build_disconnect_response(self, *, status: int = 0, result: int = 0) -> bytes:
+        """Build Disconnect response."""
+
+        response = bytearray()
+        response += struct.pack("<I", status)
+        response += struct.pack("<I", result)
+        response += struct.pack("<I", 0)  # cbAuxOut
+        return bytes(response)
+
     def build_error_response(self, error_code: int) -> bytes:
         """Build error response"""
         # Status code (4 bytes) - non-zero = error
-        response = struct.pack('<I', error_code)
-        
-        # Error code (4 bytes)
-        response += struct.pack('<I', error_code)
-        
-        # Flags (4 bytes)
-        response += struct.pack('<I', 0)
-        
-        return response
+        response = bytearray()
+        response += struct.pack("<I", error_code)
+        response += struct.pack("<I", error_code)
+        response += struct.pack("<I", 0)
+        return bytes(response)
 
 class MapiRpcProcessor:
     """MAPI RPC operation processor"""
@@ -407,7 +420,15 @@ class MapiRpcProcessor:
         self.sessions: Dict[str, MapiContext] = {}
         self.rop_processors: Dict[str, Any] = {}  # Will be imported dynamically to avoid circular imports
     
-    def process_rpc(self, session_cookie: str, rpc_data: bytes) -> bytes:
+    def process_rpc(
+        self,
+        session_cookie: str,
+        rpc_data: bytes,
+        *,
+        max_response_size: int = 0,
+        request_flags: int = 0,
+        aux_in: Optional[bytes] = None,
+    ) -> bytes:
         """Process MAPI RPC operation"""
         try:
             if len(rpc_data) < 8:
@@ -423,7 +444,13 @@ class MapiRpcProcessor:
             if rpc_opnum == MapiRpcOpNum.EcDoConnect:
                 return self._handle_do_connect(rpc_data[8:])
             elif rpc_opnum == MapiRpcOpNum.EcDoRpc:
-                return self._handle_do_rpc(session_cookie, rpc_data[8:])
+                return self._handle_do_rpc(
+                    session_cookie,
+                    rpc_data[8:],
+                    max_response_size=max_response_size,
+                    request_flags=request_flags,
+                    aux_in=aux_in or b"",
+                )
             elif rpc_opnum == MapiRpcOpNum.EcDoDisconnect:
                 return self._handle_do_disconnect(session_cookie)
             else:
@@ -445,7 +472,15 @@ class MapiRpcProcessor:
         response += struct.pack('<I', 0)  # DNS domain name length
         return response
     
-    def _handle_do_rpc(self, session_cookie: str, data: bytes) -> bytes:
+    def _handle_do_rpc(
+        self,
+        session_cookie: str,
+        data: bytes,
+        *,
+        max_response_size: int = 0,
+        request_flags: int = 0,
+        aux_in: bytes = b"",
+    ) -> bytes:
         """Handle EcDoRpc - core MAPI operations"""
         try:
             # Get session context
@@ -486,13 +521,17 @@ class MapiRpcProcessor:
             
             # Process ROP buffer
             rop_response = rop_processor.process_rop_buffer(rop_buffer)
+            if max_response_size and len(rop_response) > max_response_size:
+                rop_response = rop_response[:max_response_size]
             
             # Build RPC response
-            response = struct.pack('<I', 0)  # Return code: success
-            response += struct.pack('<I', 0)  # Flags
-            response += struct.pack('<I', len(rop_response))  # ROP response length
+            response = bytearray()
+            response += struct.pack('<I', 0)  # Return code: success
+            response += struct.pack('<I', request_flags & 0xFFFFFFFF)
+            response += struct.pack('<I', len(rop_response))
             response += rop_response
-            
+            response += struct.pack('<I', 0)  # cbAuxOut
+
             return response
             
         except Exception as e:
@@ -561,6 +600,10 @@ class MapiSessionManager:
         for sid in expired:
             del self.sessions[sid]
             logger.info(f"Cleaned up expired MAPI session {sid}")
+
+    def remove_session(self, session_id: str):
+        if session_id in self.sessions:
+            del self.sessions[session_id]
 
 # Global session manager instance
 session_manager = MapiSessionManager()

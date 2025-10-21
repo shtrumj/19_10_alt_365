@@ -24,7 +24,7 @@ def create_user(
 
     create_script = f"""
 from app.database import get_db, User
-from app.auth import get_password_hash
+from app.auth import get_password_hash, compute_ntlm_hash
 
 db = next(get_db())
 try:
@@ -39,7 +39,8 @@ try:
         username='{username}',
         email='{email}',
         full_name='{full_name}',
-        hashed_password=get_password_hash('{password}')
+        hashed_password=get_password_hash('{password}'),
+        ntlm_hash=compute_ntlm_hash('{password}')
     )
     db.add(user)
     db.commit()

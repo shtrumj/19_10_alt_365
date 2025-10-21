@@ -114,12 +114,14 @@ async def autodiscover(request: Request):
         pass
 
     display_name = "365 Email User"
+    user_uuid = None
     if requested_email:
         try:
             db = SessionLocal()
             user = db.query(User).filter(User.email == requested_email).first()
             if user:
                 display_name = user.full_name or user.username or requested_email
+                user_uuid = getattr(user, "uuid", None)
         except Exception:
             pass
         finally:
@@ -132,26 +134,37 @@ async def autodiscover(request: Request):
     owa_url = f"https://{host}/owa/"
     ews_url = f"https://{host}/EWS/Exchange.asmx"
     activesync_url = f"https://{host}/Microsoft-Server-ActiveSync"
-    mapi_url = f"https://{host}/mapi/emsmdb"
+    mapi_emsmdb_base = f"https://{host}/mapi/emsmdb/"
+    mapi_nspi_base = f"https://{host}/mapi/nspi/"
     oab_url = f"https://{host}/oab/default.oab"
 
     effective_email = requested_email or f"user@{host}"
     local_part = effective_email.split("@")[0]
+    domain = effective_email.split("@", 1)[1] if "@" in effective_email else host
+    mailbox_id = user_uuid or local_part
+    mailbox_smtp_identity = f"{mailbox_id}@{domain}" if domain else mailbox_id
     fake_org = "/o=SkyShift Dev/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)"
     server_dn_raw = f"{fake_org}/cn=Configuration/cn=Servers/cn={host}"
     mailbox_dn_raw = f"{fake_org}/cn=Recipients/cn={local_part}"
 
+    legacy_dn_raw = mailbox_dn_raw
+    deployment_id = user_uuid or "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
     escaped_display = html.escape(display_name)
     escaped_email = html.escape(effective_email)
     escaped_host = html.escape(host)
     escaped_owa = html.escape(owa_url)
     escaped_ews = html.escape(ews_url)
     escaped_as = html.escape(activesync_url)
-    escaped_mapi = html.escape(mapi_url)
+    mapi_url_full = f"{mapi_emsmdb_base}?MailboxId={mailbox_smtp_identity}"
+    escaped_mapi_emsmdb_base = html.escape(mapi_emsmdb_base)
+    escaped_mapi_nspi_base = html.escape(mapi_nspi_base)
     escaped_oab = html.escape(oab_url)
     escaped_smtp_port = html.escape(str(settings.SMTP_PORT))
     server_dn = html.escape(server_dn_raw)
     mailbox_dn = html.escape(mailbox_dn_raw)
+    legacy_dn = html.escape(legacy_dn_raw)
+    deployment = html.escape(deployment_id)
+    escaped_mailbox_identity = html.escape(mailbox_smtp_identity)
 
     response_ns = response_schema
     if not requested_email:
@@ -192,21 +205,26 @@ async def autodiscover(request: Request):
     <User>
       <DisplayName>{escaped_display}</DisplayName>
       <EMailAddress>{escaped_email}</EMailAddress>
+      <AutoDiscoverSMTPAddress>{escaped_email}</AutoDiscoverSMTPAddress>
+      <LegacyDN>{legacy_dn}</LegacyDN>
+      <DeploymentId>{deployment}</DeploymentId>
     </User>
     <Account>
       <AccountType>email</AccountType>
       <AccountDisplayName>SkyShift.Dev Exchange</AccountDisplayName>
       <Action>settings</Action>
+      <MicrosoftOnline>False</MicrosoftOnline>
+      <ConsumerMailbox>False</ConsumerMailbox>
       <Protocol>
         <Type>EXCH</Type>
-        <Server>{escaped_host}</Server>
+        <Server>{escaped_mailbox_identity}</Server>
         <Port>443</Port>
         <ServerVersion>15.01.2507.000</ServerVersion>
         <SSL>On</SSL>
         <SPA>Off</SPA>
         <AuthRequired>On</AuthRequired>
         <DomainRequired>Off</DomainRequired>
-        <AuthPackage>Basic</AuthPackage>
+        <AuthPackage>anonymous</AuthPackage>
         <LoginName>{escaped_email}</LoginName>
         <ServerDN>{server_dn}</ServerDN>
         <MdbDN>{mailbox_dn}</MdbDN>
@@ -218,12 +236,12 @@ async def autodiscover(request: Request):
         <PublicFolderServer>{escaped_host}</PublicFolderServer>
         <ActiveDirectoryServer>{escaped_host}</ActiveDirectoryServer>
         <MapiHttpEnabled>true</MapiHttpEnabled>
-        <MapiHttpServerUrl>{escaped_mapi}</MapiHttpServerUrl>
+        <MapiHttpServerUrl>{html.escape(mapi_url_full)}</MapiHttpServerUrl>
         <MapiHttpVersion>2</MapiHttpVersion>
-        <ServerExclusiveConnect>On</ServerExclusiveConnect>
+        <ServerExclusiveConnect>off</ServerExclusiveConnect>
         <Internal>
           <Server>{escaped_host}</Server>
-          <Url>{escaped_mapi}</Url>
+          <Url>{escaped_mapi_emsmdb_base}?MailboxId={escaped_mailbox_identity}</Url>
           <ASUrl>{escaped_as}</ASUrl>
           <EwsUrl>{escaped_ews}</EwsUrl>
           <OOFUrl>{escaped_ews}</OOFUrl>
@@ -231,12 +249,46 @@ async def autodiscover(request: Request):
         </Internal>
         <External>
           <Server>{escaped_host}</Server>
-          <Url>{escaped_mapi}</Url>
+          <Url>{escaped_mapi_emsmdb_base}?MailboxId={escaped_mailbox_identity}</Url>
           <ASUrl>{escaped_as}</ASUrl>
           <EwsUrl>{escaped_ews}</EwsUrl>
           <OOFUrl>{escaped_ews}</OOFUrl>
           <CertPrincipalName>msstd:{escaped_host}</CertPrincipalName>
         </External>
+      </Protocol>
+      <Protocol>
+        <Type>EXPR</Type>
+        <Server>{escaped_host}</Server>
+        <SSL>On</SSL>
+        <CertPrincipalName>None</CertPrincipalName>
+        <AuthPackage>basic</AuthPackage>
+        <ServerExclusiveConnect>on</ServerExclusiveConnect>
+        <OOFUrl>{escaped_ews}</OOFUrl>
+        <OABUrl>{escaped_oab}</OABUrl>
+      </Protocol>
+      <Protocol>
+        <Type>EXHTTP</Type>
+        <Server>{escaped_host}</Server>
+        <SSL>On</SSL>
+        <CertPrincipalName>None</CertPrincipalName>
+        <AuthPackage>basic</AuthPackage>
+        <ServerExclusiveConnect>on</ServerExclusiveConnect>
+        <ASUrl>{escaped_as}</ASUrl>
+        <EwsUrl>{escaped_ews}</EwsUrl>
+        <OOFUrl>{escaped_ews}</OOFUrl>
+        <OABUrl>{escaped_oab}</OABUrl>
+      </Protocol>
+      <Protocol>
+        <Type>mapiHttp</Type>
+        <Version>1</Version>
+        <MailStore>
+          <InternalUrl>{html.escape(mapi_url_full)}</InternalUrl>
+          <ExternalUrl>{html.escape(mapi_url_full)}</ExternalUrl>
+        </MailStore>
+        <AddressBook>
+          <InternalUrl>{escaped_mapi_nspi_base}?MailboxId={escaped_mailbox_identity}</InternalUrl>
+          <ExternalUrl>{escaped_mapi_nspi_base}?MailboxId={escaped_mailbox_identity}</ExternalUrl>
+        </AddressBook>
       </Protocol>
       <Protocol>
         <Type>WEB</Type>
@@ -283,12 +335,15 @@ async def autodiscover(request: Request):
                 "request_id": request_id,
                 "email": requested_email,
                 "user_agent": user_agent,
-                "mapi_url": mapi_url,
+                "mapi_url": mapi_url_full,
                 "auth_package": "Basic",  # Changed from Negotiate
                 "full_xml_length": len(xml),
                 "mapi_http_enabled": True,
                 "protocols_offered": [
                     "EXCH",
+                    "EXHTTP",
+                    "EXPR",
+                    "mapiHttp",
                     "WEB",
                     "MobileSync",
                     "SMTP",

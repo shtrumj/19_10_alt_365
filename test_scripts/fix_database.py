@@ -32,7 +32,7 @@ def backup_and_recreate_database():
         
         # Create a test user
         from app.database import SessionLocal, User
-        from app.auth import get_password_hash
+        from app.auth import get_password_hash, compute_ntlm_hash
         
         db = SessionLocal()
         try:
@@ -44,7 +44,8 @@ def backup_and_recreate_database():
                     username="yonatan",
                     email="yonatan@shtrum.com",
                     full_name="Yehonathan Shtrum",
-                    hashed_password=get_password_hash("Gib$0n579!")
+                    hashed_password=get_password_hash("Gib$0n579!"),
+                    ntlm_hash=compute_ntlm_hash("Gib$0n579!"),
                 )
                 db.add(test_user)
                 db.commit()

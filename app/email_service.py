@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .database import Email, User
 from .email_delivery import email_delivery
 from .email_parser import get_email_preview, html_to_text
-from .ews_push import ews_push_hub
+from .ews_push import trigger_ews_push
 from .mime_utils import build_mime_message, plain_to_html
 from .models import EmailCreate
 from .websocket_manager import manager
@@ -73,18 +73,11 @@ class EmailService:
                 # Send WebSocket notification to recipient
                 self._send_email_notification(recipient.id, email_record)
                 # Publish EWS streaming event (Inbox)
-                try:
-                    import asyncio
-
-                    asyncio.create_task(
-                        ews_push_hub.publish_new_mail(
-                            user_id=recipient.id,
-                            folder_id="DF_inbox",
-                            item_id=email_record.id,
-                        )
-                    )
-                except Exception:
-                    pass
+                trigger_ews_push(
+                    user_id=recipient.id,
+                    folder_id="DF_inbox",
+                    item_id=email_record.id,
+                )
 
                 logger.info(
                     f"Email sent internally from user {sender_id} to {email_data.recipient_email}"

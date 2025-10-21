@@ -19,6 +19,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .database import Email, SessionLocal, User
+from .ews_push import trigger_ews_push
 from .email_parser import decode_payload, html_to_text, parse_mime_email
 from .mime_utils import plain_to_html
 from .smtp_logger import smtp_logger
@@ -486,6 +487,19 @@ class EmailHandler:
                 self.db.add(email_record)
                 self.db.commit()
                 self.db.refresh(email_record)
+
+                try:
+                    trigger_ews_push(
+                        user_id=recipient_user.id,
+                        folder_id="DF_inbox",
+                        item_id=email_record.id,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "EWS push trigger failed for SMTP delivery %s: %s",
+                        email_record.id,
+                        exc,
+                    )
 
                 # CRITICAL: Trigger ActiveSync push notification immediately
                 # This notifies any connected iPhone/device via Ping command
