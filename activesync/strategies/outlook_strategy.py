@@ -43,12 +43,13 @@ class OutlookStrategy(ActiveSyncStrategy):
 
     def get_body_type_preference_order(self) -> List[int]:
         """
-        Outlook prefers MIME format for maximum fidelity.
+        Windows Outlook renders best with HTML bodies and uses MIME only for
+        explicit attachment fetches. Align with grommunio/z-push ordering.
 
         Returns:
-            [4, 1, 2] - MIME first, then plain text, then HTML
+            [2, 1, 4] - HTML first, then plain text, MIME last
         """
-        return [4, 1, 2]
+        return [2, 1, 4]
 
     def should_use_pending_confirmation(self) -> bool:
         """
