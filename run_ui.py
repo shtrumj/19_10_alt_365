@@ -30,7 +30,6 @@ from app.routers import (
     deep_debug,
     emails,
     ews,
-    mapihttp,
     oab,
     owa,
     queue,
@@ -81,8 +80,6 @@ app.include_router(ws_router.router)
 app.include_router(autodiscover.router)
 app.include_router(ews.router)
 app.include_router(caldav_carddav.router)
-app.include_router(mapihttp.router)
-app.include_router(mapihttp.root_router)
 app.include_router(oab.router)
 app.include_router(rpc_proxy.router)
 app.include_router(deep_debug.router)

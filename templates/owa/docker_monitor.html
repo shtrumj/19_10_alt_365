@@ -1,0 +1,578 @@
+{% extends "owa/base.html" %} {% block title %}Docker Monitor - {{
+get_translation(request, 'app_name') }}{% endblock %} {% block content %}
+<style>
+  .status-card {
+    border-radius: 16px;
+    border: none;
+    color: #fff;
+  }
+  .status-card .card-body {
+    padding: 1.2rem 1.4rem;
+  }
+  .status-running {
+    background: linear-gradient(135deg, #16a34a, #22c55e);
+  }
+  .status-warning {
+    background: linear-gradient(135deg, #f59e0b, #facc15);
+  }
+  .status-down {
+    background: linear-gradient(135deg, #dc2626, #f87171);
+  }
+  .status-unknown {
+    background: linear-gradient(135deg, #475569, #64748b);
+  }
+  .status-badge {
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .log-output {
+    background: #0b1120;
+    color: #38bdf8;
+    border-radius: 12px;
+    padding: 1rem;
+    min-height: 320px;
+    max-height: 60vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    line-height: 1.4;
+  }
+  .service-card dl {
+    margin-bottom: 0;
+  }
+  .service-card dt {
+    font-weight: 600;
+  }
+  .service-card dd {
+    margin-bottom: 0.35rem;
+  }
+  .small-muted {
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+  }
+</style>
+
+<div class="content-header">
+  <h1><i class="fas fa-server text-primary"></i> Docker Service Monitor</h1>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary btn-sm" id="toggle-auto">
+      <i class="fas fa-sync-alt"></i> Auto-refresh: Off
+    </button>
+    <button class="btn btn-primary btn-sm" id="refresh-all">
+      <i class="fas fa-rotate"></i> Refresh Now
+    </button>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-3">
+    <div class="card status-card status-running shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="text-uppercase small fw-semibold">Running</div>
+            <div class="display-6" data-summary="running">-</div>
+          </div>
+          <i class="fas fa-check-circle fa-2x"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card status-card status-warning shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="text-uppercase small fw-semibold">Warnings</div>
+            <div class="display-6" data-summary="warnings">-</div>
+          </div>
+          <i class="fas fa-exclamation-triangle fa-2x"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card status-card status-down shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="text-uppercase small fw-semibold">Down</div>
+            <div class="display-6" data-summary="down">-</div>
+          </div>
+          <i class="fas fa-fire fa-2x"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card status-card status-unknown shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="text-uppercase small fw-semibold">Unknown</div>
+            <div class="display-6" data-summary="unknown">-</div>
+          </div>
+          <i class="fas fa-question-circle fa-2x"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3" id="services-grid">
+  {% for svc in docker_services %}
+  <div class="col-12 col-lg-6 col-xl-4" data-service-card="{{ svc.id }}">
+    <div class="card shadow-sm border-0 h-100 service-card">
+      <div class="card-body d-flex flex-column">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <h5 class="card-title mb-1">{{ svc.name }}</h5>
+            <p class="text-muted small mb-1">{{ svc.description }}</p>
+          </div>
+          <span
+            class="badge bg-secondary status-badge"
+            data-field="status-badge"
+            >Loading</span
+          >
+        </div>
+        <dl class="row small">
+          <dt class="col-5 text-muted">Container</dt>
+          <dd class="col-7"><code>{{ svc.container or '—' }}</code></dd>
+          <dt class="col-5 text-muted">Status</dt>
+          <dd class="col-7" data-field="status-text">Loading…</dd>
+          <dt class="col-5 text-muted">Health</dt>
+          <dd class="col-7" data-field="health-text">—</dd>
+        </dl>
+        <div class="mt-auto">
+          <div class="small-muted mb-2" data-field="last-checked">
+            Last checked: —
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            {% set no_log_sources = (not docker_available and not svc.log_files) %}
+            <button
+              class="btn btn-outline-primary btn-sm"
+              data-action="view-logs"
+              data-service="{{ svc.id }}"
+              {% if no_log_sources %}
+              data-no-sources="true"
+              title="Logs unavailable: Docker CLI not accessible and no log files available."
+              disabled
+              {% endif %}
+            >
+              <i class="fas fa-scroll me-1"></i> Logs
+            </button>
+            <button
+              class="btn btn-outline-secondary btn-sm"
+              data-action="refresh-service"
+              data-service="{{ svc.id }}"
+            >
+              <i class="fas fa-sync-alt me-1"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card border-0 shadow-sm mt-4">
+  <div
+    class="card-header bg-white border-0 d-flex flex-wrap gap-2 align-items-center justify-content-between"
+  >
+    <div>
+      <h5 class="mb-0">
+        <i class="fas fa-scroll text-primary me-2"></i>
+        Service Logs
+      </h5>
+      <small id="log-meta" class="text-muted"
+        >Select a service to view logs.</small
+      >
+    </div>
+    <div class="d-flex flex-wrap gap-2 align-items-center">
+      <select
+        class="form-select form-select-sm d-none"
+        id="log-source-select"
+      ></select>
+      <select
+        class="form-select form-select-sm d-none"
+        id="log-file-select"
+      ></select>
+      <select class="form-select form-select-sm" id="log-tail-select">
+        <option value="100">Last 100</option>
+        <option value="200" selected>Last 200</option>
+        <option value="500">Last 500</option>
+        <option value="1000">Last 1000</option>
+      </select>
+      <button
+        class="btn btn-outline-secondary btn-sm"
+        id="refresh-logs"
+        disabled
+      >
+        <i class="fas fa-sync-alt"></i>
+      </button>
+    </div>
+  </div>
+  <div class="card-body">
+    <pre id="log-output" class="log-output">Select a service to view logs.</pre>
+  </div>
+</div>
+
+<script>
+  const SERVICE_BLUEPRINT = {{ docker_services | tojson | safe }};
+  const DOCKER_AVAILABLE = {{ docker_available | tojson | safe }};
+
+  const serviceState = new Map();
+  let autoRefreshTimer = null;
+  let currentServiceId = null;
+
+  const statusBadgeClasses = {
+    running: 'bg-success',
+    healthy: 'bg-success',
+    restarting: 'bg-warning text-dark',
+    degraded: 'bg-warning text-dark',
+    paused: 'bg-warning text-dark',
+    down: 'bg-danger',
+    exited: 'bg-danger',
+    dead: 'bg-danger',
+    unknown: 'bg-secondary'
+  };
+
+  function updateSummary(summary){
+    const fields = ['running', 'warnings', 'down', 'unknown'];
+    fields.forEach(field => {
+      const el = document.querySelector(`[data-summary="${field}"]`);
+      if(el){
+        el.textContent = summary?.[field] ?? '-';
+      }
+    });
+  }
+
+  function formatLatency(latency){
+    if(latency == null){ return '—'; }
+    if(latency >= 1000){
+      return `${(latency/1000).toFixed(2)}s`;
+    }
+    return `${latency.toFixed(1)}ms`;
+  }
+
+  function formatStatusText(service){
+    const source = service.status_source || 'unknown';
+    const status = (service.status || 'unknown').toUpperCase();
+    if(service.status_message){
+      return `${status} · ${service.status_message}`;
+    }
+    return `${status} · ${source}`;
+  }
+
+  function formatHealthText(service){
+    const state = service.health_state ?? 'unknown';
+    const latency = formatLatency(service.health_latency_ms);
+    if(service.health_message){
+      return `${state.toUpperCase()} · ${latency} · ${service.health_message}`;
+    }
+    return `${state.toUpperCase()} · ${latency}`;
+  }
+
+  function applyServiceState(service){
+    const card = document.querySelector(`[data-service-card="${service.id}"]`);
+    if(!card){ return; }
+    serviceState.set(service.id, service);
+
+    const badge = card.querySelector('[data-field="status-badge"]');
+    if(badge){
+      const normalized = (service.status || 'unknown').toLowerCase();
+      badge.className = 'badge status-badge ' + (statusBadgeClasses[normalized] || 'bg-secondary');
+      badge.textContent = (service.status || 'unknown').toUpperCase();
+    }
+
+    const statusField = card.querySelector('[data-field="status-text"]');
+    if(statusField){
+      statusField.textContent = formatStatusText(service);
+    }
+
+    const healthField = card.querySelector('[data-field="health-text"]');
+    if(healthField){
+      healthField.textContent = formatHealthText(service);
+    }
+
+    const lastChecked = card.querySelector('[data-field="last-checked"]');
+    if(lastChecked){
+      lastChecked.textContent = `Last checked: ${service.last_checked || '—'}`;
+    }
+
+    const logButton = card.querySelector('[data-action="view-logs"]');
+    if(logButton){
+      if(logButton.dataset.noSources === 'true'){
+        logButton.disabled = true;
+        logButton.title = logButton.title || 'Logs unavailable: Docker CLI not accessible and no log files available.';
+        return;
+      }
+      const supportsLogs = service.supports_logs === undefined ? true : Boolean(service.supports_logs);
+      logButton.disabled = !supportsLogs;
+      logButton.dataset.supportsLogs = supportsLogs ? 'true' : 'false';
+      if(!supportsLogs && !logButton.dataset.noSources){
+        logButton.title = 'Logs unavailable right now (no Docker access or mapped log files).';
+      }else if(supportsLogs && logButton.dataset.noSources !== 'true'){
+        logButton.removeAttribute('title');
+      }
+    }
+  }
+
+  async function fetchDashboardData(forceServiceId = null){
+    try{
+      console.log('🔄 Fetching dashboard data...');
+      const res = await fetch('/owa/admin/docker-monitor/data', {
+        credentials: 'include'
+      });
+      if(!res.ok){
+        console.error('❌ Dashboard data fetch failed:', res.status);
+        return;
+      }
+      const data = await res.json();
+
+      updateSummary(data.summary || {});
+      (data.services || []).forEach(service => applyServiceState(service));
+
+      if(forceServiceId && serviceState.has(forceServiceId)){
+        const targetService = serviceState.get(forceServiceId);
+        const ready = prepareLogSelectors(targetService);
+        if(ready){
+          loadLogs(forceServiceId);
+        }
+      }
+    }catch(err){
+      console.error('Failed to fetch docker monitor data', err);
+    }
+  }
+
+  function prepareLogSelectors(service){
+    const sourceSelect = document.getElementById('log-source-select');
+    const fileSelect = document.getElementById('log-file-select');
+    const refreshBtn = document.getElementById('refresh-logs');
+    const logMeta = document.getElementById('log-meta');
+    const logOutput = document.getElementById('log-output');
+
+    const logFiles = Array.isArray(service.log_files) ? service.log_files : [];
+    const hasDocker = DOCKER_AVAILABLE && !!service.container;
+    const hasFileEntries = logFiles.length > 0;
+
+    const sources = [];
+    if(hasDocker){
+      sources.push({ value: 'docker', label: 'Docker' });
+    }
+    if(hasFileEntries){
+      sources.push({ value: 'file', label: 'Log File' });
+    }
+    if(sources.length > 1){
+      sources.unshift({ value: 'auto', label: 'Auto' });
+    }
+
+    sourceSelect.innerHTML = '';
+    if(sources.length === 0){
+      sourceSelect.classList.add('d-none');
+      sourceSelect.dataset.value = '';
+      fileSelect.classList.add('d-none');
+      refreshBtn.disabled = true;
+      logMeta.textContent = `${service.name} · Logs unavailable`;
+      logOutput.textContent =
+        'Logs are not accessible for this service. Docker CLI access is required or log files must be mapped to the UI container.';
+      return false;
+    }
+
+    sources.forEach(src => {
+      const opt = document.createElement('option');
+      opt.value = src.value;
+      opt.textContent = src.label;
+      sourceSelect.appendChild(opt);
+    });
+
+    if(sources.length === 1){
+      sourceSelect.classList.add('d-none');
+      sourceSelect.dataset.value = sources[0].value;
+      sourceSelect.value = sources[0].value;
+    }else{
+      sourceSelect.classList.remove('d-none');
+      sourceSelect.dataset.value = '';
+      sourceSelect.value = sources[0].value;
+    }
+
+    fileSelect.innerHTML = '';
+    if(hasFileEntries){
+      logFiles.forEach(file => {
+        const opt = document.createElement('option');
+        opt.value = file.id;
+        const missing = file.exists === false;
+        opt.textContent = missing ? `${file.label} (missing)` : file.label;
+        opt.disabled = missing;
+        fileSelect.appendChild(opt);
+      });
+      fileSelect.classList.remove('d-none');
+      const firstEnabled = Array.from(fileSelect.options).find(opt => !opt.disabled);
+      if(firstEnabled){
+        fileSelect.value = firstEnabled.value;
+      }else if(fileSelect.options.length){
+        fileSelect.value = fileSelect.options[0].value;
+      }
+    }else{
+      fileSelect.classList.add('d-none');
+    }
+
+    refreshBtn.disabled = false;
+    return true;
+  }
+
+  function buildLogQuery(serviceId){
+    const tail = document.getElementById('log-tail-select').value || '200';
+    const sourceSelect = document.getElementById('log-source-select');
+    const fileSelect = document.getElementById('log-file-select');
+
+    let sourceValue;
+    if(sourceSelect.classList.contains('d-none')){
+      sourceValue = sourceSelect.dataset.value || sourceSelect.value || 'auto';
+    }else{
+      sourceValue = sourceSelect.value || 'auto';
+    }
+
+    const params = new URLSearchParams({
+      service: serviceId,
+      tail,
+      source: sourceValue
+    });
+    if(!fileSelect.classList.contains('d-none') && fileSelect.value){
+      params.set('log_id', fileSelect.value);
+    }
+    return params;
+  }
+
+  async function loadLogs(serviceId){
+    console.log('📋 Loading logs for service:', serviceId);
+    const params = buildLogQuery(serviceId);
+    const url = `/owa/admin/docker-monitor/logs?${params.toString()}`;
+    console.log('📋 Logs URL:', url);
+    console.log('📋 Query params:', params.toString());
+
+    const output = document.getElementById('log-output');
+    const meta = document.getElementById('log-meta');
+    output.textContent = 'Loading logs...';
+
+    try{
+      console.log('📋 Making fetch request to:', url);
+      const res = await fetch(url, {
+        credentials: 'include'
+      });
+      console.log('📋 Response status:', res.status);
+      console.log('📋 Response ok:', res.ok);
+
+      if(!res.ok){
+        const errorText = await res.text();
+        console.error('❌ HTTP Error:', res.status, errorText);
+        output.textContent = `Failed to load logs (HTTP ${res.status})`;
+        return;
+      }
+
+      const data = await res.json();
+      console.log('📋 Response data:', data);
+
+      if(Array.isArray(data.lines) && data.lines.length){
+        output.textContent = data.lines.join('\n');
+        console.log('✅ Logs loaded successfully, lines:', data.lines.length);
+      }else{
+        output.textContent = data.error || 'No log entries available.';
+        console.log('⚠️ No log entries or error:', data.error);
+      }
+      meta.textContent = `${data.service_name} · Source: ${data.source} · Tail: ${data.tail}`;
+    }catch(err){
+      console.error('❌ Fetch error:', err);
+      output.textContent = `Failed to load logs: ${err}`;
+    }
+  }
+
+  function toggleAutoRefresh(){
+    const btn = document.getElementById('toggle-auto');
+    if(autoRefreshTimer){
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+      btn.classList.remove('btn-success');
+      btn.classList.add('btn-outline-secondary');
+      btn.innerHTML = '<i class="fas fa-sync-alt"></i> Auto-refresh: Off';
+    }else{
+      fetchDashboardData(currentServiceId);
+      autoRefreshTimer = setInterval(() => fetchDashboardData(currentServiceId), 7000);
+      btn.classList.remove('btn-outline-secondary');
+      btn.classList.add('btn-success');
+      btn.innerHTML = '<i class="fas fa-sync-alt"></i> Auto-refresh: On';
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    fetchDashboardData();
+
+    document.getElementById('refresh-all').addEventListener('click', () => {
+      fetchDashboardData(currentServiceId);
+    });
+
+    document.getElementById('toggle-auto').addEventListener('click', toggleAutoRefresh);
+
+    document.getElementById('log-tail-select').addEventListener('change', () => {
+      if(currentServiceId){
+        loadLogs(currentServiceId);
+      }
+    });
+
+    document.getElementById('log-source-select').addEventListener('change', () => {
+      if(currentServiceId){
+        loadLogs(currentServiceId);
+      }
+    });
+
+    document.getElementById('log-file-select').addEventListener('change', () => {
+      if(currentServiceId){
+        loadLogs(currentServiceId);
+      }
+    });
+
+    document.getElementById('refresh-logs').addEventListener('click', () => {
+      if(currentServiceId){
+        loadLogs(currentServiceId);
+      }
+    });
+
+    document.querySelectorAll('[data-action="view-logs"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const serviceId = btn.dataset.service;
+        if(btn.disabled){
+          const meta = document.getElementById('log-meta');
+          const output = document.getElementById('log-output');
+          meta.textContent = 'Logs unavailable for this service.';
+          output.textContent = 'Logs are not accessible. Ensure the Docker CLI is available to the UI container or map service log files.';
+          return;
+        }
+        console.log('🔍 Logs button clicked for service:', serviceId);
+        console.log('🔍 Button dataset:', btn.dataset);
+        console.log('🔍 Available services in state:', Array.from(serviceState.keys()));
+
+        const service = serviceState.get(serviceId) || SERVICE_BLUEPRINT.find(s => s.id === serviceId);
+        console.log('🔍 Found service:', service);
+
+        if(!service){
+          console.error('❌ Service not found for ID:', serviceId);
+          return;
+        }
+
+        console.log('✅ Setting current service to:', serviceId);
+        currentServiceId = serviceId;
+        prepareLogSelectors(service);
+        loadLogs(serviceId);
+      });
+    });
+
+    document.querySelectorAll('[data-action="refresh-service"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        fetchDashboardData(currentServiceId);
+      });
+    });
+  });
+</script>
+{% endblock %}

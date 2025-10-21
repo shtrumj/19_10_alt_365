@@ -71,6 +71,7 @@ from ..wbxml_parser import (
 _sync_rate_limits = {}
 
 router = APIRouter(prefix="/activesync", tags=["activesync"])
+root_router = APIRouter(tags=["activesync-root"])
 
 
 # Middleware is handled at the app level, not router level
@@ -79,6 +80,9 @@ router = APIRouter(prefix="/activesync", tags=["activesync"])
 
 # Simple in-memory pending cache: (user, device, collection, client_key) -> wbxml bytes
 _pending_batches_cache = {}
+
+# Loop detection cache: (user, device, collection) -> loop state
+_loop_detection_cache = {}
 
 
 # Exception handlers are handled at the app level, not router level
@@ -162,6 +166,93 @@ def _format_synckey(
         return generate_synckey(counter, uuid_value), uuid_value
 
     return str(counter), None
+
+
+def _detect_sync_loop(
+    user_id: int,
+    device_id: str,
+    collection_id: str,
+    client_sync_key: str,
+    emails_available: int,
+    emails_selected: int,
+) -> tuple[bool, int]:
+    """
+    Detect sync loops similar to grommunio-sync loop detection.
+
+    Returns:
+        (is_loop, suggested_window_size)
+    """
+    cache_key = f"{user_id}:{device_id}:{collection_id}"
+
+    # Get or create loop state
+    if cache_key not in _loop_detection_cache:
+        _loop_detection_cache[cache_key] = {
+            "last_sync_key": None,
+            "loop_count": 0,
+            "window_size_reductions": 0,
+            "last_emails_selected": 0,
+            "consecutive_zero_selections": 0,
+            "zero_selection_history": [],
+        }
+
+    state = _loop_detection_cache[cache_key]
+
+    # CRITICAL FIX: Detect zero-selection loops regardless of sync key changes
+    # The issue is that sync keys increment but emails_selected remains 0
+    if emails_selected == 0 and emails_available > 0:
+        state["consecutive_zero_selections"] += 1
+
+        # Track the pattern: zero selections with available emails
+        state["zero_selection_history"].append({
+            "sync_key": client_sync_key,
+            "emails_available": emails_available,
+            "timestamp": time.time()
+        })
+
+        # Keep only recent history (last 10 entries)
+        if len(state["zero_selection_history"]) > 10:
+            state["zero_selection_history"] = state["zero_selection_history"][-10:]
+
+        _write_json_line(
+            "activesync/activesync.log",
+            {
+                "event": "sync_loop_detected",
+                "consecutive_zero_selections": state["consecutive_zero_selections"],
+                "client_sync_key": client_sync_key,
+                "emails_available": emails_available,
+                "emails_selected": emails_selected,
+                "history_count": len(state["zero_selection_history"]),
+                "message": "Detected zero-selection loop (sync key progression)",
+            },
+        )
+
+        # Progressive window size reduction after 3 consecutive zero selections
+        if state["consecutive_zero_selections"] >= 3:
+            suggested_window = max(1, 25 - (state["window_size_reductions"] * 5))
+            state["window_size_reductions"] += 1
+
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_loop_window_reduction",
+                    "suggested_window_size": suggested_window,
+                    "reductions_count": state["window_size_reductions"],
+                    "consecutive_zero_selections": state["consecutive_zero_selections"],
+                    "message": "Reducing window size to break zero-selection loop",
+                },
+            )
+
+            return True, suggested_window
+    else:
+        # Reset zero-selection counter when emails are actually sent
+        if emails_selected > 0:
+            state["consecutive_zero_selections"] = 0
+            state["zero_selection_history"] = []
+
+    state["last_sync_key"] = client_sync_key
+    state["last_emails_selected"] = emails_selected
+
+    return False, 0
 
 
 def _select_body_pref(
@@ -965,6 +1056,66 @@ async def eas_options(
     return Response(status_code=200, headers=headers)
 
 
+def _build_basic_auth_headers(
+    additional: dict[str, str] | None = None,
+) -> dict[str, str]:
+    headers = _eas_options_headers()
+    headers["WWW-Authenticate"] = 'Basic realm="Microsoft-Server-ActiveSync"'
+    if additional:
+        headers.update(additional)
+    return headers
+
+
+@router.get("/Microsoft-Server-ActiveSync")
+async def eas_get_probe(request: Request):
+    """Return 401 with protocol headers so browsers prompt for credentials."""
+    headers = _build_basic_auth_headers({"Allow": "OPTIONS, POST"})
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "get_probe",
+            "ip": (request.client.host if request.client else None),
+            "ua": request.headers.get("User-Agent"),
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+    return Response(status_code=401, headers=headers)
+
+
+@router.head("/Microsoft-Server-ActiveSync")
+async def eas_head_probe(request: Request):
+    """Return headers without a body for monitoring tools."""
+    headers = _build_basic_auth_headers({"Allow": "OPTIONS, POST"})
+    _write_json_line(
+        "activesync/activesync.log",
+        {
+            "event": "head_probe",
+            "ip": (request.client.host if request.client else None),
+            "ua": request.headers.get("User-Agent"),
+            "timestamp": datetime.utcnow().isoformat(),
+        },
+    )
+    return Response(status_code=401, headers=headers)
+
+
+# Register root-level aliases mapping to the same handlers
+root_router.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    endpoint=eas_options,
+    methods=["OPTIONS"],
+)
+root_router.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    endpoint=eas_get_probe,
+    methods=["GET"],
+)
+root_router.add_api_route(
+    "/Microsoft-Server-ActiveSync",
+    endpoint=eas_head_probe,
+    methods=["HEAD"],
+)
+
+
 def _get_or_create_device(
     db: Session, user_id: int, device_id: str, device_type: str | None = None
 ) -> ActiveSyncDevice:
@@ -1285,6 +1436,18 @@ async def eas_dispatch(
             or client_mismatch
             or device.is_provisioned != 1
         )
+
+        # Windows Outlook rarely sends X-MS-PolicyKey; if we already generated one,
+        # mirror grommunio's loose provisioning behaviour and allow FolderSync.
+        if (
+            needs_provision
+            and is_windows_outlook
+            and server_has_key
+            and device.is_provisioned == 1
+        ):
+            needs_provision = False
+            client_policy_key_hdr = device.policy_key
+            headers.setdefault("X-MS-PolicyKey", device.policy_key)
         if needs_provision:
             _write_json_line(
                 "activesync/activesync.log",
@@ -2424,7 +2587,7 @@ async def eas_dispatch(
         # This lets us set has_more correctly while only sending WindowSize items
         query_limit = max(window_size + 1, 2)
         all_emails = email_service.get_user_emails(
-            current_user.id, folder_type, start_id=last_id, limit=query_limit
+            current_user.id, folder_type, limit=query_limit
         )
 
         # Filter to only unsent emails (exclude already synced + pending)
@@ -2998,16 +3161,35 @@ async def eas_dispatch(
                     selected_emails = []
                     batch_size_bytes = 0
 
+                    # CRITICAL FIX: Prevent infinite loop when size estimation is too conservative
+                    # If no emails can fit due to size estimation, force at least 1 email
+                    min_emails_to_send = 1
+
                     for email in emails[:window_size]:
-                        # Estimate WBXML size (MIME content + headers + metadata)
+                        # More accurate size estimation: use actual content size
                         mime_size = len(email.mime_content or b"")
-                        email_size_estimate = mime_size + 500  # +500 for XML overhead
+                        # More conservative overhead estimate
+                        email_size_estimate = mime_size + 200  # Reduced from 500 to 200
 
                         if (
                             batch_size_bytes + email_size_estimate
                             > MAX_BATCH_SIZE_BYTES_OUTLOOK
                         ):
-                            # Batch size limit reached, stop here
+                            # Batch size limit reached, but ensure we send at least 1 email
+                            if len(selected_emails) == 0 and len(emails) > 0:
+                                # Force at least 1 email to prevent infinite loop
+                                selected_emails.append(email)
+                                batch_size_bytes += email_size_estimate
+                                _write_json_line(
+                                    "activesync/activesync.log",
+                                    {
+                                        "event": "outlook_force_single_email",
+                                        "reason": "Prevent infinite loop - size estimation too conservative",
+                                        "email_id": email.id,
+                                        "estimated_size": email_size_estimate,
+                                        "message": "Forcing single email to break loop",
+                                    },
+                                )
                             break
 
                         selected_emails.append(email)
@@ -3018,6 +3200,29 @@ async def eas_dispatch(
                         emails
                     )  # More if we didn't send all
 
+                    # CRITICAL FIX: Apply loop detection and window size reduction
+                    is_loop, suggested_window = _detect_sync_loop(
+                        current_user.id,
+                        device_id,
+                        collection_id,
+                        client_sync_key,
+                        len(emails),
+                        len(emails_to_send),
+                    )
+
+                    if is_loop and suggested_window > 0:
+                        # Apply window size reduction to break the loop
+                        window_size = min(window_size, suggested_window)
+                        _write_json_line(
+                            "activesync/activesync.log",
+                            {
+                                "event": "sync_loop_window_applied",
+                                "original_window_size": window_size,
+                                "reduced_window_size": suggested_window,
+                                "message": "Applied window size reduction to break loop",
+                            },
+                        )
+
                     _write_json_line(
                         "activesync/activesync.log",
                         {
@@ -3027,6 +3232,8 @@ async def eas_dispatch(
                             "batch_size_bytes": batch_size_bytes,
                             "max_batch_size_bytes": MAX_BATCH_SIZE_BYTES_OUTLOOK,
                             "has_more": has_more,
+                            "is_loop_detected": is_loop,
+                            "suggested_window_size": suggested_window,
                             "message": "Z-Push strategy: Limiting Outlook batch to 50KB",
                         },
                     )
@@ -3558,42 +3765,77 @@ async def eas_dispatch(
                 },
             )
 
-            # Subscribe to push notifications for this user
-            notification_event = await push_manager.subscribe(
-                current_user.id, folders_to_monitor
-            )
-
+            # CRITICAL FIX: Check for changes immediately instead of waiting for push notifications
+            # Outlook expects immediate change detection, not event-driven waiting
             start_time = time.time()
             changes_detected = False
+            changed_folders = []
 
             try:
-                # Z-Push approach: Wait for either a notification or timeout
-                # This is event-driven - we're notified immediately when new content arrives
-                await asyncio.wait_for(
-                    notification_event.wait(), timeout=heartbeat_interval
-                )
-                # If we get here, changes were detected!
-                changes_detected = True
+                email_service = EmailService(db)
+                for folder_id in folders_to_monitor:
+                    folder_type = "inbox" if folder_id == "1" else "inbox"
+                    
+                    # Get sync state for this folder
+                    state = _get_or_init_state(db, current_user.id, device_id, folder_id)
+                    
+                    # Check if there are new emails since last sync
+                    emails = email_service.get_user_emails(
+                        current_user.id, folder_type, limit=100
+                    )
+                    
+                    # Filter emails that are newer than last_synced_email_id
+                    new_emails = [e for e in emails if e.id > state.last_synced_email_id]
+                    
+                    # DEBUG: Log detailed ping change detection info
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "ping_debug",
+                            "folder_id": folder_id,
+                            "last_synced_email_id": state.last_synced_email_id,
+                            "total_emails_found": len(emails),
+                            "new_emails_count": len(new_emails),
+                            "email_ids_found": [e.id for e in emails],
+                            "new_email_ids": [e.id for e in new_emails],
+                        },
+                    )
+                    
+                    if new_emails:
+                        changes_detected = True
+                        changed_folders.append(folder_id)
+                        
+                        _write_json_line(
+                            "activesync/activesync.log",
+                            {
+                                "event": "ping_changes_detected",
+                                "folder_id": folder_id,
+                                "new_emails_count": len(new_emails),
+                                "last_synced_email_id": state.last_synced_email_id,
+                                "newest_email_id": max(e.id for e in new_emails),
+                                "trigger": "immediate_check",
+                            },
+                        )
+                        
+            except Exception as e:
                 _write_json_line(
                     "activesync/activesync.log",
                     {
-                        "event": "ping_changes_detected",
-                        "trigger": "push_notification",
-                        "elapsed_seconds": int(time.time() - start_time),
+                        "event": "ping_error",
+                        "error": str(e),
+                        "message": "Error checking for changes",
                     },
                 )
-            except asyncio.TimeoutError:
-                # Heartbeat expired with no changes
+
+            if not changes_detected:
                 _write_json_line(
                     "activesync/activesync.log",
                     {
-                        "event": "ping_timeout",
+                        "event": "ping_no_changes",
                         "elapsed_seconds": int(time.time() - start_time),
+                        "message": "No new emails found",
                     },
                 )
-            finally:
-                # Always unsubscribe when done
-                await push_manager.unsubscribe(notification_event)
 
             # Build WBXML Ping response
             # Per MS-ASCMD: Status 2 = changes, Status 1 = no changes (timeout)
@@ -3611,9 +3853,10 @@ async def eas_dispatch(
 
                 # Folders with changes
                 w.start(0x04)  # Folders tag
-                w.start(0x02)  # Folder tag
-                w.write_str("1")  # CollectionId (inbox)
-                w.end()
+                for folder_id in changed_folders:
+                    w.start(0x02)  # Folder tag
+                    w.write_str(folder_id)  # CollectionId
+                    w.end()
                 w.end()
             else:
                 w.start(0x08)  # Status tag
@@ -3627,6 +3870,7 @@ async def eas_dispatch(
                 {
                     "event": "ping_complete",
                     "changes_detected": changes_detected,
+                    "changed_folders": changed_folders,
                     "elapsed_seconds": int(time.time() - start_time),
                 },
             )
@@ -4360,28 +4604,15 @@ def calendar_sync(
 
 
 # Root-level aliases (some clients call without /activesync prefix)
-@router.options("/../Microsoft-Server-ActiveSync")
+@root_router.options("/Microsoft-Server-ActiveSync")
 async def eas_options_alias(
     request: Request,
     current_user: User = Depends(get_current_user_from_basic_auth),
 ):
-    """CRITICAL FIX #31: Use OPTIONS-specific headers (no singular version)!
-    FIXED: Require authentication for OPTIONS to pass Microsoft Connectivity Analyzer.
-    """
-    headers = _eas_options_headers()  # ← Use OPTIONS headers!
-    _write_json_line(
-        "activesync/activesync.log",
-        {
-            "event": "options_alias",
-            "ip": (request.client.host if request.client else None),
-            "ua": request.headers.get("User-Agent"),
-            "host": request.headers.get("Host"),
-        },
-    )
-    return Response(status_code=200, headers=headers)
+    return await eas_options(request, current_user)
 
 
-@router.post("/../Microsoft-Server-ActiveSync")
+@root_router.post("/Microsoft-Server-ActiveSync")
 async def eas_dispatch_alias(
     request: Request,
     current_user: User = Depends(get_current_user_from_basic_auth),
@@ -4503,6 +4734,8 @@ def get_folder_emails(
             for email in emails
         ],
     }
+
+
 def _aslog(category: str, event: str, **fields: Any) -> None:
     """Safe logging wrapper (mirrors grommunio/z-push behaviour)."""
     try:

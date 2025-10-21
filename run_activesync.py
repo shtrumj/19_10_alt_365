@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
         ensure_uuid_columns_and_backfill()
 
     app.include_router(activesync.router)
+    app.include_router(activesync.root_router)
 
     @app.get("/")
     async def root():

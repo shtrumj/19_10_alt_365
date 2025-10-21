@@ -19,8 +19,6 @@ services:
       - "8001:8001"
       - "8004:8004"
     depends_on:
-      nginx:
-        condition: service_started
       postgres:
         condition: service_healthy
     volumes:
@@ -56,6 +54,8 @@ services:
       ews-service:
         condition: service_healthy
       activesync-service:
+        condition: service_healthy
+      mapi-service:
         condition: service_healthy
       data-service:
         condition: service_started
@@ -100,6 +100,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      ui-service:
+        condition: service_started
     networks:
       - email-network
 
@@ -152,6 +154,38 @@ services:
         [
           "CMD-SHELL",
           'python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(''http://localhost:8200/health'', timeout=5).status==200 else 1)"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mapi-service:
+    build: .
+    container_name: 365-mapi
+    restart: unless-stopped
+    command: ["python", "run_mapi.py"]
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - LOGS_DIR=${LOGS_DIR:-/app/logs}
+      - HOSTNAME=${HOSTNAME:-owa.shtrum.com}
+      - DOMAIN=${DOMAIN:-owa.shtrum.com}
+    ports:
+      - "8300:8300"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ui-service:
+        condition: service_started
+    networks:
+      - email-network
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(''http://localhost:8300/health'', timeout=5).status==200 else 1)"',
         ]
       interval: 30s
       timeout: 10s

@@ -1,16 +1,23 @@
+import asyncio
 import os
+import socket
+import subprocess
+import time
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional, Union
 
+import requests
+import shutil
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, text
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user_from_cookie
 from ..config import settings
-from ..database import Email, User, get_db
+from ..database import Email, User, engine, get_db
 from ..diagnostic_logger import outlook_health
 from ..email_delivery import email_delivery
 from ..email_parser import get_email_preview, parse_email_content
@@ -30,6 +37,85 @@ from ..smtp_server import start_smtp_server, stop_smtp_server
 router = APIRouter(prefix="/owa", tags=["owa"])
 templates = Jinja2Templates(directory="templates")
 
+LOGS_BASE = os.environ.get("LOGS_DIR", "logs")
+DOCKER_BIN = shutil.which("docker")
+DOCKER_TIMEOUT = 6
+DEFAULT_LOG_TAIL = 200
+
+DOCKER_SERVICES = [
+    {
+        "id": "ui",
+        "name": "UI / OWA",
+        "container": "365-ui",
+        "description": "Primary web interface, authentication, SMTP listener and admin tools.",
+        "health": {"type": "http", "url": "http://127.0.0.1:8001/health"},
+        "log_files": [
+            {"id": "smtp_internal", "label": "SMTP Internal", "path": "internal_smtp.log"},
+            {"id": "smtp_errors", "label": "SMTP Errors", "path": "smtp_errors.log"},
+            {"id": "email_processing", "label": "Email Processing", "path": "email_processing.log"},
+        ],
+    },
+    {
+        "id": "nginx",
+        "name": "Nginx Reverse Proxy",
+        "container": "365-nginx",
+        "description": "Edge reverse proxy handling TLS termination and routing.",
+        "health": {"type": "tcp", "host": "nginx", "port": 80},
+        "log_files": [],
+    },
+    {
+        "id": "ews",
+        "name": "EWS Service",
+        "container": "365-ews",
+        "description": "Exchange Web Services SOAP endpoints.",
+        "health": {"type": "http", "url": "http://ews-service:8100/health"},
+        "log_files": [
+            {"id": "ews_log", "label": "EWS Activity", "path": "web/ews/ews.log"},
+        ],
+    },
+    {
+        "id": "activesync",
+        "name": "ActiveSync Service",
+        "container": "365-activesync",
+        "description": "Exchange ActiveSync protocol implementation.",
+        "health": {"type": "http", "url": "http://activesync-service:8200/health"},
+        "log_files": [
+            {"id": "activesync_log", "label": "ActiveSync Activity", "path": "activesync/activesync.log"},
+        ],
+    },
+    {
+        "id": "mapi",
+        "name": "MAPI/HTTP Service",
+        "container": "365-mapi",
+        "description": "MAPI RPC over HTTP endpoint for Outlook clients.",
+        "health": {"type": "http", "url": "http://mapi-service:8300/health"},
+        "log_files": [
+            {"id": "mapi_log", "label": "MAPI Activity", "path": "web/mapi/mapi.log"},
+            {"id": "outlook_comm", "label": "Outlook Communication", "path": "outlook_debug/communication.log"},
+        ],
+    },
+    {
+        "id": "data",
+        "name": "Data Service",
+        "container": "365-data-service",
+        "description": "Internal REST API for background synchronization.",
+        "health": {"type": "http", "url": "http://data-service:9000/health"},
+        "log_files": [
+            {"id": "diagnostics", "label": "Diagnostics Summary", "path": "diagnostics/debug_summary.log"},
+        ],
+    },
+    {
+        "id": "postgres",
+        "name": "PostgreSQL",
+        "container": "365-postgres",
+        "description": "Primary database backing all services.",
+        "health": {"type": "db"},
+        "log_files": [],
+    },
+]
+
+DOCKER_SERVICE_LOOKUP = {svc["id"]: svc for svc in DOCKER_SERVICES}
+
 
 def get_template_context(request: Request, **kwargs):
     """Get template context with language support"""
@@ -45,6 +131,272 @@ def get_template_context(request: Request, **kwargs):
         **kwargs,
     }
     return context
+
+
+def _sanitize_tail(value: Optional[int]) -> int:
+    try:
+        tail = int(value) if value is not None else DEFAULT_LOG_TAIL
+    except (TypeError, ValueError):
+        tail = DEFAULT_LOG_TAIL
+    return max(10, min(tail, 2000))
+
+
+def _log_file_exists(rel_path: str) -> bool:
+    base = os.path.abspath(LOGS_BASE)
+    full_path = os.path.abspath(os.path.join(base, rel_path))
+    if not full_path.startswith(base):
+        return False
+    return os.path.exists(full_path)
+
+
+def _read_log_file(rel_path: str, limit: int) -> list[str]:
+    base = os.path.abspath(LOGS_BASE)
+    full_path = os.path.abspath(os.path.join(base, rel_path))
+    if not full_path.startswith(base):
+        raise ValueError("Invalid log path reference")
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(full_path)
+    with open(full_path, "r", encoding="utf-8", errors="ignore") as handle:
+        lines = deque(handle, maxlen=limit)
+    return list(lines)
+
+
+async def _docker_container_status(container: Optional[str]) -> Optional[dict]:
+    if not container or not DOCKER_BIN:
+        return None
+
+    def _inspect() -> Optional[dict]:
+        try:
+            proc = subprocess.run(
+                [DOCKER_BIN, "inspect", "-f", "{{.State.Status}}", container],
+                capture_output=True,
+                text=True,
+                timeout=DOCKER_TIMEOUT,
+            )
+            if proc.returncode == 0:
+                return {
+                    "state": proc.stdout.strip() or "unknown",
+                    "message": "",
+                }
+            return {
+                "state": "unknown",
+                "message": (proc.stderr or proc.stdout).strip(),
+            }
+        except FileNotFoundError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - surface diagnostics
+            return {"state": "unknown", "message": str(exc)}
+
+    return await asyncio.to_thread(_inspect)
+
+
+async def _check_health(health_config: dict) -> tuple[str, Optional[float], str]:
+    if not health_config:
+        return "unknown", None, "No health configuration"
+
+    kind = health_config.get("type", "http")
+    timeout = health_config.get("timeout", 3)
+
+    if kind == "http":
+        url = health_config.get("url")
+        if not url:
+            return "unknown", None, "Missing health URL"
+
+        def _http_check() -> tuple[str, Optional[float], str]:
+            start = time.perf_counter()
+            try:
+                response = requests.get(url, timeout=timeout)
+                latency = (time.perf_counter() - start) * 1000
+                payload = ""
+                try:
+                    payload_json = response.json()
+                    payload = payload_json.get("status") or response.text[:160]
+                except Exception:
+                    payload = response.text[:160]
+
+                if response.status_code >= 500:
+                    return "down", latency, f"{response.status_code} {payload}"
+                if response.status_code >= 400:
+                    return "degraded", latency, f"{response.status_code} {payload}"
+
+                return "healthy", latency, payload or "OK"
+            except Exception as exc:  # noqa: BLE001
+                return "down", None, str(exc)
+
+        return await asyncio.to_thread(_http_check)
+
+    if kind == "tcp":
+        host = health_config.get("host")
+        port = health_config.get("port")
+        if not host or not port:
+            return "unknown", None, "Missing host/port for TCP check"
+
+        def _tcp_check() -> tuple[str, Optional[float], str]:
+            start = time.perf_counter()
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    latency = (time.perf_counter() - start) * 1000
+                    return "healthy", latency, f"{host}:{port} reachable"
+            except Exception as exc:  # noqa: BLE001
+                return "down", None, str(exc)
+
+        return await asyncio.to_thread(_tcp_check)
+
+    if kind == "db":
+
+        def _db_check() -> tuple[str, Optional[float], str]:
+            start = time.perf_counter()
+            try:
+                with engine.connect() as connection:
+                    connection.execute(text("SELECT 1"))
+                latency = (time.perf_counter() - start) * 1000
+                return "healthy", latency, "Database responded to SELECT 1"
+            except Exception as exc:  # noqa: BLE001
+                return "down", None, str(exc)
+
+        return await asyncio.to_thread(_db_check)
+
+    return "unknown", None, f"Unsupported health check type: {kind}"
+
+
+async def _collect_service_status(service: dict) -> dict:
+    status = {
+        "id": service["id"],
+        "name": service["name"],
+        "container": service.get("container"),
+        "description": service.get("description", ""),
+        "status": "unknown",
+        "status_source": "unknown",
+        "status_message": "",
+        "health_state": "unknown",
+        "health_latency_ms": None,
+        "health_message": "",
+        "supports_logs": False,
+        "log_files": [],
+    }
+
+    docker_info = await _docker_container_status(service.get("container"))
+    if docker_info:
+        status["status"] = docker_info.get("state", "unknown")
+        status["status_source"] = "docker"
+        status["status_message"] = docker_info.get("message", "")
+
+    health_info = service.get("health")
+    if health_info:
+        health_state, latency, message = await _check_health(health_info)
+        status["health_state"] = health_state
+        status["health_latency_ms"] = latency
+        status["health_message"] = message
+        if status["status_source"] != "docker":
+            status["status"] = health_state
+            status["status_source"] = "health"
+    else:
+        status["health_message"] = "No health check configured"
+
+    log_files = service.get("log_files", [])
+    status["log_files"] = [
+        {
+            **log_file,
+            "exists": _log_file_exists(log_file["path"]),
+        }
+        for log_file in log_files
+    ]
+    has_docker_source = bool(service.get("container") and DOCKER_BIN)
+    has_log_entries = bool(status["log_files"])
+    has_existing_files = any(lf["exists"] for lf in status["log_files"])
+
+    status["supports_logs"] = has_docker_source or has_log_entries or has_existing_files
+    status["last_checked"] = datetime.utcnow().isoformat() + "Z"
+    return status
+
+
+async def _collect_all_service_statuses() -> list[dict]:
+    results = await asyncio.gather(
+        *[_collect_service_status(service) for service in DOCKER_SERVICES]
+    )
+    return list(results)
+
+
+async def _try_docker_logs(container: Optional[str], tail: int) -> tuple[Optional[list[str]], Optional[str]]:
+    if not container or not DOCKER_BIN:
+        return None, "Docker CLI is not available"
+
+    def _logs() -> list[str]:
+        proc = subprocess.run(
+            [DOCKER_BIN, "logs", "--tail", str(tail), container],
+            capture_output=True,
+            text=True,
+            timeout=max(DOCKER_TIMEOUT, min(20, tail // 20 + 5)),
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout).strip() or "Failed to fetch docker logs")
+        content = proc.stdout.splitlines()
+        return content
+
+    try:
+        lines = await asyncio.to_thread(_logs)
+        return lines, None
+    except FileNotFoundError:
+        return None, "Docker binary not found in PATH"
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+
+
+async def _fetch_service_logs(
+    service: dict,
+    log_id: Optional[str],
+    tail: int,
+    source: str,
+) -> dict:
+    docker_lines: Optional[list[str]] = None
+    docker_error: Optional[str] = None
+
+    if source in ("auto", "docker"):
+        docker_lines, docker_error = await _try_docker_logs(
+            service.get("container"), tail
+        )
+        if docker_lines is not None:
+            return {
+                "lines": docker_lines,
+                "source": "docker",
+                "log_label": f"Docker logs ({service.get('container')})",
+                "error": None,
+            }
+
+    log_files = service.get("log_files", [])
+    if log_files and source in ("auto", "file"):
+        selected = None
+        if log_id:
+            selected = next((lf for lf in log_files if lf["id"] == log_id), None)
+        if not selected:
+            selected = log_files[0]
+
+        try:
+            file_lines = await asyncio.to_thread(
+                _read_log_file, selected["path"], tail
+            )
+            return {
+                "lines": file_lines,
+                "source": "file",
+                "log_label": selected["label"],
+                "path": selected["path"],
+                "error": None,
+            }
+        except FileNotFoundError:
+            fallback_error = f"Log file not found: {selected['path']}"
+        except Exception as exc:  # noqa: BLE001
+            fallback_error = str(exc)
+        else:
+            fallback_error = None
+    else:
+        fallback_error = None
+
+    return {
+        "lines": [],
+        "source": "unavailable",
+        "log_label": None,
+        "error": fallback_error or docker_error or "No log source available",
+    }
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -460,6 +812,93 @@ async def outlook_health_data(
         "connection_stats": connection_stats,
         "timestamp": datetime.now().isoformat(),
     }
+
+
+@router.get("/admin/docker-monitor", response_class=HTMLResponse)
+async def docker_monitor_dashboard(
+    request: Request, current_user: User = Depends(get_current_user_from_cookie)
+):
+    """Docker container monitoring dashboard"""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, "admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    context = get_template_context(
+        request,
+        user=current_user,
+        title="Docker Service Monitor",
+        docker_services=DOCKER_SERVICES,
+        docker_available=bool(DOCKER_BIN),
+    )
+    return templates.TemplateResponse("owa/docker_monitor.html", context)
+
+
+@router.get("/admin/docker-monitor/data")
+async def docker_monitor_data(
+    request: Request, current_user: User = Depends(get_current_user_from_cookie)
+):
+    """Return real-time status for dockerised services"""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, "admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    services = await _collect_all_service_statuses()
+    running_states = {"running", "healthy"}
+    warning_states = {"restarting", "degraded", "paused"}
+    down_states = {"down", "exited", "dead"}
+
+    summary = {
+        "running": sum(1 for s in services if s["status"] in running_states),
+        "warnings": sum(1 for s in services if s["status"] in warning_states),
+        "down": sum(1 for s in services if s["status"] in down_states),
+        "total": len(services),
+    }
+    summary["unknown"] = summary["total"] - (
+        summary["running"] + summary["warnings"] + summary["down"]
+    )
+
+    return {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "docker_available": bool(DOCKER_BIN),
+        "services": services,
+        "summary": summary,
+    }
+
+
+@router.get("/admin/docker-monitor/logs")
+async def docker_monitor_logs(
+    service: str,
+    log_id: Optional[str] = None,
+    tail: Optional[int] = DEFAULT_LOG_TAIL,
+    source: str = "auto",
+    current_user: User = Depends(get_current_user_from_cookie),
+):
+    """Fetch logs for a given service."""
+    if isinstance(current_user, RedirectResponse):
+        return current_user
+    if not getattr(current_user, "admin", False):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if source not in {"auto", "docker", "file"}:
+        raise HTTPException(status_code=400, detail="Invalid log source")
+
+    service_config = DOCKER_SERVICE_LOOKUP.get(service)
+    if not service_config:
+        raise HTTPException(status_code=404, detail="Unknown service")
+
+    tail_value = _sanitize_tail(tail)
+    payload = await _fetch_service_logs(service_config, log_id, tail_value, source)
+    payload.update(
+        {
+            "service": service_config["id"],
+            "service_name": service_config["name"],
+            "tail": tail_value,
+            "docker_available": bool(DOCKER_BIN),
+        }
+    )
+    return payload
 
 
 @router.post("/admin/actions/smtp/start")
