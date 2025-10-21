@@ -2193,49 +2193,46 @@ async def eas_dispatch(
 
         # CRITICAL FIX: Handle SyncKey=0 BEFORE any email queries!
         # When client sends SyncKey=0, it means "I have nothing, start fresh"
-        # We MUST reset last_synced_email_id BEFORE filtering emails!
+        # CRITICAL FIX: Follow grommunio-sync behavior - ALWAYS reset when SyncKey=0
+        # Outlook sends SyncKey=0 expecting a fresh sync, not a retry
         if client_sync_key == "0":
-            if has_pending_batch or has_confirmed_state or has_synced_history:
-                client_retry_from_zero = True
+            previous_server_key = state.sync_key or "0"
+            
+            _write_json_line(
+                "activesync/activesync.log",
+                {
+                    "event": "sync_key_zero_reset",
+                    "device_id": device_id,
+                    "collection_id": collection_id,
+                    "previous_sync_key": previous_server_key,
+                    "message": "SyncKey=0 received - resetting state for fresh sync (grommunio-sync behavior)",
+                },
+            )
+            
+            # Reset all state like grommunio-sync does
+            state.sync_key = "0"
+            state.synckey_counter = 0
+            state.synckey_uuid = None
+            state.last_synced_email_id = 0  # CRITICAL: Reset pagination
+            state.synced_email_ids = None
+            state.pending_sync_key = None
+            state.pending_max_email_id = None
+            state.pending_item_ids = None
+            db.commit()
+            
+            synced_ids_snapshot = set()
+
+            if previous_server_key != "0":
                 _write_json_line(
                     "activesync/activesync.log",
                     {
-                        "event": "sync_initial_retry_reuse",
+                        "event": "sync_initial_reset_EARLY",
                         "device_id": device_id,
                         "collection_id": collection_id,
-                        "pending_sync_key": state.pending_sync_key,
-                        "server_sync_key": state.sync_key,
-                        "has_synced_history": has_synced_history,
-                        "message": "Client sent SyncKey=0 but state exists; reusing staged state instead of resetting",
+                        "previous_server_key": previous_server_key,
+                        "message": "CRITICAL: Resetting server SyncKey to 0 for fresh client request",
                     },
                 )
-            else:
-                previous_server_key = state.sync_key or "0"
-
-                state.sync_key = "0"
-                state.synckey_counter = 0
-                state.synckey_uuid = None
-                state.last_synced_email_id = (
-                    0  # RESET PAGINATION for first-time sync only
-                )
-                state.synced_email_ids = None
-                state.pending_sync_key = None
-                state.pending_max_email_id = None
-                state.pending_item_ids = None
-                db.commit()
-                synced_ids_snapshot = set()
-
-                if previous_server_key != "0":
-                    _write_json_line(
-                        "activesync/activesync.log",
-                        {
-                            "event": "sync_initial_reset_EARLY",
-                            "device_id": device_id,
-                            "collection_id": collection_id,
-                            "previous_server_key": previous_server_key,
-                            "message": "CRITICAL: Resetting server SyncKey to 0 for fresh client request",
-                        },
-                    )
 
         # Parity with grommunio: only honour the currently committed or pending SyncKey
         allowed_sync_keys = {
@@ -2251,7 +2248,12 @@ async def eas_dispatch(
             and not fetch_ids
         )
 
-        if client_sync_key not in allowed_sync_keys and client_sync_key != "0" and not allow_one_ahead:
+        if (
+            requires_pending_confirmation
+            and client_sync_key not in allowed_sync_keys
+            and client_sync_key != "0"
+            and not allow_one_ahead
+        ):
             previous_sync_key = state.sync_key
             _write_json_line(
                 "activesync/activesync.log",

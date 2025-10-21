@@ -716,7 +716,7 @@ def _prepare_body_payload(
             "estimated_size": estimated_size,
             "truncated": truncated_flag,
             "native_type": native_type,
-            "content_type": mime_content_type or detected_mime_header or "message/rfc822",
+            "content_type": "message/rfc822",
             "detected_mime_type": mime_content_type or detected_mime_header,
         }
 
@@ -880,9 +880,11 @@ def _prepare_body_payload(
     }
 
     # Provide Preview text (max 255 chars) similar to grommunio for Outlook list view
-    preview_source = plain or (_html_to_plain_text(html) if html else "")
-    if not preview_source:
-        preview_source = data_text
+    preview_source = None
+    if body_type in (1, 2):
+        preview_source = plain or (_html_to_plain_text(html) if html else "")
+        if not preview_source:
+            preview_source = data_text
     if preview_source:
         payload["preview_text"] = preview_source[:255]
 

@@ -34,8 +34,8 @@ class OutlookStrategy(ActiveSyncStrategy):
         return client_sync_key == "0"
 
     def get_default_window_size(self) -> int:
-        """Conservative default for Outlook (25 items per batch)"""
-        return 25
+        """Conservative default for Outlook (3 items per batch for testing)"""
+        return 3
 
     def get_max_window_size(self) -> int:
         """Match grommunio/Z-Push WindowSize cap for Outlook (512 items)."""
@@ -52,14 +52,14 @@ class OutlookStrategy(ActiveSyncStrategy):
 
     def should_use_pending_confirmation(self) -> bool:
         """
-        Require client confirmation before committing sync state.
+        Outlook Desktop does not acknowledge pending batches.
 
-        Modern Outlook builds echo the new SyncKey after processing a batch,
-        matching grommunio/z-push expectations. Keeping the batch pending
-        prevents us from advancing the state if Outlook silently drops the
-        payload, allowing the server to re-send until the client confirms.
+        grommunio/z-push commit Outlook batches immediately and rely on the
+        client to advance the SyncKey on the next request. Keeping the legacy
+        behaviour avoids infinite resend loops when Outlook retries with the
+        previous key.
         """
-        return True
+        return False
 
     def get_truncation_strategy(
         self,
