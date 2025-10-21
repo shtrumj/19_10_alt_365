@@ -38,8 +38,8 @@ class OutlookStrategy(ActiveSyncStrategy):
         return 25
 
     def get_max_window_size(self) -> int:
-        """Z-Push/Grommunio standard maximum (100 items per batch)"""
-        return 100
+        """Match grommunio/Z-Push WindowSize cap for Outlook (512 items)."""
+        return 512
 
     def get_body_type_preference_order(self) -> List[int]:
         """
@@ -52,16 +52,14 @@ class OutlookStrategy(ActiveSyncStrategy):
 
     def should_use_pending_confirmation(self) -> bool:
         """
-        Outlook DOES NOT use two-phase commit.
+        Require client confirmation before committing sync state.
 
-        CRITICAL: Outlook does NOT confirm receipt like iOS/Android.
-        If we use two-phase commit, Outlook rejects the response and we
-        enter an infinite RESEND loop, sending the same cached response
-        forever.
-
-        Z-Push/Grommunio disable two-phase commit for Outlook Desktop.
+        Modern Outlook builds echo the new SyncKey after processing a batch,
+        matching grommunio/z-push expectations. Keeping the batch pending
+        prevents us from advancing the state if Outlook silently drops the
+        payload, allowing the server to re-send until the client confirms.
         """
-        return False  # CRITICAL FIX: No pending confirmation for Outlook
+        return True
 
     def get_truncation_strategy(
         self,

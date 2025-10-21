@@ -2237,22 +2237,44 @@ async def eas_dispatch(
                         },
                     )
 
-        # CRITICAL: Detect InvalidSyncKey - client and server are out of sync
-        # Per expert: "When client sends stale key (e.g. 4) but server is at 190,
-        # return Status=3 (InvalidSyncKey) with SyncKey=0 to force client reset"
-        # Allow tolerance of ±2 for pending batches, but reject if gap is huge
-        if client_sync_key != "0" and abs(client_key_int - server_key_int) > 3:
+        # Parity with grommunio: only honour the currently committed or pending SyncKey
+        allowed_sync_keys = {
+            key
+            for key in (state.sync_key, state.pending_sync_key)
+            if key not in (None, "")
+        }
+        allow_one_ahead = (
+            client_key_int is not None
+            and client_key_int == 1
+            and (server_key_int in (0, None))
+            and not state.pending_sync_key
+            and not fetch_ids
+        )
+
+        if client_sync_key not in allowed_sync_keys and client_sync_key != "0" and not allow_one_ahead:
+            previous_sync_key = state.sync_key
             _write_json_line(
                 "activesync/activesync.log",
                 {
-                    "event": "sync_invalid_synckey_detected",
+                    "event": "sync_invalid_synckey_enforced",
                     "client_sync_key": client_sync_key,
-                    "server_sync_key": state.sync_key,
-                    "gap": abs(client_key_int - server_key_int),
-                    "message": "Client sent stale SyncKey - forcing reset with Status=3",
+                    "server_sync_key": previous_sync_key,
+                    "pending_sync_key": state.pending_sync_key,
+                    "allowed_keys": list(allowed_sync_keys),
+                    "message": "SyncKey mismatch with no pending batch - forcing reset with Status=3",
                 },
             )
-            # Return InvalidSyncKey response
+
+            state.sync_key = "0"
+            state.synckey_counter = 0
+            state.synckey_uuid = None
+            state.pending_sync_key = None
+            state.pending_max_email_id = None
+            state.pending_item_ids = None
+            state.synced_email_ids = None
+            state.last_synced_email_id = 0
+            db.commit()
+
             is_wbxml_request = len(
                 request_body_bytes
             ) > 0 and request_body_bytes.startswith(b"\x03\x01")
@@ -2269,12 +2291,12 @@ async def eas_dispatch(
                         "collection_id": collection_id,
                         "status": "invalid_synckey",
                         "client_sync_key": client_sync_key,
-                        "server_sync_key": state.sync_key,
+                        "server_sync_key": previous_sync_key,
+                        "pending_sync_key": None,
                     },
                 )
-            else:
-                # XML fallback
-                xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
+            # XML fallback
+            xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
 <Sync xmlns="AirSync">
     <Collections>
         <Collection>
@@ -2285,9 +2307,9 @@ async def eas_dispatch(
         </Collection>
     </Collections>
 </Sync>"""
-                return Response(
-                    content=xml_response, media_type="application/xml", headers=headers
-                )
+            return Response(
+                content=xml_response, media_type="application/xml", headers=headers
+            )
 
         # CRITICAL FIX #26: Two-phase commit - check for pending batch first!
         # Expert: "Only commit when the client echoes back the SyncKey you issued"
@@ -3154,53 +3176,12 @@ async def eas_dispatch(
                 # Z-PUSH/GROMMUNIO FIX: Limit batch by BYTES for Outlook (not just count)
                 # Outlook rejects batches > 50KB. Must split into smaller batches.
                 # Reference: Z-Push MAX_EMBEDDED_SIZE = 50000 bytes
-                MAX_BATCH_SIZE_BYTES_OUTLOOK = 50000  # 50KB per batch (Z-Push standard)
-
                 if is_outlook:
-                    # Outlook-specific: Limit by BOTH count AND bytes
-                    selected_emails = []
-                    batch_size_bytes = 0
+                    # Align with grommunio/z-push: honour WindowSize without artificial 50KB cap
+                    emails_to_send = emails[:window_size] if window_size else emails
+                    has_more = len(emails) > len(emails_to_send)
 
-                    # CRITICAL FIX: Prevent infinite loop when size estimation is too conservative
-                    # If no emails can fit due to size estimation, force at least 1 email
-                    min_emails_to_send = 1
-
-                    for email in emails[:window_size]:
-                        # More accurate size estimation: use actual content size
-                        mime_size = len(email.mime_content or b"")
-                        # More conservative overhead estimate
-                        email_size_estimate = mime_size + 200  # Reduced from 500 to 200
-
-                        if (
-                            batch_size_bytes + email_size_estimate
-                            > MAX_BATCH_SIZE_BYTES_OUTLOOK
-                        ):
-                            # Batch size limit reached, but ensure we send at least 1 email
-                            if len(selected_emails) == 0 and len(emails) > 0:
-                                # Force at least 1 email to prevent infinite loop
-                                selected_emails.append(email)
-                                batch_size_bytes += email_size_estimate
-                                _write_json_line(
-                                    "activesync/activesync.log",
-                                    {
-                                        "event": "outlook_force_single_email",
-                                        "reason": "Prevent infinite loop - size estimation too conservative",
-                                        "email_id": email.id,
-                                        "estimated_size": email_size_estimate,
-                                        "message": "Forcing single email to break loop",
-                                    },
-                                )
-                            break
-
-                        selected_emails.append(email)
-                        batch_size_bytes += email_size_estimate
-
-                    emails_to_send = selected_emails
-                    has_more = len(selected_emails) < len(
-                        emails
-                    )  # More if we didn't send all
-
-                    # CRITICAL FIX: Apply loop detection and window size reduction
+                    # Retain loop detection safeguard for pathological clients
                     is_loop, suggested_window = _detect_sync_loop(
                         current_user.id,
                         device_id,
@@ -3211,30 +3192,31 @@ async def eas_dispatch(
                     )
 
                     if is_loop and suggested_window > 0:
-                        # Apply window size reduction to break the loop
-                        window_size = min(window_size, suggested_window)
+                        adjusted_window = min(window_size or suggested_window, suggested_window)
+                        emails_to_send = emails[:adjusted_window]
+                        has_more = len(emails) > len(emails_to_send)
                         _write_json_line(
                             "activesync/activesync.log",
                             {
                                 "event": "sync_loop_window_applied",
                                 "original_window_size": window_size,
-                                "reduced_window_size": suggested_window,
+                                "reduced_window_size": adjusted_window,
                                 "message": "Applied window size reduction to break loop",
                             },
                         )
+                        window_size = adjusted_window
 
                     _write_json_line(
                         "activesync/activesync.log",
                         {
-                            "event": "outlook_batch_size_limiting",
+                            "event": "outlook_batch_selection",
                             "total_emails_available": len(emails),
                             "emails_selected": len(emails_to_send),
-                            "batch_size_bytes": batch_size_bytes,
-                            "max_batch_size_bytes": MAX_BATCH_SIZE_BYTES_OUTLOOK,
+                            "window_size_effective": window_size,
                             "has_more": has_more,
                             "is_loop_detected": is_loop,
                             "suggested_window_size": suggested_window,
-                            "message": "Z-Push strategy: Limiting Outlook batch to 50KB",
+                            "message": "Using WindowSize for Outlook without legacy 50KB throttle",
                         },
                     )
                 else:

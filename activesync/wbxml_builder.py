@@ -681,7 +681,9 @@ def _prepare_body_payload(
                     mime_content_type = ""
 
         estimated_size = str(len(mime_bytes))
-        payload_bytes, truncated_flag = _truncate_bytes(mime_bytes, truncation_size)
+        # grommunio-sync never truncates MIME bodies; deliver the full message
+        payload_bytes = mime_bytes
+        truncated_flag = "0"
 
         # Z-Push sends NativeBodyType=1 (plain) or 2 (HTML) even when Type=4 (MIME)
         _, native_pref = _select_body_content(em, 2)
@@ -714,7 +716,7 @@ def _prepare_body_payload(
             "estimated_size": estimated_size,
             "truncated": truncated_flag,
             "native_type": native_type,
-            "content_type": "message/rfc822",
+            "content_type": mime_content_type or detected_mime_header or "message/rfc822",
             "detected_mime_type": mime_content_type or detected_mime_header,
         }
 
@@ -877,6 +879,13 @@ def _prepare_body_payload(
         "content_type": content_type,
     }
 
+    # Provide Preview text (max 255 chars) similar to grommunio for Outlook list view
+    preview_source = plain or (_html_to_plain_text(html) if html else "")
+    if not preview_source:
+        preview_source = data_text
+    if preview_source:
+        payload["preview_text"] = preview_source[:255]
+
     # MS-ASAIRS COMPLIANCE VALIDATION
     _validate_body_payload(payload, requested_type=body_type)
 
@@ -979,12 +988,14 @@ def write_fetch_responses(
             w.write_opaque(body_payload["data_bytes"])
         else:
             # Type=1/2 uses string data
-            if body_payload["type"] == "4" and "data_bytes" in body_payload:
-                # Type=4 (MIME) uses OPAQUE bytes
-                w.write_opaque(body_payload["data_bytes"])
+            data_bytes = body_payload.get("data_bytes")
+            data_text = body_payload.get("data", "")
+
+            if body_payload["type"] == "4" and data_bytes is not None:
+                # Type=4 (MIME) uses OPAQUE bytes (even if empty)
+                w.write_opaque(data_bytes)
             else:
-                # Type=1/2 uses string data
-                # DEBUG: Log what's being written to WBXML
+                # Type=1/2 (or fallback when data_bytes missing) uses UTF-8 opaque text
                 from app.diagnostic_logger import _write_json_line
 
                 _write_json_line(
@@ -992,20 +1003,13 @@ def write_fetch_responses(
                     {
                         "event": "wbxml_body_data_write",
                         "body_type": body_payload["type"],
-                        "data_length": (
-                            len(body_payload["data"]) if body_payload.get("data") else 0
-                        ),
-                        "data_is_empty": not bool(body_payload.get("data")),
-                        "data_preview": (
-                            body_payload["data"][:100]
-                            if body_payload.get("data")
-                            else None
-                        ),
+                        "data_length": len(data_text.encode("utf-8")) if data_text else 0,
+                        "data_is_empty": not bool(data_text),
+                        "data_preview": (data_text[:100] if data_text else None),
                         "encoding": "opaque_utf8",
                     },
                 )
-                # CRITICAL iOS FIX: Type=1/2 MUST use OPAQUE (not STR_I) per iOS requirements
-                w.write_opaque(body_payload["data"].encode("utf-8"))
+                w.write_opaque((data_text or "").encode("utf-8"))
         w.end()
 
         # CRITICAL FIX: Send Preview INSTEAD OF Data for small truncations
@@ -1272,12 +1276,14 @@ def build_sync_response(
             # STANDARD TRUNCATION: Always send Data element with truncated HTML
             # This is how grommunio-sync and z-push work - no Preview element, no Truncated=2
             w.start(ASB_Data)
-            if body_payload["type"] == "4" and "data_bytes" in body_payload:
+            data_bytes = body_payload.get("data_bytes")
+            data_text = body_payload.get("data", "")
+
+            if body_payload["type"] == "4" and data_bytes is not None:
                 # Type=4 (MIME) uses OPAQUE bytes
-                w.write_opaque(body_payload["data_bytes"])
+                w.write_opaque(data_bytes)
             else:
-                # Type=1/2 uses string data
-                # DEBUG: Log what's being written to WBXML
+                # Type=1/2 (or fallback) uses UTF-8 opaque data
                 from app.diagnostic_logger import _write_json_line
 
                 _write_json_line(
@@ -1285,21 +1291,21 @@ def build_sync_response(
                     {
                         "event": "wbxml_body_data_write",
                         "body_type": body_payload["type"],
-                        "data_length": (
-                            len(body_payload["data"]) if body_payload.get("data") else 0
-                        ),
-                        "data_is_empty": not bool(body_payload.get("data")),
-                        "data_preview": (
-                            body_payload["data"][:100]
-                            if body_payload.get("data")
-                            else None
-                        ),
+                        "data_length": len(data_text.encode("utf-8")) if data_text else 0,
+                        "data_is_empty": not bool(data_text),
+                        "data_preview": (data_text[:100] if data_text else None),
                         "encoding": "opaque_utf8",
                     },
                 )
                 # CRITICAL iOS FIX: Type=1/2 MUST use OPAQUE (not STR_I) per iOS requirements
-                w.write_opaque(body_payload["data"].encode("utf-8"))
+                w.write_opaque((data_text or "").encode("utf-8"))
             w.end()
+
+            content_type = body_payload.get("content_type")
+            if content_type:
+                w.start(ASB_ContentType)
+                w.write_str(content_type)
+                w.end()
 
             # DEBUG: Log body_payload details BEFORE Preview check
             from app.diagnostic_logger import _write_json_line
@@ -1318,51 +1324,6 @@ def build_sync_response(
                     ),
                 },
             )
-
-            # CRITICAL FIX: NEVER send Preview when Data is present
-            # Per MS-ASCMD §2.2.3.35.2: Preview is ONLY for when NO Data element is sent
-            # If you're sending Data (truncated OR full), DO NOT send Preview
-            # iOS Mail fails and requests full bodies when Preview is incorrectly included
-            if False:  # DISABLED: Never send Preview when Data is present
-                preview_text = body_payload["data"][:255]  # First 255 chars
-
-                # DEBUG: Log Preview write attempt
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {
-                        "event": "wbxml_preview_write_attempt",
-                        "preview_length": len(preview_text),
-                        "preview_preview": preview_text[:50],
-                        "body_type": body_payload["type"],
-                        "is_truncated": body_payload.get("truncated"),
-                    },
-                )
-
-                w.start(ASB_Preview)
-                w.write_str(preview_text)
-                w.end()
-
-                # DEBUG: Confirm Preview written
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {
-                        "event": "wbxml_preview_written",
-                        "preview_length": len(preview_text),
-                    },
-                )
-            else:
-                # DEBUG: Log why Preview was skipped
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {
-                        "event": "preview_skipped",
-                        "reason": "truncated_or_no_data",
-                        "has_data": bool(body_payload.get("data")),
-                        "type_value": body_payload["type"],
-                        "is_truncated": body_payload.get("truncated"),
-                        "type_check": body_payload["type"] in ("1", "2"),
-                    },
-                )
 
             # REMOVED: ContentType must not be in Body (MS-ASAIRS: attachments only)
             w.end()  # </Body>
@@ -1936,34 +1897,94 @@ def create_sync_response_wbxml_with_fetch(
             else:
                 # Normal mode: Send Data element
                 w.start(ASB_Data)
-                if body_payload["type"] == "4" and "data_bytes" in body_payload:
+                data_bytes = body_payload.get("data_bytes")
+                data_text = body_payload.get("data", "")
+
+                if body_payload["type"] == "4" and data_bytes is not None:
                     # Type=4 (MIME) uses OPAQUE bytes
-                    w.write_opaque(body_payload["data_bytes"])
+                    w.write_opaque(data_bytes)
                 else:
                     # Type=1/2 uses string data
-                    # DEBUG: Log what's being written to WBXML
                     from app.diagnostic_logger import _write_json_line
 
-                _write_json_line(
-                    "activesync/activesync.log",
-                    {
-                        "event": "wbxml_body_data_write",
-                        "body_type": body_payload["type"],
-                        "data_length": (
-                            len(body_payload["data"]) if body_payload.get("data") else 0
-                        ),
-                        "data_is_empty": not bool(body_payload.get("data")),
-                        "data_preview": (
-                            body_payload["data"][:100]
-                            if body_payload.get("data")
-                            else None
-                        ),
-                        "encoding": "opaque_utf8",
-                    },
-                )
-                # CRITICAL iOS FIX: Type=1/2 MUST use OPAQUE (not STR_I) per iOS requirements
-                w.write_opaque(body_payload["data"].encode("utf-8"))
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_body_data_write",
+                            "body_type": body_payload["type"],
+                            "data_length": len(data_text.encode("utf-8"))
+                            if data_text
+                            else 0,
+                            "data_is_empty": not bool(data_text),
+                            "data_preview": (data_text[:100] if data_text else None),
+                            "encoding": "opaque_utf8",
+                        },
+                    )
+                    # CRITICAL iOS FIX: Type=1/2 MUST use OPAQUE (not STR_I) per iOS requirements
+                    w.write_opaque((data_text or "").encode("utf-8"))
             w.end()
+
+            preview_text = body_payload.get("preview_text")
+            if preview_text and not body_payload.get("preview_only"):
+                try:
+                    w.start(ASB_Preview)
+                    w.write_str(preview_text[:255])
+                    w.end()
+                    from app.diagnostic_logger import _write_json_line
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_preview_written_fetch",
+                            "preview_length": len(preview_text[:255]),
+                            "body_type": body_payload["type"],
+                        },
+                    )
+                except Exception as preview_err:
+                    from app.diagnostic_logger import _write_json_line
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_preview_failed_fetch",
+                            "error": str(preview_err),
+                            "body_type": body_payload["type"],
+                        },
+                    )
+
+            content_type = body_payload.get("content_type")
+            if content_type:
+                w.start(ASB_ContentType)
+                w.write_str(content_type)
+                w.end()
+
+            preview_text = body_payload.get("preview_text")
+            if preview_text:
+                try:
+                    w.start(ASB_Preview)
+                    w.write_str(preview_text[:255])
+                    w.end()
+                    from app.diagnostic_logger import _write_json_line
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_preview_written",
+                            "preview_length": len(preview_text[:255]),
+                            "body_type": body_payload["type"],
+                        },
+                    )
+                except Exception as preview_err:
+                    from app.diagnostic_logger import _write_json_line
+
+                    _write_json_line(
+                        "activesync/activesync.log",
+                        {
+                            "event": "wbxml_preview_failed",
+                            "error": str(preview_err),
+                            "body_type": body_payload["type"],
+                        },
+                    )
             # REMOVED: ContentType must not be in Body (MS-ASAIRS: attachments only)
             w.end()  # </Body>
             w.cp(CP_AIRSYNCBASE)
