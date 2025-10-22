@@ -1,0 +1,208 @@
+services:
+  ui-service:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: 365-ui
+    restart: unless-stopped
+    user: "0:0"
+    command: ["python", "services/ui/main.py"]
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - LOGS_DIR=${LOGS_DIR:-/app/logs}
+      - HOSTNAME=${HOSTNAME:-owa.shtrum.com}
+      - DOMAIN=${DOMAIN:-owa.shtrum.com}
+      - EWS_PUSH_ENDPOINT=${EWS_PUSH_ENDPOINT:-http://ews-service:8100/internal/ews/push}
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
+    ports:
+      - "25:25"
+      - "8001:8001"
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../data:/app/data
+      - ../../logs:/app/logs
+    networks:
+      - email-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: 365-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../nginx/ssl:/etc/nginx/ssl:ro
+      - ../certbot/conf:/etc/letsencrypt:ro
+      - ../certbot/www:/var/www/certbot:ro
+    depends_on:
+      ews-service:
+        condition: service_healthy
+      activesync-service:
+        condition: service_healthy
+      mapi-service:
+        condition: service_healthy
+      data-service:
+        condition: service_started
+    networks:
+      - email-network
+
+  certbot:
+    image: certbot/dns-cloudflare
+    container_name: 365-certbot
+    volumes:
+      - ../certbot/conf:/etc/letsencrypt
+      - ../certbot/www:/var/www/certbot
+      - ../certbot/certbot-setup.sh:/certbot-setup.sh:ro
+    entrypoint: ["/bin/sh", "/certbot-setup.sh"]
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - DOMAIN=${DOMAIN:-owa.shtrum.com}
+      - ALT_NAMES=${ALT_NAMES:-autodiscover.shtrum.com,mail.shtrum.com}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@shtrum.com}
+    networks:
+      - email-network
+    profiles:
+      - ssl
+
+  data-service:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.data-service
+    container_name: 365-data-service
+    restart: unless-stopped
+    command: ["python", "services/data/main.py"]
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - DATA_SERVICE_TOKEN=${DATA_SERVICE_TOKEN:-change-me}
+      - EWS_PUSH_ENDPOINT=${EWS_PUSH_ENDPOINT:-http://ews-service:8100/internal/ews/push}
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ui-service:
+        condition: service_started
+    networks:
+      - email-network
+
+  ews-service:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: 365-ews
+    restart: unless-stopped
+    command: ["python", "services/ews/main.py"]
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - EWS_PUSH_ENDPOINT=${EWS_PUSH_ENDPOINT:-http://ews-service:8100/internal/ews/push}
+      - EWS_PUSH_TOKEN=${EWS_PUSH_TOKEN:-}
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - email-network
+    volumes:
+      - ../../logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8100/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  activesync-service:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: 365-activesync
+    restart: unless-stopped
+    command: ["python", "services/activesync/main.py"]
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+    ports:
+      - "8200:8200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - email-network
+    volumes:
+      - ../../logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8200/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mapi-service:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: 365-mapi
+    restart: unless-stopped
+    command: ["python", "services/mapi/main.py"]
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-this-in-production}
+      - DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/email_system
+      - LOGS_DIR=${LOGS_DIR:-/app/logs}
+      - HOSTNAME=${HOSTNAME:-owa.shtrum.com}
+      - DOMAIN=${DOMAIN:-owa.shtrum.com}
+    ports:
+      - "8300:8300"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ui-service:
+        condition: service_started
+    networks:
+      - email-network
+    volumes:
+      - ../../logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8300/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: 365-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=email_system
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - email-network
+
+networks:
+  email-network:
+    driver: bridge
+
+volumes:
+  email-data:
+  email-logs:
+  postgres-data:
